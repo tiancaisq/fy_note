@@ -419,7 +419,7 @@ onUnmounted(() => {
             @click="emit('selectFolder', folder.id)"
             :title="getFolderFullPath ? getFolderFullPath(folder.id) : folder.name"
             :class="[
-              'group relative flex items-center justify-between px-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
+              'group relative flex items-center justify-between pl-7 pr-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
               currentView === 'folder' && activeFolderId === folder.id
                 ? 'bg-[#e8f1fd] text-blue-600 font-medium shadow-xs'
                 : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
