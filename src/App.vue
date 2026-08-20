@@ -74,6 +74,7 @@ const {
   createNewNote,
   createNewMindMap,
   openNoteEditor,
+  openNoteInNewTab,
   closeEditor,
   updateNote,
   toggleStar,
@@ -339,7 +340,8 @@ onUnmounted(() => {
         :current-view="currentView"
         :breadcrumb-items="breadcrumbItems"
         :get-folder-full-path="getFolderFullPath"
-        @open-note="(n) => openNoteEditor(n, 'split')"
+        @open-note="(n) => openNoteInNewTab(n)"
+        @select-folder="selectFolder"
         @switch-to-table-view="selectView('folder')"
       />
 
@@ -352,7 +354,7 @@ onUnmounted(() => {
         v-model:sort-order="sortOrder"
         v-model:filter-options="filterOptions"
         @breadcrumb-click="handleBreadcrumbClick"
-        @open-note="(n) => openNoteEditor(n, 'split')"
+        @open-note="(n) => openNoteInNewTab(n)"
         @create-new-note="createNewNote()"
         @create-new-mind-map="createNewMindMap()"
         @toggle-star="toggleStar"

@@ -26,6 +26,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'switchToTableView'): void;
   (e: 'openNote', note: Note): void;
+  (e: 'selectFolder', folderId: string): void;
 }>();
 
 // Timeline sorting mode: 'updated' (最近修改) vs 'created' (最近创建)
@@ -342,11 +343,11 @@ function getFolderName(folderId: string): string {
               <span class="w-1 h-1 rounded-full" :class="note.format === 'mindmap' ? 'bg-emerald-500' : 'bg-orange-500'"></span>
             </div>
 
-            <!-- Compact Row with Click-to-Open Jump -->
+            <!-- Compact Row with Click-to-Open Jump in New Tab -->
             <div
               @click="emit('openNote', note)"
               class="group bg-white hover:bg-blue-50/40 hover:border-blue-200/80 rounded-lg border border-gray-200/75 px-3.5 py-2 flex items-center justify-between gap-3 text-xs cursor-pointer transition-all duration-150 shadow-2xs hover:shadow-xs"
-              :title="`点击查看并编辑：${note.title || '无标题文档'}`"
+              :title="`在新建网页中打开：${note.title || '无标题文档'}`"
             >
               <!-- Left: Format icon, Title, Folder, Tag -->
               <div class="flex items-center gap-2 min-w-0 flex-1">
@@ -359,10 +360,15 @@ function getFolderName(folderId: string): string {
                   {{ note.title || '无标题文档' }}
                 </span>
 
-                <span class="text-[11px] text-gray-400 bg-gray-50 px-1.5 py-0.5 rounded border border-gray-100 flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  @click.stop="emit('selectFolder', note.folderId)"
+                  class="text-[11px] text-gray-500 hover:text-blue-600 bg-gray-50 hover:bg-blue-50 px-1.5 py-0.5 rounded border border-gray-100 hover:border-blue-200 flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
+                  :title="`跳转到目录：${getFolderName(note.folderId)}`"
+                >
                   <FolderIcon class="w-2.5 h-2.5 text-gray-400" />
-                  <span>{{ getFolderName(note.folderId) }}</span>
-                </span>
+                  <span class="hover:underline">{{ getFolderName(note.folderId) }}</span>
+                </button>
 
                 <span
                   v-if="note.tags && note.tags.length"

@@ -102,10 +102,47 @@ export function useNotes() {
       if (idbConfig) cloudConfig.value = idbConfig;
       isStorageReady.value = true;
       await updateStorageEstimate();
+
+      // Check URL parameters for noteId to directly open in standalone/new-tab view
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const targetNoteId = urlParams.get('noteId') || urlParams.get('note') || (window.location.hash.startsWith('#note-') ? window.location.hash.substring(1) : null);
+        if (targetNoteId) {
+          const matched = notes.value.find((n) => n.id === targetNoteId);
+          if (matched && !matched.isDeleted) {
+            activeNoteId.value = matched.id;
+            activeFolderId.value = matched.folderId;
+            isEditorOpen.value = true;
+            editorMode.value = 'split';
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to parse noteId from URL:', err);
+      }
     } catch (e) {
       console.error('IndexedDB initialization error:', e);
       isStorageReady.value = true;
     }
+
+    // Cross-tab synchronization via storage event
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEY_NOTES && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            notes.value = parsed;
+          }
+        } catch {}
+      } else if (e.key === STORAGE_KEY_FOLDERS && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            folders.value = parsed;
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
   });
 
   // Current active view and selection
@@ -673,6 +710,28 @@ export function useNotes() {
     return newNote;
   }
 
+  function getNoteShareUrl(noteId: string): string {
+    const origin = window.location.origin;
+    const pathname = window.location.pathname;
+    return `${origin}${pathname}?noteId=${encodeURIComponent(noteId)}`;
+  }
+
+  function openNoteInNewTab(note: Note) {
+    // Save state to localStorage immediately before opening new tab so new tab loads newest changes
+    try {
+      localStorage.setItem(STORAGE_KEY_NOTES, JSON.stringify(notes.value));
+      localStorage.setItem(STORAGE_KEY_FOLDERS, JSON.stringify(folders.value));
+    } catch {}
+
+    const targetUrl = getNoteShareUrl(note.id);
+    const newWindow = window.open(targetUrl, '_blank');
+    if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
+      // If popup is blocked by browser, fallback to in-app editor and notify user
+      openNoteEditor(note, 'split');
+      showToast('浏览器已拦截弹窗，已在当前页面打开');
+    }
+  }
+
   function openNoteEditor(note: Note, mode: 'split' | 'edit' | 'preview' = 'split') {
     activeNoteId.value = note.id;
     editorMode.value = mode;
@@ -1000,7 +1059,7 @@ export function useNotes() {
 
   function navigateToNoteFromSearch(item: SearchResultItem) {
     selectFolder(item.note.folderId);
-    openNoteEditor(item.note, 'split');
+    openNoteInNewTab(item.note);
     searchQuery.value = '';
   }
 
@@ -1153,6 +1212,8 @@ export function useNotes() {
     createNewNote,
     createNewMindMap,
     openNoteEditor,
+    openNoteInNewTab,
+    getNoteShareUrl,
     closeEditor,
     updateNote,
     toggleStar,

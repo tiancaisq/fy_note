@@ -363,6 +363,7 @@ onUnmounted(() => {
           draggable="true"
           @dragstart="handleNoteDragStart(note, $event)"
           @click="handleRowClick(note)"
+          :title="`在新网页中打开：${note.title}`"
           class="grid grid-cols-12 px-6 py-3 items-center text-sm hover:bg-[#f8fafc] group transition-colors cursor-pointer relative"
         >
           <!-- Column 1: File Name with Badge Icon (Markdown orange or Mindmap green) -->
@@ -429,7 +430,7 @@ onUnmounted(() => {
                   class="w-full px-3.5 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer"
                 >
                   <Edit2 class="w-3.5 h-3.5 text-gray-400" />
-                  <span>查看与编辑</span>
+                  <span>新建网页打开</span>
                 </button>
                 <button
                   @click="emit('toggleStar', note.id); activeDropdownNoteId = null;"
