@@ -286,6 +286,17 @@ export async function fetchRemoteData(config: CloudConfig): Promise<{ success: b
   }
 }
 
+function parseSafeTime(timeStr?: string | number | null): number {
+  if (!timeStr) return 0;
+  if (typeof timeStr === 'number') return timeStr;
+  const str = String(timeStr).trim();
+  const normalized = str.includes('T') ? str : str.replace(' ', 'T');
+  const parsed = new Date(normalized).getTime();
+  if (!isNaN(parsed) && parsed > 0) return parsed;
+  const fallback = new Date(str).getTime();
+  return isNaN(fallback) ? 0 : fallback;
+}
+
 // 3. Compare and compute differences between local and cloud
 export function calculateSyncDiff(
   localNotes: Note[],
@@ -295,49 +306,62 @@ export function calculateSyncDiff(
 ): SyncDiffResult {
   const remoteNoteMap = new Map(remoteNotes.map((n) => [n.id, n]));
   const remoteFolderMap = new Map(remoteFolders.map((f) => [f.id, f]));
+  const localNoteMap = new Map(localNotes.map((n) => [n.id, n]));
+  const localFolderMap = new Map(localFolders.map((f) => [f.id, f]));
 
   let localOnlyNotes = 0;
   let localUpdatedNotes = 0;
   let localOnlyFolders = 0;
+  let cloudOnlyNotes = 0;
+  let cloudUpdatedNotes = 0;
+  let cloudOnlyFolders = 0;
 
+  // Compare local notes against remote
   for (const local of localNotes) {
     const remote = remoteNoteMap.get(local.id);
     if (!remote) {
       localOnlyNotes++;
     } else {
-      // Check if local is newer
-      const localTime = new Date(local.updatedAt || local.createdAt).getTime() || 0;
-      const remoteTime = new Date(remote.updatedAt || remote.createdAt).getTime() || 0;
-      if (localTime > remoteTime || JSON.stringify(local) !== JSON.stringify(remote)) {
+      const localTime = parseSafeTime(local.updatedAt || local.createdAt);
+      const remoteTime = parseSafeTime(remote.updatedAt || remote.createdAt);
+
+      if (localTime > remoteTime) {
         localUpdatedNotes++;
+      } else if (localTime === remoteTime) {
+        // If timestamps are identical, check if content or title differs
+        const isContentDiff =
+          local.title !== remote.title ||
+          local.content !== remote.content ||
+          local.folderId !== remote.folderId ||
+          local.isStarred !== remote.isStarred ||
+          local.isFavorite !== remote.isFavorite ||
+          local.isDeleted !== remote.isDeleted ||
+          local.format !== remote.format;
+        if (isContentDiff) {
+          localUpdatedNotes++;
+        }
       }
     }
   }
 
-  for (const localF of localFolders) {
-    const remoteF = remoteFolderMap.get(localF.id);
-    if (!remoteF) {
-      localOnlyFolders++;
-    }
-  }
-
-  const localNoteMap = new Map(localNotes.map((n) => [n.id, n]));
-  const localFolderMap = new Map(localFolders.map((f) => [f.id, f]));
-
-  let cloudOnlyNotes = 0;
-  let cloudUpdatedNotes = 0;
-  let cloudOnlyFolders = 0;
-
+  // Compare remote notes against local (for cloud-newer items)
   for (const remote of remoteNotes) {
     const local = localNoteMap.get(remote.id);
     if (!local) {
       cloudOnlyNotes++;
     } else {
-      const localTime = new Date(local.updatedAt || local.createdAt).getTime() || 0;
-      const remoteTime = new Date(remote.updatedAt || remote.createdAt).getTime() || 0;
+      const localTime = parseSafeTime(local.updatedAt || local.createdAt);
+      const remoteTime = parseSafeTime(remote.updatedAt || remote.createdAt);
       if (remoteTime > localTime) {
         cloudUpdatedNotes++;
       }
+    }
+  }
+
+  // Compare folders
+  for (const localF of localFolders) {
+    if (!remoteFolderMap.has(localF.id)) {
+      localOnlyFolders++;
     }
   }
 
@@ -347,7 +371,13 @@ export function calculateSyncDiff(
     }
   }
 
-  const totalDiff = localOnlyNotes + localUpdatedNotes + cloudOnlyNotes + cloudUpdatedNotes + localOnlyFolders + cloudOnlyFolders;
+  const totalDiff =
+    localOnlyNotes +
+    localUpdatedNotes +
+    cloudOnlyNotes +
+    cloudUpdatedNotes +
+    localOnlyFolders +
+    cloudOnlyFolders;
 
   return {
     localOnlyNotes,
