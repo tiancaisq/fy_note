@@ -57,6 +57,11 @@ const {
   saveCloudConfig,
   clearCloudConfig,
   // helpers & counts
+  frequentFolders,
+  isFolderFrequent,
+  toggleFrequentFolder,
+  addFrequentFolder,
+  removeFrequentFolder,
   getFolderFullPath,
   getFolderAncestors,
   getSubFolders,
@@ -312,6 +317,9 @@ onUnmounted(() => {
       <!-- Left Sidebar (Folder hierarchy with drag & drop move, subfolders, actions) -->
       <Sidebar
         :folders="folders"
+        :frequent-folders="frequentFolders"
+        :is-folder-frequent="isFolderFrequent"
+        :get-folder-full-path="getFolderFullPath"
         :current-view="currentView"
         :active-folder-id="activeFolderId"
         :get-folder-note-count="getFolderNoteCount"
@@ -328,6 +336,9 @@ onUnmounted(() => {
         @rename-folder="handleOpenRenameFolder"
         @delete-folder="deleteFolder"
         @toggle-collapse="toggleFolderCollapse"
+        @toggle-frequent-folder="toggleFrequentFolder"
+        @add-frequent-folder="addFrequentFolder"
+        @remove-frequent-folder="removeFrequentFolder"
         @move-folder="moveFolder"
         @move-note="moveNoteToFolder"
       />

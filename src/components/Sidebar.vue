@@ -4,6 +4,7 @@ import {
   Plus,
   FileDown,
   Folder as FolderIcon,
+  FolderOpen,
   ChevronDown,
   ChevronRight,
   Share2,
@@ -12,7 +13,11 @@ import {
   Trash2,
   FolderPlus,
   Layers,
-  Clock
+  Clock,
+  Pin,
+  PinOff,
+  X,
+  Check
 } from 'lucide-vue-next';
 import { Folder, ViewType } from '../types';
 import FolderTreeItem from './FolderTreeItem.vue';
@@ -21,6 +26,9 @@ import MindmapIcon from './icons/MindmapIcon.vue';
 
 const props = defineProps<{
   folders: Folder[];
+  frequentFolders?: Folder[];
+  isFolderFrequent?: (id: string) => boolean;
+  getFolderFullPath?: (id: string) => string;
   currentView: ViewType;
   activeFolderId: string;
   getFolderNoteCount: (id: string) => number;
@@ -40,16 +48,23 @@ const emit = defineEmits<{
   (e: 'renameFolder', folder: Folder): void;
   (e: 'deleteFolder', folderId: string): void;
   (e: 'toggleCollapse', folderId: string): void;
+  (e: 'toggleFrequentFolder', folderId: string): void;
+  (e: 'addFrequentFolder', folderId: string): void;
+  (e: 'removeFrequentFolder', folderId: string): void;
   (e: 'moveFolder', draggedFolderId: string, targetParentId: string | null, position?: 'inside' | 'before' | 'after', targetFolderId?: string): void;
   (e: 'moveNote', draggedNoteId: string, targetFolderId: string): void;
 }>();
 
 const isMyNotesExpanded = ref(true);
+const isFrequentFoldersExpanded = ref(true);
 const isNewDropdownOpen = ref(false);
+const isAddFrequentMenuOpen = ref(false);
 const newDropdownContainerRef = ref<HTMLElement | null>(null);
+const addFrequentMenuRef = ref<HTMLElement | null>(null);
 const draggedOverFolderId = ref<string | null>(null);
 const draggedDropPosition = ref<'inside' | 'before' | 'after' | null>(null);
 const isRootDropOver = ref(false);
+const isFrequentDropOver = ref(false);
 
 function handleNewNoteClick() {
   isNewDropdownOpen.value = false;
@@ -118,6 +133,32 @@ function handleFolderDrop(targetFolderId: string, position: 'inside' | 'before' 
   }
 }
 
+// Drag over "常用目录" to pin folder as frequent
+function handleFrequentDragOver(e: DragEvent) {
+  e.preventDefault();
+  isFrequentDropOver.value = true;
+}
+
+function handleFrequentDragLeave() {
+  isFrequentDropOver.value = false;
+}
+
+function handleFrequentDrop(e: DragEvent) {
+  e.preventDefault();
+  isFrequentDropOver.value = false;
+  const rawData = e.dataTransfer?.getData('application/json');
+  if (rawData) {
+    try {
+      const data = JSON.parse(rawData);
+      if (data.type === 'folder' && data.id) {
+        emit('addFrequentFolder', data.id);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  }
+}
+
 // Drag over root "我的笔记" to move to top level
 function handleRootDragOver(e: DragEvent) {
   e.preventDefault();
@@ -151,11 +192,15 @@ function handleWindowClick(e: MouseEvent) {
   if (newDropdownContainerRef.value && !newDropdownContainerRef.value.contains(e.target as Node)) {
     isNewDropdownOpen.value = false;
   }
+  if (addFrequentMenuRef.value && !addFrequentMenuRef.value.contains(e.target as Node)) {
+    isAddFrequentMenuOpen.value = false;
+  }
 }
 
 function handleWindowKeyDown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && isNewDropdownOpen.value) {
-    isNewDropdownOpen.value = false;
+  if (e.key === 'Escape') {
+    if (isNewDropdownOpen.value) isNewDropdownOpen.value = false;
+    if (isAddFrequentMenuOpen.value) isAddFrequentMenuOpen.value = false;
   }
 }
 
@@ -248,6 +293,149 @@ onUnmounted(() => {
         </button>
       </div>
 
+      <!-- 常用目录 (Frequent Folders Section) - Sits at the same level as 我的笔记 -->
+      <div
+        id="sidebar-frequent-folders-section"
+        class="pt-1"
+        @dragover="handleFrequentDragOver"
+        @dragleave="handleFrequentDragLeave"
+        @drop="handleFrequentDrop"
+      >
+        <!-- 常用目录 Header -->
+        <div
+          :class="[
+            'group flex items-center justify-between text-xs font-semibold px-2 py-1.5 rounded-md cursor-pointer transition-all',
+            isFrequentDropOver
+              ? 'bg-amber-50 ring-2 ring-amber-400 text-amber-700'
+              : 'text-gray-500 hover:text-gray-800 hover:bg-gray-50/80'
+          ]"
+        >
+          <div class="flex items-center gap-1.5 flex-1" @click="isFrequentFoldersExpanded = !isFrequentFoldersExpanded">
+            <button class="text-gray-400 hover:text-gray-600 p-0.5 rounded cursor-pointer">
+              <ChevronDown v-if="isFrequentFoldersExpanded" class="w-3.5 h-3.5" />
+              <ChevronRight v-else class="w-3.5 h-3.5" />
+            </button>
+            <Pin class="w-4 h-4 text-amber-500 fill-amber-500/20 shrink-0" />
+            <span class="text-[13px] text-gray-800">常用目录</span>
+            <span v-if="frequentFolders && frequentFolders.length > 0" class="text-[11px] text-gray-400 font-normal">({{ frequentFolders.length }})</span>
+            <span v-if="isFrequentDropOver" class="text-[10px] text-amber-700 bg-amber-100 px-1 rounded">松开添加</span>
+          </div>
+
+          <!-- Add / Manage Frequent Folders Dropdown -->
+          <div ref="addFrequentMenuRef" class="relative">
+            <button
+              @click.stop="isAddFrequentMenuOpen = !isAddFrequentMenuOpen"
+              title="添加/管理常用目录"
+              class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-amber-600 p-1 hover:bg-amber-50 rounded transition-all cursor-pointer"
+              :class="{ '!opacity-100 bg-amber-50 text-amber-600': isAddFrequentMenuOpen }"
+            >
+              <Plus class="w-3.5 h-3.5" />
+            </button>
+
+            <!-- Quick Add / Pin Folder Popover Menu -->
+            <div
+              v-if="isAddFrequentMenuOpen"
+              class="absolute right-0 top-6 w-52 bg-white rounded-lg shadow-xl border border-gray-100 py-1.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-100"
+              @click.stop
+            >
+              <div class="px-2.5 py-1 text-[11px] font-semibold text-gray-400 border-b border-gray-50 flex items-center justify-between">
+                <span>快速添加常用目录</span>
+                <span class="text-[10px] font-normal text-gray-400">勾选固定</span>
+              </div>
+              <div class="max-h-56 overflow-y-auto py-1 space-y-0.5">
+                <div
+                  v-for="folder in folders"
+                  :key="folder.id"
+                  @click="emit('toggleFrequentFolder', folder.id)"
+                  class="px-2.5 py-1.5 hover:bg-amber-50/60 flex items-center justify-between cursor-pointer rounded transition-colors text-gray-700 hover:text-amber-800"
+                >
+                  <div class="flex items-center gap-1.5 truncate mr-2">
+                    <FolderIcon class="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span class="truncate text-[12px]">{{ folder.name }}</span>
+                  </div>
+                  <div class="shrink-0 flex items-center">
+                    <Check
+                      v-if="isFolderFrequent && isFolderFrequent(folder.id)"
+                      class="w-3.5 h-3.5 text-amber-600 font-bold"
+                    />
+                    <span
+                      v-else
+                      class="w-3.5 h-3.5 border border-gray-300 rounded hover:border-amber-400 inline-block"
+                    ></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Frequent Folders List -->
+        <div v-show="isFrequentFoldersExpanded" class="mt-0.5 space-y-0.5">
+          <div
+            v-for="folder in (frequentFolders || [])"
+            :key="'freq-' + folder.id"
+            :id="'frequent-folder-item-' + folder.id"
+            @click="emit('selectFolder', folder.id)"
+            :title="getFolderFullPath ? getFolderFullPath(folder.id) : folder.name"
+            :class="[
+              'group relative flex items-center justify-between px-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
+              currentView === 'folder' && activeFolderId === folder.id
+                ? 'bg-[#e8f1fd] text-blue-600 font-medium shadow-xs'
+                : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+            ]"
+          >
+            <!-- Left: Folder Icon & Name -->
+            <div class="flex items-center gap-2 truncate flex-1 mr-1">
+              <component
+                :is="currentView === 'folder' && activeFolderId === folder.id ? FolderOpen : FolderIcon"
+                :class="[
+                  'w-4 h-4 shrink-0 transition-colors',
+                  currentView === 'folder' && activeFolderId === folder.id
+                    ? 'text-blue-600'
+                    : 'text-amber-500 fill-amber-500/20'
+                ]"
+              />
+              <span class="truncate text-[13px] tracking-tight">{{ folder.name }}</span>
+            </div>
+
+            <!-- Right: Note count & Quick Unpin -->
+            <div class="flex items-center gap-1 shrink-0">
+              <span
+                class="text-[11px] px-1.5 py-0.2 rounded text-gray-400 group-hover:text-gray-500"
+                :class="{ 'text-blue-600 font-normal': currentView === 'folder' && activeFolderId === folder.id }"
+              >
+                {{ getFolderNoteCount(folder.id) }}
+              </span>
+
+              <!-- Remove / Unpin from frequent -->
+              <button
+                @click.stop="emit('toggleFrequentFolder', folder.id)"
+                class="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded transition-all cursor-pointer"
+                title="移出常用目录"
+              >
+                <X class="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Empty state when no frequent folders -->
+          <div
+            v-if="!frequentFolders || frequentFolders.length === 0"
+            class="px-2.5 py-2 text-center text-xs text-gray-400 bg-gray-50/60 rounded-md border border-dashed border-gray-200 mt-1"
+          >
+            <span>暂无常用目录，点击 </span>
+            <button
+              @click.stop="isAddFrequentMenuOpen = true"
+              class="text-amber-600 hover:underline font-medium cursor-pointer"
+            >+ 添加</button>
+            <span> 或右键文件夹设置</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Divider -->
+      <div class="h-px bg-gray-100 my-1"></div>
+
       <!-- Folder Navigation Section (Hierarchical & Draggable) -->
       <div id="sidebar-folders-tree" class="pt-1">
         <!-- Root Category: 我的笔记 (Supports dropping folders to move to root) -->
@@ -293,11 +481,13 @@ onUnmounted(() => {
             :get-folder-note-count="getFolderNoteCount"
             :dragged-over-folder-id="draggedOverFolderId"
             :dragged-drop-position="draggedDropPosition"
+            :is-folder-frequent="isFolderFrequent"
             @select-folder="(id) => emit('selectFolder', id)"
             @toggle-collapse="(id) => emit('toggleCollapse', id)"
             @open-new-subfolder="(f) => emit('openNewFolder', f)"
             @rename-folder="(f) => emit('renameFolder', f)"
             @delete-folder="(id) => emit('deleteFolder', id)"
+            @toggle-frequent-folder="(id) => emit('toggleFrequentFolder', id)"
             @folder-drag-start="handleFolderDragStart"
             @folder-drag-over="handleFolderDragOver"
             @folder-drag-leave="handleFolderDragLeave"

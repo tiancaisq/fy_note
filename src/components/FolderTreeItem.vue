@@ -8,7 +8,9 @@ import {
   MoreHorizontal,
   Edit2,
   Trash2,
-  FolderPlus
+  FolderPlus,
+  Pin,
+  PinOff
 } from 'lucide-vue-next';
 import { Folder, ViewType } from '../types';
 
@@ -23,6 +25,7 @@ const props = defineProps<{
   getFolderNoteCount: (id: string) => number;
   draggedOverFolderId: string | null;
   draggedDropPosition: DropPosition | null;
+  isFolderFrequent?: (id: string) => boolean;
 }>();
 
 const emit = defineEmits<{
@@ -31,6 +34,7 @@ const emit = defineEmits<{
   (e: 'openNewSubfolder', parentFolder: Folder): void;
   (e: 'renameFolder', folder: Folder): void;
   (e: 'deleteFolder', folderId: string): void;
+  (e: 'toggleFrequentFolder', folderId: string): void;
   (e: 'folderDragStart', folder: Folder, event: DragEvent): void;
   (e: 'folderDragOver', folderId: string, position: DropPosition, event: DragEvent): void;
   (e: 'folderDragLeave', folderId: string): void;
@@ -225,6 +229,14 @@ function onDrop(e: DragEvent) {
               @click.stop
             >
               <button
+                @click="emit('toggleFrequentFolder', folder.id); isMenuOpen = false;"
+                class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-amber-50 hover:text-amber-700 flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <PinOff v-if="isFolderFrequent && isFolderFrequent(folder.id)" class="w-3.5 h-3.5 text-amber-500" />
+                <Pin v-else class="w-3.5 h-3.5 text-amber-500" />
+                <span>{{ isFolderFrequent && isFolderFrequent(folder.id) ? '移出常用目录' : '设为常用目录' }}</span>
+              </button>
+              <button
                 @click="emit('openNewSubfolder', folder); isMenuOpen = false;"
                 class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2 cursor-pointer transition-colors"
               >
@@ -274,11 +286,13 @@ function onDrop(e: DragEvent) {
         :get-folder-note-count="getFolderNoteCount"
         :dragged-over-folder-id="draggedOverFolderId"
         :dragged-drop-position="draggedDropPosition"
+        :is-folder-frequent="isFolderFrequent"
         @select-folder="(id) => emit('selectFolder', id)"
         @toggle-collapse="(id) => emit('toggleCollapse', id)"
         @open-new-subfolder="(f) => emit('openNewSubfolder', f)"
         @rename-folder="(f) => emit('renameFolder', f)"
         @delete-folder="(id) => emit('deleteFolder', id)"
+        @toggle-frequent-folder="(id) => emit('toggleFrequentFolder', id)"
         @folder-drag-start="(f, e) => emit('folderDragStart', f, e)"
         @folder-drag-over="(id, pos, e) => emit('folderDragOver', id, pos, e)"
         @folder-drag-leave="(id) => emit('folderDragLeave', id)"

@@ -35,6 +35,7 @@ import {
 const STORAGE_KEY_NOTES = 'fengye_cloud_notes_data_v2';
 const STORAGE_KEY_FOLDERS = 'fengye_cloud_folders_data_v2';
 const STORAGE_KEY_CLOUD_CONFIG = 'fengye_cloud_sync_config_v2';
+const STORAGE_KEY_FREQUENT_FOLDERS = 'fengye_cloud_frequent_folders_v2';
 
 function loadStoredData<T>(key: string, fallback: T): T {
   try {
@@ -52,6 +53,23 @@ export function useNotes() {
   const isStorageReady = ref<boolean>(false);
   const folders = ref<Folder[]>(loadStoredData(STORAGE_KEY_FOLDERS, INITIAL_FOLDERS));
   const notes = ref<Note[]>(loadStoredData(STORAGE_KEY_NOTES, INITIAL_NOTES));
+
+  // Frequent / Pinned Folders
+  const frequentFolderIds = ref<string[]>(
+    loadStoredData(STORAGE_KEY_FREQUENT_FOLDERS, ['folder-concurrency'])
+  );
+
+  watch(
+    frequentFolderIds,
+    (newIds) => {
+      try {
+        localStorage.setItem(STORAGE_KEY_FREQUENT_FOLDERS, JSON.stringify(newIds));
+      } catch (err) {
+        console.warn('Failed to save frequent folders', err);
+      }
+    },
+    { deep: true }
+  );
 
   // Cloud Synchronization Configuration
   const defaultCloudConfig: CloudConfig = {
@@ -407,6 +425,46 @@ export function useNotes() {
       .filter((f) => !f.parentId)
       .sort((a, b) => (a.order || 0) - (b.order || 0));
   });
+
+  // Frequent Folders list resolved from IDs
+  const frequentFolders = computed<Folder[]>(() => {
+    return frequentFolderIds.value
+      .map((id) => folders.value.find((f) => f.id === id))
+      .filter((f): f is Folder => Boolean(f));
+  });
+
+  function isFolderFrequent(folderId: string): boolean {
+    return frequentFolderIds.value.includes(folderId);
+  }
+
+  function toggleFrequentFolder(folderId: string) {
+    const idx = frequentFolderIds.value.indexOf(folderId);
+    const targetFolder = folders.value.find((f) => f.id === folderId);
+    if (idx !== -1) {
+      frequentFolderIds.value.splice(idx, 1);
+      showToast(`已从常用目录移除 "${targetFolder?.name || '文件夹'}"`);
+    } else {
+      frequentFolderIds.value.push(folderId);
+      showToast(`已将 "${targetFolder?.name || '文件夹'}" 添加至常用目录`);
+    }
+  }
+
+  function addFrequentFolder(folderId: string) {
+    if (!frequentFolderIds.value.includes(folderId)) {
+      frequentFolderIds.value.push(folderId);
+      const targetFolder = folders.value.find((f) => f.id === folderId);
+      showToast(`已将 "${targetFolder?.name || '文件夹'}" 添加至常用目录`);
+    }
+  }
+
+  function removeFrequentFolder(folderId: string) {
+    const idx = frequentFolderIds.value.indexOf(folderId);
+    if (idx !== -1) {
+      frequentFolderIds.value.splice(idx, 1);
+      const targetFolder = folders.value.find((f) => f.id === folderId);
+      showToast(`已从常用目录移除 "${targetFolder?.name || '文件夹'}"`);
+    }
+  }
 
   // Top-most / first root folder ID (the first root folder visible at the top of the sidebar)
   const firstRootFolderId = computed<string>(() => {
@@ -867,6 +925,7 @@ export function useNotes() {
     });
 
     folders.value = folders.value.filter((f) => !allFolderIds.includes(f.id));
+    frequentFolderIds.value = frequentFolderIds.value.filter((id) => !allFolderIds.includes(id));
     if (allFolderIds.includes(activeFolderId.value)) {
       activeFolderId.value = folders.value[0]?.id || '';
     }
@@ -1218,6 +1277,12 @@ export function useNotes() {
     // helpers & counts
     rootFolders,
     firstRootFolderId,
+    frequentFolders,
+    frequentFolderIds,
+    isFolderFrequent,
+    toggleFrequentFolder,
+    addFrequentFolder,
+    removeFrequentFolder,
     getFolderFullPath,
     getFolderAncestors,
     getSubFolders,
