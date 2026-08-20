@@ -25,6 +25,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'switchToTableView'): void;
+  (e: 'openNote', note: Note): void;
 }>();
 
 // Timeline sorting mode: 'updated' (最近修改) vs 'created' (最近创建)
@@ -341,9 +342,11 @@ function getFolderName(folderId: string): string {
               <span class="w-1 h-1 rounded-full" :class="note.format === 'mindmap' ? 'bg-emerald-500' : 'bg-orange-500'"></span>
             </div>
 
-            <!-- Compact Read-Only Row -->
+            <!-- Compact Row with Click-to-Open Jump -->
             <div
-              class="bg-white rounded-lg border border-gray-200/75 px-3.5 py-2 flex items-center justify-between gap-3 text-xs pointer-events-none select-text"
+              @click="emit('openNote', note)"
+              class="group bg-white hover:bg-blue-50/40 hover:border-blue-200/80 rounded-lg border border-gray-200/75 px-3.5 py-2 flex items-center justify-between gap-3 text-xs cursor-pointer transition-all duration-150 shadow-2xs hover:shadow-xs"
+              :title="`点击查看并编辑：${note.title || '无标题文档'}`"
             >
               <!-- Left: Format icon, Title, Folder, Tag -->
               <div class="flex items-center gap-2 min-w-0 flex-1">
@@ -352,7 +355,7 @@ function getFolderName(folderId: string): string {
                   <MindmapIcon v-else size="xs" />
                 </div>
 
-                <span class="font-medium text-gray-800 truncate">
+                <span class="font-medium text-gray-800 group-hover:text-blue-600 truncate transition-colors">
                   {{ note.title || '无标题文档' }}
                 </span>
 
@@ -375,7 +378,7 @@ function getFolderName(folderId: string): string {
                 <span class="text-[11px] font-mono">
                   {{ (timelineMode === 'updated' ? note.updatedAt : note.createdAt).slice(11, 16) }}
                 </span>
-                <span class="text-[11px] text-gray-500 font-medium">
+                <span class="text-[11px] text-gray-500 font-medium group-hover:text-blue-500 transition-colors">
                   {{ formatRelativeTime(timelineMode === 'updated' ? note.updatedAt : note.createdAt) }}
                 </span>
               </div>

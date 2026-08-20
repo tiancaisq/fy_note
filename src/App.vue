@@ -339,6 +339,7 @@ onUnmounted(() => {
         :current-view="currentView"
         :breadcrumb-items="breadcrumbItems"
         :get-folder-full-path="getFolderFullPath"
+        @open-note="(n) => openNoteEditor(n, 'split')"
         @switch-to-table-view="selectView('folder')"
       />
 
