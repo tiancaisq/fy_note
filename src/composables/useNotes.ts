@@ -1,0 +1,1182 @@
+import { ref, computed, watch, onMounted } from 'vue';
+import {
+  Folder,
+  Note,
+  ViewType,
+  SortField,
+  SortOrder,
+  FilterOptions,
+  BreadcrumbItem,
+  SearchResultItem,
+  CloudConfig,
+  SyncStatus,
+  SyncDiffResult,
+} from '../types';
+import { INITIAL_FOLDERS, INITIAL_NOTES } from '../data/initialData';
+import { exportToXMind } from '../utils/xmind';
+import {
+  initStorageAndMigrate,
+  saveNotesToIDB,
+  saveFoldersToIDB,
+  saveCloudConfigToIDB,
+  getStorageEstimate,
+} from '../utils/idbStorage';
+import {
+  testCloudApi,
+  fetchRemoteData,
+  calculateSyncDiff,
+  pushSyncToCloud,
+  saveSingleNoteToCloud,
+  deleteSingleNoteFromCloud,
+  saveSingleFolderToCloud,
+  deleteSingleFolderFromCloud,
+} from '../utils/cloudApi';
+
+const STORAGE_KEY_NOTES = 'fengye_cloud_notes_data_v2';
+const STORAGE_KEY_FOLDERS = 'fengye_cloud_folders_data_v2';
+const STORAGE_KEY_CLOUD_CONFIG = 'fengye_cloud_sync_config_v2';
+
+function loadStoredData<T>(key: string, fallback: T): T {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('Failed to load storage', e);
+  }
+  return fallback;
+}
+
+export function useNotes() {
+  const isStorageReady = ref<boolean>(false);
+  const folders = ref<Folder[]>(loadStoredData(STORAGE_KEY_FOLDERS, INITIAL_FOLDERS));
+  const notes = ref<Note[]>(loadStoredData(STORAGE_KEY_NOTES, INITIAL_NOTES));
+
+  // Cloud Synchronization Configuration
+  const defaultCloudConfig: CloudConfig = {
+    enabled: false,
+    apiUrl: '',
+    apiToken: '',
+    userId: '',
+    autoSync: true,
+    lastSyncedAt: null,
+  };
+  const cloudConfig = ref<CloudConfig>(loadStoredData(STORAGE_KEY_CLOUD_CONFIG, defaultCloudConfig));
+  const isCloudSyncModalOpen = ref<boolean>(false);
+  const syncStatus = ref<SyncStatus>(cloudConfig.value.enabled && cloudConfig.value.apiUrl ? 'synced' : 'unconfigured');
+  const syncDiff = ref<SyncDiffResult | null>(null);
+  const isSyncing = ref<boolean>(false);
+  let autoSyncDebounceTimer: any = null;
+
+  // Storage estimation metrics
+  const storageInfo = ref<{
+    usage: number;
+    quota: number;
+    usageFormatted: string;
+    quotaFormatted: string;
+    percent: number;
+  }>({
+    usage: 0,
+    quota: 0,
+    usageFormatted: '0 B',
+    quotaFormatted: '0 B',
+    percent: 0,
+  });
+
+  async function updateStorageEstimate() {
+    try {
+      const estimate = await getStorageEstimate();
+      storageInfo.value = estimate;
+    } catch (e) {
+      console.warn('Storage estimate failed', e);
+    }
+  }
+
+  // Asynchronous IndexedDB initialization & migration on startup
+  onMounted(async () => {
+    try {
+      const { notes: idbNotes, folders: idbFolders, cloudConfig: idbConfig } = await initStorageAndMigrate();
+      if (idbNotes && idbNotes.length > 0) notes.value = idbNotes;
+      if (idbFolders && idbFolders.length > 0) folders.value = idbFolders;
+      if (idbConfig) cloudConfig.value = idbConfig;
+      isStorageReady.value = true;
+      await updateStorageEstimate();
+    } catch (e) {
+      console.error('IndexedDB initialization error:', e);
+      isStorageReady.value = true;
+    }
+  });
+
+  // Current active view and selection
+  const currentView = ref<ViewType>('folder');
+  const activeFolderId = ref<string>('folder-concurrency');
+  const searchQuery = ref<string>('');
+
+  // Active note for editor / viewer modal
+  const activeNoteId = ref<string | null>(null);
+  const isEditorOpen = ref<boolean>(false);
+  const editorMode = ref<'split' | 'edit' | 'preview'>('split');
+
+  // Sort & Filter
+  const sortField = ref<SortField>('createdAt');
+  const sortOrder = ref<SortOrder>('desc');
+  const filterOptions = ref<FilterOptions>({
+    starredOnly: false,
+    favoriteOnly: false,
+    format: 'all',
+  });
+
+  // Selected note IDs for batch operations
+  const selectedNoteIds = ref<string[]>([]);
+
+  // Modals state
+  const isImportModalOpen = ref<boolean>(false);
+  const isNewFolderModalOpen = ref<boolean>(false);
+  const targetParentFolderForNew = ref<Folder | null>(null);
+  const isShareModalOpen = ref<boolean>(false);
+  const sharingNote = ref<Note | null>(null);
+  const isMoveModalOpen = ref<boolean>(false);
+  const noteToMove = ref<Note | null>(null);
+  const isRenameNoteModalOpen = ref<boolean>(false);
+  const noteToRename = ref<Note | null>(null);
+
+  // Toast feedback
+  const toastMessage = ref<string | null>(null);
+  let toastTimer: any = null;
+
+  function showToast(msg: string) {
+    toastMessage.value = msg;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastMessage.value = null;
+    }, 2800);
+  }
+
+  // Persist to IndexedDB (and keep localStorage updated as immediate synchronous fallback)
+  watch(
+    notes,
+    (newNotes) => {
+      saveNotesToIDB(newNotes);
+      try {
+        localStorage.setItem(STORAGE_KEY_NOTES, JSON.stringify(newNotes));
+      } catch (e) {
+        // localStorage quota might be exceeded for large notes, which is why IndexedDB is primary
+        console.warn('LocalStorage backup skipped or full, IndexedDB is handling storage:', e);
+      }
+      triggerAutoSyncDebounced();
+      updateStorageEstimate();
+    },
+    { deep: true }
+  );
+
+  watch(
+    folders,
+    (newFolders) => {
+      saveFoldersToIDB(newFolders);
+      try {
+        localStorage.setItem(STORAGE_KEY_FOLDERS, JSON.stringify(newFolders));
+      } catch (e) {
+        console.warn('LocalStorage backup skipped:', e);
+      }
+      triggerAutoSyncDebounced();
+      updateStorageEstimate();
+    },
+    { deep: true }
+  );
+
+  watch(
+    cloudConfig,
+    (newConfig) => {
+      saveCloudConfigToIDB(newConfig);
+      try {
+        localStorage.setItem(STORAGE_KEY_CLOUD_CONFIG, JSON.stringify(newConfig));
+      } catch (e) {
+        console.warn('LocalStorage backup skipped:', e);
+      }
+    },
+    { deep: true }
+  );
+
+  // Queue of modified entity IDs for incremental sync
+  const pendingModifiedNoteIds = new Set<string>();
+  const pendingModifiedFolderIds = new Set<string>();
+  const pendingDeletedNoteIds = new Set<string>();
+  const pendingDeletedFolderIds = new Set<string>();
+
+  // Trigger Debounced Sync when changes happen in Cloud Mode
+  function triggerAutoSyncDebounced(options?: {
+    noteId?: string;
+    folderId?: string;
+    deletedNoteId?: string;
+    deletedFolderId?: string;
+  }) {
+    if (options?.noteId) pendingModifiedNoteIds.add(options.noteId);
+    if (options?.folderId) pendingModifiedFolderIds.add(options.folderId);
+    if (options?.deletedNoteId) pendingDeletedNoteIds.add(options.deletedNoteId);
+    if (options?.deletedFolderId) pendingDeletedFolderIds.add(options.deletedFolderId);
+
+    if (!cloudConfig.value.enabled || !cloudConfig.value.apiUrl || !cloudConfig.value.autoSync) {
+      if (!cloudConfig.value.enabled) {
+        syncStatus.value = 'unconfigured';
+      }
+      return;
+    }
+
+    syncStatus.value = 'unsynced';
+    if (autoSyncDebounceTimer) clearTimeout(autoSyncDebounceTimer);
+
+    autoSyncDebounceTimer = setTimeout(async () => {
+      if (!cloudConfig.value.enabled || !cloudConfig.value.apiUrl) return;
+      try {
+        syncStatus.value = 'syncing';
+
+        // 1. If only a few notes/folders were modified, do lightweight incremental sync!
+        const totalPending =
+          pendingModifiedNoteIds.size +
+          pendingModifiedFolderIds.size +
+          pendingDeletedNoteIds.size +
+          pendingDeletedFolderIds.size;
+
+        if (totalPending > 0 && totalPending <= 5) {
+          let allOk = true;
+
+          // Sync modified notes individually
+          for (const nid of Array.from(pendingModifiedNoteIds)) {
+            const note = notes.value.find((n) => n.id === nid);
+            if (note) {
+              const res = await saveSingleNoteToCloud(cloudConfig.value, note);
+              if (!res.success) allOk = false;
+            }
+          }
+
+          // Sync deleted notes
+          for (const nid of Array.from(pendingDeletedNoteIds)) {
+            const res = await deleteSingleNoteFromCloud(cloudConfig.value, nid);
+            if (!res.success) allOk = false;
+          }
+
+          // Sync modified folders
+          for (const fid of Array.from(pendingModifiedFolderIds)) {
+            const folder = folders.value.find((f) => f.id === fid);
+            if (folder) {
+              const res = await saveSingleFolderToCloud(cloudConfig.value, folder);
+              if (!res.success) allOk = false;
+            }
+          }
+
+          // Sync deleted folders
+          for (const fid of Array.from(pendingDeletedFolderIds)) {
+            const res = await deleteSingleFolderFromCloud(cloudConfig.value, fid);
+            if (!res.success) allOk = false;
+          }
+
+          pendingModifiedNoteIds.clear();
+          pendingModifiedFolderIds.clear();
+          pendingDeletedNoteIds.clear();
+          pendingDeletedFolderIds.clear();
+
+          if (allOk) {
+            syncStatus.value = 'synced';
+            cloudConfig.value.lastSyncedAt = Date.now();
+            return;
+          }
+        }
+
+        // 2. Fallback: Full two-way smart merge
+        pendingModifiedNoteIds.clear();
+        pendingModifiedFolderIds.clear();
+        pendingDeletedNoteIds.clear();
+        pendingDeletedFolderIds.clear();
+
+        const res = await pushSyncToCloud(cloudConfig.value, notes.value, folders.value, 'merge');
+        if (res.success) {
+          syncStatus.value = 'synced';
+          cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
+        } else {
+          syncStatus.value = 'error';
+        }
+      } catch (e) {
+        syncStatus.value = 'error';
+      }
+    }, 1500);
+  }
+
+  // Active folder object
+  const activeFolder = computed(() => {
+    return folders.value.find((f) => f.id === activeFolderId.value) || folders.value[0] || null;
+  });
+
+  // Active Note object
+  const activeNote = computed(() => {
+    return notes.value.find((n) => n.id === activeNoteId.value) || null;
+  });
+
+  // Hierarchical Folder Helpers
+  function getFolderAncestors(folderId: string): Folder[] {
+    const ancestors: Folder[] = [];
+    let curr = folders.value.find((f) => f.id === folderId);
+    while (curr) {
+      ancestors.unshift(curr);
+      if (curr.parentId) {
+        curr = folders.value.find((f) => f.id === curr!.parentId);
+      } else {
+        break;
+      }
+    }
+    return ancestors;
+  }
+
+  function getFolderFullPath(folderId: string): string {
+    const ancestors = getFolderAncestors(folderId);
+    if (ancestors.length === 0) return '我的笔记';
+    return ['我的笔记', ...ancestors.map((a) => a.name)].join(' > ');
+  }
+
+  function getSubFolders(parentId: string | null = null): Folder[] {
+    return folders.value
+      .filter((f) => (parentId ? f.parentId === parentId : !f.parentId))
+      .sort((a, b) => a.order - b.order);
+  }
+
+  function getAllDescendantFolderIds(folderId: string): string[] {
+    const directChildren = folders.value.filter((f) => f.parentId === folderId);
+    let ids: string[] = directChildren.map((c) => c.id);
+    directChildren.forEach((c) => {
+      ids = ids.concat(getAllDescendantFolderIds(c.id));
+    });
+    return ids;
+  }
+
+  // Folder note counts (including subfolders or direct)
+  const getFolderNoteCount = (folderId: string) => {
+    const allFolderIds = [folderId, ...getAllDescendantFolderIds(folderId)];
+    return notes.value.filter((n) => allFolderIds.includes(n.folderId) && !n.isDeleted).length;
+  };
+
+  const getDirectFolderNoteCount = (folderId: string) => {
+    return notes.value.filter((n) => n.folderId === folderId && !n.isDeleted).length;
+  };
+
+  // Category counts
+  const sharedNotesCount = computed(() => notes.value.filter((n) => n.isShared && !n.isDeleted).length);
+  const starredNotesCount = computed(() => notes.value.filter((n) => n.isStarred && !n.isDeleted).length);
+  const favoriteNotesCount = computed(() => notes.value.filter((n) => n.isFavorite && !n.isDeleted).length);
+  const deletedNotesCount = computed(() => notes.value.filter((n) => n.isDeleted).length);
+
+  // Clickable Breadcrumbs items
+  const breadcrumbItems = computed<BreadcrumbItem[]>(() => {
+    if (searchQuery.value.trim()) {
+      return [
+        {
+          id: 'root-notes',
+          label: '我的笔记',
+          view: 'folder',
+          folderId: folders.value[0]?.id,
+          clickable: true,
+        },
+        {
+          id: 'search-crumb',
+          label: `搜索结果: "${searchQuery.value.trim()}"`,
+          view: 'search',
+          clickable: false,
+        },
+      ];
+    }
+
+    if (currentView.value === 'shared') {
+      return [
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'shared', label: '我的分享', view: 'shared', clickable: false },
+      ];
+    }
+    if (currentView.value === 'starred') {
+      return [
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'starred', label: '我的标星', view: 'starred', clickable: false },
+      ];
+    }
+    if (currentView.value === 'favorite') {
+      return [
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'favorite', label: '我的收藏', view: 'favorite', clickable: false },
+      ];
+    }
+    if (currentView.value === 'trash') {
+      return [
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'trash', label: '我的回收站', view: 'trash', clickable: false },
+      ];
+    }
+    if (currentView.value === 'timeline') {
+      return [
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'timeline', label: '文件时间线', view: 'timeline', clickable: false },
+      ];
+    }
+
+    // Folder view hierarchy
+    const items: BreadcrumbItem[] = [
+      {
+        id: 'root-all',
+        label: '我的笔记',
+        view: 'folder',
+        folderId: folders.value.find((f) => !f.parentId)?.id || folders.value[0]?.id,
+        clickable: true,
+      },
+    ];
+
+    if (activeFolderId.value) {
+      const ancestors = getFolderAncestors(activeFolderId.value);
+      ancestors.forEach((anc, idx) => {
+        const isLast = idx === ancestors.length - 1;
+        items.push({
+          id: anc.id,
+          label: anc.name,
+          view: 'folder',
+          folderId: anc.id,
+          clickable: !isLast,
+        });
+      });
+    }
+
+    return items;
+  });
+
+  // Filtered and sorted notes for current view
+  const displayedNotes = computed(() => {
+    let result = notes.value;
+
+    // View based filtering
+    if (currentView.value === 'trash') {
+      result = result.filter((n) => n.isDeleted);
+    } else {
+      // Non-trash views: exclude deleted
+      result = result.filter((n) => !n.isDeleted);
+
+      if (currentView.value === 'folder') {
+        if (activeFolderId.value) {
+          result = result.filter((n) => n.folderId === activeFolderId.value);
+        }
+      } else if (currentView.value === 'shared') {
+        result = result.filter((n) => n.isShared);
+      } else if (currentView.value === 'starred') {
+        result = result.filter((n) => n.isStarred);
+      } else if (currentView.value === 'favorite') {
+        result = result.filter((n) => n.isFavorite);
+      }
+    }
+
+    // Search filtering
+    if (searchQuery.value.trim()) {
+      const q = searchQuery.value.trim().toLowerCase();
+      result = result.filter(
+        (n) =>
+          n.title.toLowerCase().includes(q) ||
+          n.content.toLowerCase().includes(q) ||
+          n.tags.some((t) => t.toLowerCase().includes(q))
+      );
+    }
+
+    // Secondary filters
+    if (filterOptions.value.starredOnly) {
+      result = result.filter((n) => n.isStarred);
+    }
+    if (filterOptions.value.favoriteOnly) {
+      result = result.filter((n) => n.isFavorite);
+    }
+    if (filterOptions.value.format !== 'all') {
+      result = result.filter((n) => n.format === filterOptions.value.format);
+    }
+    if (filterOptions.value.tag) {
+      result = result.filter((n) => n.tags.includes(filterOptions.value.tag!));
+    }
+
+    // Sorting
+    return [...result].sort((a, b) => {
+      let comparison = 0;
+      if (sortField.value === 'createdAt') {
+        comparison = a.createdAt.localeCompare(b.createdAt);
+      } else if (sortField.value === 'updatedAt') {
+        comparison = a.updatedAt.localeCompare(b.updatedAt);
+      } else if (sortField.value === 'title') {
+        comparison = a.title.localeCompare(b.title, 'zh-CN');
+      }
+      return sortOrder.value === 'desc' ? -comparison : comparison;
+    });
+  });
+
+  // Global Search grouped with priority for current folder & path display
+  const globalSearchResults = computed<{
+    currentFolderMatches: SearchResultItem[];
+    otherMatches: SearchResultItem[];
+    totalCount: number;
+  }>(() => {
+    const q = searchQuery.value.trim().toLowerCase();
+    if (!q) {
+      return { currentFolderMatches: [], otherMatches: [], totalCount: 0 };
+    }
+
+    const availableNotes = notes.value.filter((n) => !n.isDeleted);
+    const currentMatches: SearchResultItem[] = [];
+    const otherMatches: SearchResultItem[] = [];
+
+    availableNotes.forEach((note) => {
+      const titleLower = note.title.toLowerCase();
+      const contentLower = note.content.toLowerCase();
+      const tagMatch = note.tags.some((t) => t.toLowerCase().includes(q));
+
+      if (titleLower.includes(q) || contentLower.includes(q) || tagMatch) {
+        // Build content snippet
+        let snippet = '';
+        const idx = contentLower.indexOf(q);
+        if (idx !== -1) {
+          const start = Math.max(0, idx - 25);
+          const end = Math.min(note.content.length, idx + q.length + 35);
+          snippet = (start > 0 ? '...' : '') + note.content.substring(start, end).replace(/\n/g, ' ') + (end < note.content.length ? '...' : '');
+        } else {
+          snippet = note.content.slice(0, 50).replace(/\n/g, ' ') + '...';
+        }
+
+        const isCurrent = currentView.value === 'folder' && note.folderId === activeFolderId.value;
+        const item: SearchResultItem = {
+          note,
+          folderPath: getFolderFullPath(note.folderId),
+          isCurrentFolder: isCurrent,
+          matchedTitleSnippet: note.title,
+          matchedContentSnippet: snippet,
+        };
+
+        if (isCurrent) {
+          currentMatches.push(item);
+        } else {
+          otherMatches.push(item);
+        }
+      }
+    });
+
+    return {
+      currentFolderMatches: currentMatches,
+      otherMatches: otherMatches,
+      totalCount: currentMatches.length + otherMatches.length,
+    };
+  });
+
+  // Actions
+  function selectFolder(folderId: string) {
+    currentView.value = 'folder';
+    activeFolderId.value = folderId;
+    searchQuery.value = '';
+    selectedNoteIds.value = [];
+  }
+
+  function selectView(view: ViewType) {
+    currentView.value = view;
+    searchQuery.value = '';
+    selectedNoteIds.value = [];
+  }
+
+  function handleBreadcrumbClick(item: BreadcrumbItem) {
+    if (!item.clickable) return;
+    if (item.folderId) {
+      selectFolder(item.folderId);
+    } else if (item.view) {
+      selectView(item.view);
+    }
+  }
+
+  function formatDateTime(d = new Date()) {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function createNewNote(title = '无标题笔记', folderId?: string) {
+    const targetFolder = folderId || activeFolderId.value || (folders.value[0]?.id ?? 'folder-concurrency');
+    const now = formatDateTime();
+    const newNote: Note = {
+      id: 'note-' + Date.now(),
+      title: title,
+      content: `# ${title}\n\n在这里开始编写你的笔记内容...\n`,
+      folderId: targetFolder,
+      createdAt: now,
+      updatedAt: now,
+      isStarred: false,
+      isFavorite: false,
+      isShared: false,
+      isDeleted: false,
+      tags: [],
+      format: 'markdown',
+    };
+
+    notes.value.unshift(newNote);
+    activeNoteId.value = newNote.id;
+    isEditorOpen.value = true;
+    editorMode.value = 'split';
+    showToast('新建笔记成功');
+    triggerAutoSyncDebounced({ noteId: newNote.id });
+    return newNote;
+  }
+
+  function createNewMindMap(title = '无标题思维导图', folderId?: string) {
+    const targetFolder = folderId || activeFolderId.value || (folders.value[0]?.id ?? 'folder-concurrency');
+    const now = formatDateTime();
+    const defaultMindMapJson = {
+      root: {
+        data: { text: title, expandState: 'expand' },
+        children: [
+          {
+            data: { text: '分支主题 1', priority: 1 },
+            children: [
+              { data: { text: '子主题 1.1' } },
+              { data: { text: '子主题 1.2' } }
+            ]
+          },
+          {
+            data: { text: '分支主题 2', priority: 2 },
+            children: [
+              { data: { text: '子主题 2.1' } }
+            ]
+          },
+          {
+            data: { text: '分支主题 3', priority: 3 },
+            children: [
+              { data: { text: '子主题 3.1' } }
+            ]
+          }
+        ]
+      },
+      template: 'default',
+      theme: 'fresh-green'
+    };
+
+    const newNote: Note = {
+      id: 'note-' + Date.now(),
+      title: title,
+      content: JSON.stringify(defaultMindMapJson, null, 2),
+      folderId: targetFolder,
+      createdAt: now,
+      updatedAt: now,
+      isStarred: false,
+      isFavorite: false,
+      isShared: false,
+      isDeleted: false,
+      tags: ['思维导图'],
+      format: 'mindmap',
+      type: 'mindmap',
+    };
+
+    notes.value.unshift(newNote);
+    activeNoteId.value = newNote.id;
+    isEditorOpen.value = true;
+    showToast('新建思维导图成功');
+    triggerAutoSyncDebounced({ noteId: newNote.id });
+    return newNote;
+  }
+
+  function openNoteEditor(note: Note, mode: 'split' | 'edit' | 'preview' = 'split') {
+    activeNoteId.value = note.id;
+    editorMode.value = mode;
+    isEditorOpen.value = true;
+  }
+
+  function closeEditor() {
+    isEditorOpen.value = false;
+  }
+
+  function updateNote(id: string, updates: Partial<Note>) {
+    const idx = notes.value.findIndex((n) => n.id === id);
+    if (idx !== -1) {
+      notes.value[idx] = {
+        ...notes.value[idx],
+        ...updates,
+        updatedAt: formatDateTime(),
+      };
+      triggerAutoSyncDebounced({ noteId: id });
+    }
+  }
+
+  function toggleStar(noteId: string) {
+    const note = notes.value.find((n) => n.id === noteId);
+    if (note) {
+      note.isStarred = !note.isStarred;
+      showToast(note.isStarred ? '已添加标星' : '已取消标星');
+      triggerAutoSyncDebounced({ noteId });
+    }
+  }
+
+  function toggleFavorite(noteId: string) {
+    const note = notes.value.find((n) => n.id === noteId);
+    if (note) {
+      note.isFavorite = !note.isFavorite;
+      showToast(note.isFavorite ? '已加入收藏' : '已移出收藏');
+      triggerAutoSyncDebounced({ noteId });
+    }
+  }
+
+  function moveToTrash(noteId: string) {
+    const note = notes.value.find((n) => n.id === noteId);
+    if (note) {
+      note.isDeleted = true;
+      note.deletedAt = formatDateTime();
+      if (activeNoteId.value === noteId) {
+        isEditorOpen.value = false;
+      }
+      showToast('已移入回收站');
+      triggerAutoSyncDebounced({ noteId });
+    }
+  }
+
+  function restoreFromTrash(noteId: string) {
+    const note = notes.value.find((n) => n.id === noteId);
+    if (note) {
+      note.isDeleted = false;
+      note.deletedAt = undefined;
+      showToast('已成功还原笔记');
+      triggerAutoSyncDebounced({ noteId });
+    }
+  }
+
+  function permanentlyDeleteNote(noteId: string) {
+    notes.value = notes.value.filter((n) => n.id !== noteId);
+    showToast('笔记已彻底删除');
+    triggerAutoSyncDebounced({ deletedNoteId: noteId });
+  }
+
+  function emptyTrash() {
+    notes.value = notes.value.filter((n) => !n.isDeleted);
+    showToast('回收站已清空');
+    triggerAutoSyncDebounced();
+  }
+
+  // Create folder or subfolder
+  function createFolder(name: string, parentId: string | null = null) {
+    if (!name.trim()) return;
+    const newFolder: Folder = {
+      id: 'folder-' + Date.now(),
+      name: name.trim(),
+      parentId: parentId,
+      order: folders.value.length + 1,
+      isOpen: true,
+    };
+    folders.value.push(newFolder);
+
+    // If has parent, ensure parent is open
+    if (parentId) {
+      const parent = folders.value.find((f) => f.id === parentId);
+      if (parent) parent.isOpen = true;
+    }
+
+    activeFolderId.value = newFolder.id;
+    currentView.value = 'folder';
+    showToast(parentId ? `子文件夹 "${name}" 创建成功` : `文件夹 "${name}" 创建成功`);
+    triggerAutoSyncDebounced({ folderId: newFolder.id });
+  }
+
+  function deleteFolder(folderId: string) {
+    const folder = folders.value.find((f) => f.id === folderId);
+    if (!folder) return;
+
+    // Collect all descendant folder IDs
+    const allFolderIds = [folderId, ...getAllDescendantFolderIds(folderId)];
+
+    // Move all notes inside these folders to trash
+    notes.value.forEach((n) => {
+      if (allFolderIds.includes(n.folderId)) {
+        n.isDeleted = true;
+      }
+    });
+
+    folders.value = folders.value.filter((f) => !allFolderIds.includes(f.id));
+    if (allFolderIds.includes(activeFolderId.value)) {
+      activeFolderId.value = folders.value[0]?.id || '';
+    }
+    showToast(`文件夹 "${folder.name}" 及其子内容已删除`);
+    triggerAutoSyncDebounced({ deletedFolderId: folderId });
+  }
+
+  function renameFolder(folderId: string, newName: string) {
+    const folder = folders.value.find((f) => f.id === folderId);
+    if (folder && newName.trim()) {
+      folder.name = newName.trim();
+      showToast('文件夹重命名成功');
+      triggerAutoSyncDebounced({ folderId });
+    }
+  }
+
+  // Move a folder or reorder relative to target folder / parent
+  function moveFolder(
+    draggedFolderId: string,
+    targetParentId: string | null,
+    position: 'inside' | 'before' | 'after' = 'inside',
+    targetFolderId?: string
+  ) {
+    if (draggedFolderId === targetFolderId && position !== 'inside') return;
+    if (draggedFolderId === targetParentId && position === 'inside') return;
+
+    const draggedFolder = folders.value.find((f) => f.id === draggedFolderId);
+    if (!draggedFolder) return;
+
+    // Guard: cannot move folder into its own descendant
+    const descendants = getAllDescendantFolderIds(draggedFolderId);
+    if (targetParentId && (descendants.includes(targetParentId) || targetParentId === draggedFolderId)) {
+      showToast('不能将文件夹移动至其自身的子文件夹中');
+      return;
+    }
+    if (targetFolderId && (descendants.includes(targetFolderId) || targetFolderId === draggedFolderId)) {
+      showToast('不能将文件夹移动至其自身的子文件夹中');
+      return;
+    }
+
+    if (position === 'inside') {
+      const oldParentId = draggedFolder.parentId;
+      draggedFolder.parentId = targetParentId;
+      
+      // Place at the end of the new sibling list
+      const siblings = folders.value.filter((f) => f.id !== draggedFolderId && (f.parentId || null) === (targetParentId || null));
+      const maxOrder = siblings.reduce((max, f) => Math.max(max, f.order || 0), 0);
+      draggedFolder.order = maxOrder + 1;
+
+      if (targetParentId) {
+        const parent = folders.value.find((f) => f.id === targetParentId);
+        if (parent) parent.isOpen = true;
+        if (oldParentId !== targetParentId) {
+          showToast(`已将 "${draggedFolder.name}" 移动至 "${parent?.name || '文件夹'}"`);
+        }
+      } else {
+        if (oldParentId !== null) {
+          showToast(`已将 "${draggedFolder.name}" 移动至根目录`);
+        }
+      }
+    } else if (targetFolderId && (position === 'before' || position === 'after')) {
+      const targetFolder = folders.value.find((f) => f.id === targetFolderId);
+      if (!targetFolder) return;
+
+      const newParentId = targetFolder.parentId || null;
+      draggedFolder.parentId = newParentId;
+
+      // Get siblings list (excluding draggedFolder)
+      const siblings = folders.value
+        .filter((f) => f.id !== draggedFolderId && (f.parentId || null) === newParentId)
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      const targetIndex = siblings.findIndex((f) => f.id === targetFolderId);
+      if (targetIndex === -1) return;
+
+      const insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
+      siblings.splice(insertIndex, 0, draggedFolder);
+
+      // Re-assign 1-based order to all siblings
+      siblings.forEach((f, idx) => {
+        f.order = idx + 1;
+      });
+
+      showToast(`已调整文件夹 "${draggedFolder.name}" 顺序`);
+    }
+  }
+
+  function toggleFolderCollapse(folderId: string) {
+    const folder = folders.value.find((f) => f.id === folderId);
+    if (folder) {
+      folder.isOpen = !folder.isOpen;
+    }
+  }
+
+  function openShareModal(note: Note) {
+    sharingNote.value = note;
+    if (!note.shareUrl) {
+      note.shareUrl = `https://maple-note.cloud/s/${Math.random().toString(36).substring(2, 10)}`;
+      note.isShared = true;
+    }
+    isShareModalOpen.value = true;
+  }
+
+  function openMoveModal(note: Note) {
+    noteToMove.value = note;
+    isMoveModalOpen.value = true;
+  }
+
+  function moveNoteToFolder(noteId: string, targetFolderId: string) {
+    const note = notes.value.find((n) => n.id === noteId);
+    if (note) {
+      note.folderId = targetFolderId;
+      isMoveModalOpen.value = false;
+      const targetF = folders.value.find((f) => f.id === targetFolderId);
+      showToast(`已将笔记移动到 "${targetF?.name || '文件夹'}"`);
+    }
+  }
+
+  function duplicateNote(note: Note) {
+    const now = formatDateTime();
+    const copy: Note = {
+      ...note,
+      id: 'note-' + Date.now(),
+      title: `${note.title} (副本)`,
+      createdAt: now,
+      updatedAt: now,
+      isShared: false,
+      shareUrl: undefined,
+    };
+    notes.value.unshift(copy);
+    showToast('已创建笔记副本');
+  }
+
+  async function exportNoteAsMarkdown(note: Note) {
+    if (note.format === 'mindmap' || note.type === 'mindmap') {
+      try {
+        const mindData = JSON.parse(note.content);
+        await exportToXMind(mindData, note.title || '思维导图');
+        showToast('XMind 文件已导出');
+      } catch (e) {
+        // Fallback: export as json/km
+        const blob = new Blob([note.content], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${note.title || '思维导图'}.km`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('思维导图文件已导出');
+      }
+    } else {
+      const blob = new Blob([note.content], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${note.title || '未命名笔记'}.md`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Markdown 文件已导出');
+    }
+  }
+
+  function importMarkdownFile(filename: string, content: string, targetFolderId?: string) {
+    const folder = targetFolderId || activeFolderId.value || folders.value[0]?.id || 'folder-concurrency';
+    const now = formatDateTime();
+    const title = filename.replace(/\.(md|txt|markdown)$/i, '') || '导入的笔记';
+    const newNote: Note = {
+      id: 'note-' + Date.now() + Math.random().toString(36).substring(2, 5),
+      title,
+      content,
+      folderId: folder,
+      createdAt: now,
+      updatedAt: now,
+      isStarred: false,
+      isFavorite: false,
+      isShared: false,
+      isDeleted: false,
+      tags: ['导入'],
+      format: 'markdown',
+      type: 'markdown',
+    };
+    notes.value.unshift(newNote);
+  }
+
+  function importMindMapFile(filename: string, content: string, targetFolderId?: string) {
+    const folder = targetFolderId || activeFolderId.value || folders.value[0]?.id || 'folder-concurrency';
+    const now = formatDateTime();
+    const title = filename.replace(/\.(xmind|km|json)$/i, '') || '导入的思维导图';
+    const newNote: Note = {
+      id: 'note-' + Date.now() + Math.random().toString(36).substring(2, 5),
+      title,
+      content,
+      folderId: folder,
+      createdAt: now,
+      updatedAt: now,
+      isStarred: false,
+      isFavorite: false,
+      isShared: false,
+      isDeleted: false,
+      tags: ['思维导图', '导入'],
+      format: 'mindmap',
+      type: 'mindmap',
+    };
+    notes.value.unshift(newNote);
+    return newNote;
+  }
+
+  function navigateToNoteFromSearch(item: SearchResultItem) {
+    selectFolder(item.note.folderId);
+    openNoteEditor(item.note, 'split');
+    searchQuery.value = '';
+  }
+
+  // Cloud API Actions
+  function openCloudSyncModal() {
+    isCloudSyncModalOpen.value = true;
+  }
+
+  async function testCloudConnection(customConfig?: CloudConfig) {
+    const config = customConfig || cloudConfig.value;
+    return await testCloudApi(config);
+  }
+
+  async function checkCloudDiff(customConfig?: CloudConfig): Promise<{ success: boolean; message: string; diff?: SyncDiffResult }> {
+    const config = customConfig || cloudConfig.value;
+    if (!config.apiUrl) {
+      return { success: false, message: '请先填写云端 API 地址' };
+    }
+
+    const res = await fetchRemoteData(config);
+    if (!res.success || !res.data) {
+      return { success: false, message: res.message || '获取云端数据失败' };
+    }
+
+    const diff = calculateSyncDiff(notes.value, folders.value, res.data.notes, res.data.folders);
+    syncDiff.value = diff;
+    return { success: true, message: '差异检测完成', diff };
+  }
+
+  async function performCloudSync(mode: 'merge' | 'push_all' | 'pull_all' = 'merge', customConfig?: CloudConfig) {
+    const config = customConfig || cloudConfig.value;
+    if (!config.apiUrl) {
+      showToast('未配置云端 API 地址');
+      return { success: false, message: '未配置云端 API 地址' };
+    }
+
+    isSyncing.value = true;
+    syncStatus.value = 'syncing';
+
+    try {
+      const res = await pushSyncToCloud(config, notes.value, folders.value, mode);
+      if (res.success) {
+        if (res.mergedNotes) {
+          notes.value = res.mergedNotes;
+        }
+        if (res.mergedFolders) {
+          folders.value = res.mergedFolders;
+        }
+        cloudConfig.value.enabled = true;
+        cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
+        syncStatus.value = 'synced';
+        syncDiff.value = null;
+        showToast(res.message || '数据已成功同步至云端');
+        return { success: true, message: res.message };
+      } else {
+        syncStatus.value = 'error';
+        showToast(res.message || '云端同步失败');
+        return { success: false, message: res.message };
+      }
+    } catch (err: any) {
+      syncStatus.value = 'error';
+      showToast(`同步异常: ${err.message}`);
+      return { success: false, message: err.message };
+    } finally {
+      isSyncing.value = false;
+    }
+  }
+
+  function saveCloudConfig(newConfig: Partial<CloudConfig>) {
+    cloudConfig.value = {
+      ...cloudConfig.value,
+      ...newConfig,
+    };
+    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+      syncStatus.value = 'synced';
+    } else {
+      syncStatus.value = 'unconfigured';
+    }
+  }
+
+  function clearCloudConfig() {
+    cloudConfig.value = {
+      enabled: false,
+      apiUrl: '',
+      apiToken: '',
+      userId: '',
+      autoSync: true,
+      lastSyncedAt: null,
+    };
+    syncStatus.value = 'unconfigured';
+    syncDiff.value = null;
+    showToast('已断开云端连接，当前处于纯本地存储模式');
+  }
+
+  return {
+    folders,
+    notes,
+    currentView,
+    activeFolderId,
+    activeFolder,
+    activeNoteId,
+    activeNote,
+    searchQuery,
+    isEditorOpen,
+    editorMode,
+    sortField,
+    sortOrder,
+    filterOptions,
+    selectedNoteIds,
+    displayedNotes,
+    breadcrumbItems,
+    globalSearchResults,
+    isImportModalOpen,
+    isNewFolderModalOpen,
+    targetParentFolderForNew,
+    isShareModalOpen,
+    sharingNote,
+    isMoveModalOpen,
+    noteToMove,
+    isRenameNoteModalOpen,
+    noteToRename,
+    toastMessage,
+    // Cloud Sync State & Operations
+    cloudConfig,
+    isCloudSyncModalOpen,
+    syncStatus,
+    syncDiff,
+    isSyncing,
+    openCloudSyncModal,
+    testCloudConnection,
+    checkCloudDiff,
+    performCloudSync,
+    saveCloudConfig,
+    clearCloudConfig,
+    // helpers & counts
+    getFolderFullPath,
+    getFolderAncestors,
+    getSubFolders,
+    getFolderNoteCount,
+    getDirectFolderNoteCount,
+    sharedNotesCount,
+    starredNotesCount,
+    favoriteNotesCount,
+    deletedNotesCount,
+    // methods
+    showToast,
+    selectFolder,
+    selectView,
+    handleBreadcrumbClick,
+    createNewNote,
+    createNewMindMap,
+    openNoteEditor,
+    closeEditor,
+    updateNote,
+    toggleStar,
+    toggleFavorite,
+    moveToTrash,
+    restoreFromTrash,
+    permanentlyDeleteNote,
+    emptyTrash,
+    createFolder,
+    deleteFolder,
+    renameFolder,
+    moveFolder,
+    toggleFolderCollapse,
+    openShareModal,
+    openMoveModal,
+    moveNoteToFolder,
+    duplicateNote,
+    exportNoteAsMarkdown,
+    importMarkdownFile,
+    importMindMapFile,
+    navigateToNoteFromSearch,
+    // IndexedDB storage info
+    isStorageReady,
+    storageInfo,
+    updateStorageEstimate,
+  };
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>枫叶云笔记</title>
+    <meta name="description" content="枫叶云笔记 - 高效知识与笔记管理" />
+    <meta property="og:title" content="枫叶云笔记" />
+    <meta property="og:description" content="枫叶云笔记 - 高效知识与笔记管理" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        function patch(proto) {
+          if (!proto) return;
+          try {
+            Object.defineProperty(proto, '__KityMethodClass', {
+              get: function() { return undefined; },
+              set: function() {},
+              configurable: true,
+              enumerable: false
+            });
+            Object.defineProperty(proto, '__KityMethodName', {
+              get: function() { return undefined; },
+              set: function() {},
+              configurable: true,
+              enumerable: false
+            });
+          } catch(e) {}
+        }
+        patch(Boolean.prototype);
+        patch(Number.prototype);
+        patch(String.prototype);
+      })();
+    </script>
+    <script src="/libs/kity.min.js"></script>
+    <script src="/libs/kityminder.core.min.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
