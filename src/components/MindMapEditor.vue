@@ -2254,9 +2254,21 @@ onUnmounted(() => {
       ]"
     >
       <!-- Top Title & Global Controls Bar -->
-      <div class="h-14 px-4 sm:px-6 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none z-30">
-        <!-- Title & Folder info -->
-        <div class="flex items-center gap-3 flex-1 mr-4">
+      <div class="h-14 px-3 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none z-30">
+        <!-- Close button, Title & Folder info -->
+        <div class="flex items-center gap-2.5 sm:gap-3 flex-1 mr-3 sm:mr-4 min-w-0">
+          <!-- Close Editor Button at top-left corner -->
+          <button
+            id="btn-close-mindmap"
+            @click="emit('close')"
+            class="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer shrink-0"
+            title="关闭思维导图"
+          >
+            <X class="w-5 h-5" />
+          </button>
+
+          <div class="h-4 w-px bg-gray-200 shrink-0"></div>
+
           <!-- Green Mindmap File Icon matching image.png -->
           <MindmapIcon size="sm" />
 
@@ -2331,16 +2343,6 @@ onUnmounted(() => {
             <Save class="w-3.5 h-3.5" />
             <span class="hidden sm:inline">保存</span>
             <kbd class="text-[9px] font-mono text-emerald-500 hidden sm:inline">{{ isMac ? '⌘S' : 'Ctrl+S' }}</kbd>
-          </button>
-
-          <!-- Close Editor Button -->
-          <button
-            id="btn-close-mindmap"
-            @click="emit('close')"
-            class="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors ml-1 cursor-pointer"
-            title="关闭"
-          >
-            <X class="w-5 h-5" />
           </button>
         </div>
       </div>

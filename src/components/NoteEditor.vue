@@ -371,9 +371,21 @@ async function copyContent() {
       ]"
     >
       <!-- Editor Top Bar -->
-      <div class="h-14 px-4 sm:px-6 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none">
-        <!-- Title & Folder info -->
-        <div class="flex items-center gap-3 flex-1 mr-4">
+      <div class="h-14 px-3 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none">
+        <!-- Close button, Title & Folder info -->
+        <div class="flex items-center gap-2.5 sm:gap-3 flex-1 mr-3 sm:mr-4 min-w-0">
+          <!-- Close Editor Button at top-left corner -->
+          <button
+            id="btn-close-editor"
+            @click="emit('close')"
+            class="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer shrink-0"
+            title="关闭编辑器"
+          >
+            <X class="w-5 h-5" />
+          </button>
+
+          <div class="h-4 w-px bg-gray-200 shrink-0"></div>
+
           <div class="w-7 h-7 rounded bg-[#ea580c] text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
             <span>M↓</span>
           </div>
@@ -496,16 +508,6 @@ async function copyContent() {
           >
             <Minimize2 v-if="isFullscreen" class="w-4 h-4" />
             <Maximize2 v-else class="w-4 h-4" />
-          </button>
-
-          <!-- Close Editor Button -->
-          <button
-            id="btn-close-editor"
-            @click="emit('close')"
-            class="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-colors ml-1 cursor-pointer"
-            title="关闭"
-          >
-            <X class="w-5 h-5" />
           </button>
         </div>
       </div>
