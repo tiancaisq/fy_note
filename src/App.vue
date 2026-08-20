@@ -339,17 +339,7 @@ onUnmounted(() => {
         :current-view="currentView"
         :breadcrumb-items="breadcrumbItems"
         :get-folder-full-path="getFolderFullPath"
-        @open-note="(n) => openNoteEditor(n, 'split')"
-        @create-new-note="createNewNote()"
-        @create-new-mind-map="createNewMindMap()"
-        @breadcrumb-click="handleBreadcrumbClick"
-        @toggle-star="toggleStar"
-        @toggle-favorite="toggleFavorite"
-        @move-to-trash="moveToTrash"
-        @open-share-modal="openShareModal"
-        @open-move-modal="openMoveModal"
         @switch-to-table-view="selectView('folder')"
-        @select-folder="selectFolder"
       />
 
       <NoteList
