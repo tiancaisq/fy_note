@@ -428,7 +428,7 @@ onUnmounted(() => {
           >
             <!-- Left: Spacer matching Chevron, Folder Icon & Name -->
             <div class="flex items-center gap-1.5 truncate flex-1 mr-1">
-              <!-- Spacer matching Chevron button width (18px) for pixel-perfect vertical alignment with FolderTreeItem -->
+              <!-- Spacer matching Chevron button width for pixel-perfect vertical alignment with FolderTreeItem -->
               <span class="p-0.5 inline-flex items-center justify-center shrink-0">
                 <span class="w-3.5 h-3.5 inline-block"></span>
               </span>
@@ -445,15 +445,6 @@ onUnmounted(() => {
               />
 
               <span class="truncate text-[13px] tracking-tight">{{ folder.name }}</span>
-
-              <!-- Subfolder parent tag hint -->
-              <span
-                v-if="getParentFolderName(folder)"
-                class="text-[10px] text-gray-400 bg-gray-100/90 px-1 py-0.5 rounded truncate max-w-[80px] shrink-0 font-normal ml-1"
-                :title="'所属父目录: ' + (getFolderFullPath ? getFolderFullPath(folder.id) : getParentFolderName(folder))"
-              >
-                {{ getParentFolderName(folder) }}
-              </span>
             </div>
 
             <!-- Right: Note count & Quick Unpin -->
