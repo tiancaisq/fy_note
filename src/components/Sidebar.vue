@@ -29,6 +29,7 @@ const props = defineProps<{
   frequentFolders?: Folder[];
   isFolderFrequent?: (id: string) => boolean;
   getFolderFullPath?: (id: string) => string;
+  getFolderAncestors?: (id: string) => Folder[];
   currentView: ViewType;
   activeFolderId: string;
   getFolderNoteCount: (id: string) => number;
@@ -81,6 +82,45 @@ const rootFolders = computed(() => {
   return props.folders
     .filter((f) => !f.parentId)
     .sort((a, b) => a.order - b.order);
+});
+
+// Calculate folder hierarchy depth (0 for root folder, 1 for subfolder, etc.)
+function getFolderLevel(folderId: string): number {
+  if (props.getFolderAncestors) {
+    const ancestors = props.getFolderAncestors(folderId);
+    return Math.max(0, ancestors.length - 1);
+  }
+  let depth = 0;
+  let curr = props.folders.find((f) => f.id === folderId);
+  while (curr && curr.parentId) {
+    depth++;
+    curr = props.folders.find((f) => f.id === curr!.parentId);
+    if (depth > 10) break;
+  }
+  return depth;
+}
+
+// Get immediate parent folder name for subfolders
+function getParentFolderName(folder: Folder): string | null {
+  if (!folder.parentId) return null;
+  const parent = props.folders.find((f) => f.id === folder.parentId);
+  return parent ? parent.name : null;
+}
+
+// Flat list sorted hierarchically for the add menu
+const hierarchicalFolders = computed(() => {
+  const result: Folder[] = [];
+  function traverse(parentId: string | null = null) {
+    const children = props.folders
+      .filter((f) => (parentId ? f.parentId === parentId : !f.parentId))
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    for (const child of children) {
+      result.push(child);
+      traverse(child.id);
+    }
+  }
+  traverse(null);
+  return result.length > 0 ? result : props.folders;
 });
 
 function toggleMyNotes() {
@@ -335,7 +375,7 @@ onUnmounted(() => {
             <!-- Quick Add / Pin Folder Popover Menu -->
             <div
               v-if="isAddFrequentMenuOpen"
-              class="absolute right-0 top-6 w-52 bg-white rounded-lg shadow-xl border border-gray-100 py-1.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-100"
+              class="absolute right-0 top-6 w-56 bg-white rounded-lg shadow-xl border border-gray-100 py-1.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-100"
               @click.stop
             >
               <div class="px-2.5 py-1 text-[11px] font-semibold text-gray-400 border-b border-gray-50 flex items-center justify-between">
@@ -344,10 +384,11 @@ onUnmounted(() => {
               </div>
               <div class="max-h-56 overflow-y-auto py-1 space-y-0.5">
                 <div
-                  v-for="folder in folders"
+                  v-for="folder in hierarchicalFolders"
                   :key="folder.id"
                   @click="emit('toggleFrequentFolder', folder.id)"
-                  class="px-2.5 py-1.5 hover:bg-amber-50/60 flex items-center justify-between cursor-pointer rounded transition-colors text-gray-700 hover:text-amber-800"
+                  :style="{ paddingLeft: `${8 + getFolderLevel(folder.id) * 12}px` }"
+                  class="pr-2.5 py-1.5 hover:bg-amber-50/60 flex items-center justify-between cursor-pointer rounded transition-colors text-gray-700 hover:text-amber-800"
                 >
                   <div class="flex items-center gap-1.5 truncate mr-2">
                     <FolderIcon class="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -377,15 +418,22 @@ onUnmounted(() => {
             :id="'frequent-folder-item-' + folder.id"
             @click="emit('selectFolder', folder.id)"
             :title="getFolderFullPath ? getFolderFullPath(folder.id) : folder.name"
+            :style="{ paddingLeft: `${8 + getFolderLevel(folder.id) * 14}px` }"
             :class="[
-              'group relative flex items-center justify-between px-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
+              'group relative flex items-center justify-between pr-2 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
               currentView === 'folder' && activeFolderId === folder.id
                 ? 'bg-[#e8f1fd] text-blue-600 font-medium shadow-xs'
                 : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
             ]"
           >
-            <!-- Left: Folder Icon & Name -->
-            <div class="flex items-center gap-2 truncate flex-1 mr-1">
+            <!-- Left: Spacer matching Chevron, Folder Icon & Name -->
+            <div class="flex items-center gap-1.5 truncate flex-1 mr-1">
+              <!-- Spacer matching Chevron button width (18px) for pixel-perfect vertical alignment with FolderTreeItem -->
+              <span class="p-0.5 inline-flex items-center justify-center shrink-0">
+                <span class="w-3.5 h-3.5 inline-block"></span>
+              </span>
+
+              <!-- Folder Icon -->
               <component
                 :is="currentView === 'folder' && activeFolderId === folder.id ? FolderOpen : FolderIcon"
                 :class="[
@@ -395,7 +443,17 @@ onUnmounted(() => {
                     : 'text-amber-500 fill-amber-500/20'
                 ]"
               />
+
               <span class="truncate text-[13px] tracking-tight">{{ folder.name }}</span>
+
+              <!-- Subfolder parent tag hint -->
+              <span
+                v-if="getParentFolderName(folder)"
+                class="text-[10px] text-gray-400 bg-gray-100/90 px-1 py-0.5 rounded truncate max-w-[80px] shrink-0 font-normal ml-1"
+                :title="'所属父目录: ' + (getFolderFullPath ? getFolderFullPath(folder.id) : getParentFolderName(folder))"
+              >
+                {{ getParentFolderName(folder) }}
+              </span>
             </div>
 
             <!-- Right: Note count & Quick Unpin -->

@@ -320,6 +320,7 @@ onUnmounted(() => {
         :frequent-folders="frequentFolders"
         :is-folder-frequent="isFolderFrequent"
         :get-folder-full-path="getFolderFullPath"
+        :get-folder-ancestors="getFolderAncestors"
         :current-view="currentView"
         :active-folder-id="activeFolderId"
         :get-folder-note-count="getFolderNoteCount"
