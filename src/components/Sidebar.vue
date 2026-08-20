@@ -410,7 +410,7 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Frequent Folders List -->
+        <!-- Frequent Folders List (Flattened as Level 1 Items) -->
         <div v-show="isFrequentFoldersExpanded" class="mt-0.5 space-y-0.5">
           <div
             v-for="folder in (frequentFolders || [])"
@@ -418,22 +418,15 @@ onUnmounted(() => {
             :id="'frequent-folder-item-' + folder.id"
             @click="emit('selectFolder', folder.id)"
             :title="getFolderFullPath ? getFolderFullPath(folder.id) : folder.name"
-            :style="{ paddingLeft: `${8 + getFolderLevel(folder.id) * 14}px` }"
             :class="[
-              'group relative flex items-center justify-between pr-2 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
+              'group relative flex items-center justify-between px-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
               currentView === 'folder' && activeFolderId === folder.id
                 ? 'bg-[#e8f1fd] text-blue-600 font-medium shadow-xs'
                 : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
             ]"
           >
-            <!-- Left: Spacer matching Chevron, Folder Icon & Name -->
-            <div class="flex items-center gap-1.5 truncate flex-1 mr-1">
-              <!-- Spacer matching Chevron button width for pixel-perfect vertical alignment with FolderTreeItem -->
-              <span class="p-0.5 inline-flex items-center justify-center shrink-0">
-                <span class="w-3.5 h-3.5 inline-block"></span>
-              </span>
-
-              <!-- Folder Icon -->
+            <!-- Left: Folder Icon & Name (Flat Level 1) -->
+            <div class="flex items-center gap-2.5 truncate flex-1 mr-1">
               <component
                 :is="currentView === 'folder' && activeFolderId === folder.id ? FolderOpen : FolderIcon"
                 :class="[
