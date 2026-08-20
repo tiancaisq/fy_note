@@ -401,15 +401,29 @@ export function useNotes() {
   const favoriteNotesCount = computed(() => notes.value.filter((n) => n.isFavorite && !n.isDeleted).length);
   const deletedNotesCount = computed(() => notes.value.filter((n) => n.isDeleted).length);
 
+  // Root folders (sorted top-to-bottom according to folder.order)
+  const rootFolders = computed<Folder[]>(() => {
+    return folders.value
+      .filter((f) => !f.parentId)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+  });
+
+  // Top-most / first root folder ID (the first root folder visible at the top of the sidebar)
+  const firstRootFolderId = computed<string>(() => {
+    return rootFolders.value[0]?.id || folders.value[0]?.id || '';
+  });
+
   // Clickable Breadcrumbs items
   const breadcrumbItems = computed<BreadcrumbItem[]>(() => {
+    const defaultRootFolderId = firstRootFolderId.value;
+
     if (searchQuery.value.trim()) {
       return [
         {
           id: 'root-notes',
           label: '我的笔记',
           view: 'folder',
-          folderId: folders.value[0]?.id,
+          folderId: defaultRootFolderId,
           clickable: true,
         },
         {
@@ -423,31 +437,31 @@ export function useNotes() {
 
     if (currentView.value === 'shared') {
       return [
-        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
         { id: 'shared', label: '我的分享', view: 'shared', clickable: false },
       ];
     }
     if (currentView.value === 'starred') {
       return [
-        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
         { id: 'starred', label: '我的标星', view: 'starred', clickable: false },
       ];
     }
     if (currentView.value === 'favorite') {
       return [
-        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
         { id: 'favorite', label: '我的收藏', view: 'favorite', clickable: false },
       ];
     }
     if (currentView.value === 'trash') {
       return [
-        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
         { id: 'trash', label: '我的回收站', view: 'trash', clickable: false },
       ];
     }
     if (currentView.value === 'timeline') {
       return [
-        { id: 'root', label: '我的笔记', view: 'folder', folderId: folders.value[0]?.id, clickable: true },
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
         { id: 'timeline', label: '文件时间线', view: 'timeline', clickable: false },
       ];
     }
@@ -458,7 +472,7 @@ export function useNotes() {
         id: 'root-all',
         label: '我的笔记',
         view: 'folder',
-        folderId: folders.value.find((f) => !f.parentId)?.id || folders.value[0]?.id,
+        folderId: defaultRootFolderId,
         clickable: true,
       },
     ];
@@ -615,7 +629,14 @@ export function useNotes() {
 
   function handleBreadcrumbClick(item: BreadcrumbItem) {
     if (!item.clickable) return;
-    if (item.folderId) {
+    if (item.id === 'root-all' || item.id === 'root' || item.id === 'root-notes') {
+      const targetId = firstRootFolderId.value;
+      if (targetId) {
+        selectFolder(targetId);
+      } else {
+        selectView('folder');
+      }
+    } else if (item.folderId) {
       selectFolder(item.folderId);
     } else if (item.view) {
       selectView(item.view);
@@ -628,7 +649,7 @@ export function useNotes() {
   }
 
   function createNewNote(title = '无标题笔记', folderId?: string) {
-    const targetFolder = folderId || activeFolderId.value || (folders.value[0]?.id ?? 'folder-concurrency');
+    const targetFolder = folderId || activeFolderId.value || firstRootFolderId.value || 'folder-concurrency';
     const now = formatDateTime();
     const newNote: Note = {
       id: 'note-' + Date.now(),
@@ -655,7 +676,7 @@ export function useNotes() {
   }
 
   function createNewMindMap(title = '无标题思维导图', folderId?: string) {
-    const targetFolder = folderId || activeFolderId.value || (folders.value[0]?.id ?? 'folder-concurrency');
+    const targetFolder = folderId || activeFolderId.value || firstRootFolderId.value || 'folder-concurrency';
     const now = formatDateTime();
     const defaultMindMapJson = {
       root: {
@@ -1195,6 +1216,8 @@ export function useNotes() {
     saveCloudConfig,
     clearCloudConfig,
     // helpers & counts
+    rootFolders,
+    firstRootFolderId,
     getFolderFullPath,
     getFolderAncestors,
     getSubFolders,
