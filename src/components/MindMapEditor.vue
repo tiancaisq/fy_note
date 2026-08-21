@@ -598,7 +598,130 @@ function handleEditingTab(e: KeyboardEvent) {
   }
 }
 
-// Arrow Key Navigation between Mind Map Nodes
+// Helper to get geometric center coordinates of a MinderNode
+function getNodeCenter(node: any): { x: number; y: number } {
+  if (!node) return { x: 0, y: 0 };
+  try {
+    if (typeof node.getLayoutBox === 'function') {
+      const box = node.getLayoutBox();
+      if (box) {
+        const cx = typeof box.cx === 'number' && !isNaN(box.cx) ? box.cx : ((box.x || 0) + (box.width || 0) / 2);
+        const cy = typeof box.cy === 'number' && !isNaN(box.cy) ? box.cy : ((box.y || 0) + (box.height || 0) / 2);
+        return { x: cx, y: cy };
+      }
+    }
+  } catch {}
+  try {
+    if (typeof node.getLayoutPoint === 'function') {
+      const pt = node.getLayoutPoint();
+      if (pt && typeof pt.x === 'number' && !isNaN(pt.x)) {
+        return { x: pt.x, y: pt.y || 0 };
+      }
+    }
+  } catch {}
+  try {
+    const rc = node.getRenderContainer ? node.getRenderContainer() : null;
+    const rBox = rc && typeof rc.getRenderBox === 'function' ? rc.getRenderBox('minder') : null;
+    if (rBox) {
+      return { x: (rBox.x || 0) + (rBox.width || 0) / 2, y: (rBox.y || 0) + (rBox.height || 0) / 2 };
+    }
+  } catch {}
+  return { x: 0, y: 0 };
+}
+
+// Determine if node is located to the left or right or top or bottom relative to root
+function getNodeOrientation(node: any): 'root' | 'left' | 'right' | 'top' | 'bottom' {
+  if (!node || !minder) return 'root';
+  const root = minder.getRoot();
+  if (!root || node === root || (typeof node.isRoot === 'function' && node.isRoot())) {
+    return 'root';
+  }
+
+  // Trace up the ancestor chain to find the level 1 ancestor directly under root
+  let level1Ancestor = node;
+  while (level1Ancestor) {
+    const parent = level1Ancestor.parent || (typeof level1Ancestor.getParent === 'function' ? level1Ancestor.getParent() : null);
+    if (!parent || parent === root || (typeof parent.isRoot === 'function' && parent.isRoot())) {
+      break;
+    }
+    level1Ancestor = parent;
+  }
+
+  const rootCenter = getNodeCenter(root);
+  const targetCenter = getNodeCenter(level1Ancestor || node);
+  const dx = targetCenter.x - rootCenter.x;
+  const dy = targetCenter.y - rootCenter.y;
+
+  if (Math.abs(dx) >= Math.abs(dy) || Math.abs(dx) > 15) {
+    return dx < 0 ? 'left' : 'right';
+  } else {
+    return dy < 0 ? 'top' : 'bottom';
+  }
+}
+
+// Spatial search fallback: finds the visually nearest node in the given direction
+function findNearestNodeInDirection(current: any, direction: 'up' | 'down' | 'left' | 'right'): any | null {
+  if (!minder || !current) return null;
+  const root = minder.getRoot();
+  if (!root) return null;
+
+  const currentCenter = getNodeCenter(current);
+  let bestCandidate: any = null;
+  let minScore = Infinity;
+
+  function traverse(node: any) {
+    if (!node || node === current) return;
+    
+    // Check if node is visible (not collapsed inside hidden parent)
+    let p = node.parent || (typeof node.getParent === 'function' ? node.getParent() : null);
+    let isHidden = false;
+    while (p) {
+      if ((typeof p.isCollapsed === 'function' && p.isCollapsed()) || p.getData('expandState') === 'collapse') {
+        isHidden = true;
+        break;
+      }
+      p = p.parent || (typeof p.getParent === 'function' ? p.getParent() : null);
+    }
+    if (isHidden) return;
+
+    const candCenter = getNodeCenter(node);
+    const dx = candCenter.x - currentCenter.x;
+    const dy = candCenter.y - currentCenter.y;
+
+    let isMatchDirection = false;
+    let score = Infinity;
+
+    if (direction === 'left' && dx < -10) {
+      isMatchDirection = true;
+      // Main distance |dx|, penalized by perpendicular drift |dy|
+      score = Math.abs(dx) + Math.abs(dy) * 2.2;
+    } else if (direction === 'right' && dx > 10) {
+      isMatchDirection = true;
+      score = Math.abs(dx) + Math.abs(dy) * 2.2;
+    } else if (direction === 'up' && dy < -10) {
+      isMatchDirection = true;
+      score = Math.abs(dy) + Math.abs(dx) * 2.2;
+    } else if (direction === 'down' && dy > 10) {
+      isMatchDirection = true;
+      score = Math.abs(dy) + Math.abs(dx) * 2.2;
+    }
+
+    if (isMatchDirection && score < minScore) {
+      minScore = score;
+      bestCandidate = node;
+    }
+
+    const children = node.getChildren ? node.getChildren() : [];
+    for (const child of children) {
+      traverse(child);
+    }
+  }
+
+  traverse(root);
+  return bestCandidate;
+}
+
+// Arrow Key Navigation between Mind Map Nodes (Accurately adapts to layout orientation)
 function handleArrowNavigation(direction: 'up' | 'down' | 'left' | 'right') {
   if (!minder) return;
   const current = minder.getSelectedNode();
@@ -607,28 +730,189 @@ function handleArrowNavigation(direction: 'up' | 'down' | 'left' | 'right') {
     if (root) minder.select(root, true);
     return;
   }
-  const parent = current.getParent();
-  const children = current.getChildren();
 
-  if (direction === 'left') {
-    if (parent) {
-      minder.select(parent, true);
+  const root = minder.getRoot();
+  const parent = current.getParent ? current.getParent() : current.parent;
+  const children = (current.getChildren ? current.getChildren() : []) as any[];
+  const isRoot = !parent || current === root || (typeof current.isRoot === 'function' && current.isRoot());
+  const orientation = isRoot ? 'root' : getNodeOrientation(current);
+  const curCenter = getNodeCenter(current);
+
+  let targetNode: any = null;
+
+  // 1. If currently on Root node
+  if (isRoot) {
+    if (direction === 'left') {
+      const leftChildren = children.filter((c: any) => getNodeCenter(c).x < curCenter.x - 5);
+      if (leftChildren.length > 0) {
+        // Choose child closest to vertical center of root
+        leftChildren.sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
+        targetNode = leftChildren[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'left');
+      }
+    } else if (direction === 'right') {
+      const rightChildren = children.filter((c: any) => getNodeCenter(c).x >= curCenter.x - 5);
+      if (rightChildren.length > 0) {
+        rightChildren.sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
+        targetNode = rightChildren[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'right');
+      }
+    } else if (direction === 'up') {
+      const topChildren = children.filter((c: any) => getNodeCenter(c).y < curCenter.y - 5);
+      if (topChildren.length > 0) {
+        topChildren.sort((a, b) => getNodeCenter(b).y - getNodeCenter(a).y);
+        targetNode = topChildren[0];
+      } else if (children.length > 0) {
+        // Fallback: topmost child
+        const sorted = [...children].sort((a, b) => getNodeCenter(a).y - getNodeCenter(b).y);
+        targetNode = sorted[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'up');
+      }
+    } else if (direction === 'down') {
+      const bottomChildren = children.filter((c: any) => getNodeCenter(c).y > curCenter.y + 5);
+      if (bottomChildren.length > 0) {
+        bottomChildren.sort((a, b) => getNodeCenter(a).y - getNodeCenter(b).y);
+        targetNode = bottomChildren[0];
+      } else if (children.length > 0) {
+        // Fallback: bottommost child
+        const sorted = [...children].sort((a, b) => getNodeCenter(b).y - getNodeCenter(a).y);
+        targetNode = sorted[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'down');
+      }
     }
-  } else if (direction === 'right') {
-    if (children && children.length > 0) {
-      minder.select(children[0], true);
+  }
+  // 2. If node is in Left-side branch (node is to the left of Root)
+  else if (orientation === 'left') {
+    if (direction === 'left') {
+      // Left key on left branch: Expand outwards to child nodes
+      const isCollapsed = (typeof current.isCollapsed === 'function' && current.isCollapsed()) || current.getData('expandState') === 'collapse';
+      if (!isCollapsed && children.length > 0) {
+        // Pick child vertically closest to current node center
+        const sortedChildren = [...children].sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
+        targetNode = sortedChildren[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'left');
+      }
+    } else if (direction === 'right') {
+      // Right key on left branch: Retract inwards towards parent/root
+      targetNode = parent;
+    } else if (direction === 'up') {
+      // Up key: Previous sibling in vertical order
+      if (parent) {
+        const siblings = (parent.getChildren ? parent.getChildren() : []) as any[];
+        const aboveSiblings = siblings.filter(s => getNodeCenter(s).y < curCenter.y - 4);
+        if (aboveSiblings.length > 0) {
+          aboveSiblings.sort((a, b) => getNodeCenter(b).y - getNodeCenter(a).y);
+          targetNode = aboveSiblings[0];
+        } else {
+          targetNode = findNearestNodeInDirection(current, 'up');
+        }
+      }
+    } else if (direction === 'down') {
+      // Down key: Next sibling in vertical order
+      if (parent) {
+        const siblings = (parent.getChildren ? parent.getChildren() : []) as any[];
+        const belowSiblings = siblings.filter(s => getNodeCenter(s).y > curCenter.y + 4);
+        if (belowSiblings.length > 0) {
+          belowSiblings.sort((a, b) => getNodeCenter(a).y - getNodeCenter(b).y);
+          targetNode = belowSiblings[0];
+        } else {
+          targetNode = findNearestNodeInDirection(current, 'down');
+        }
+      }
     }
-  } else if (direction === 'up' && parent) {
-    const siblings = parent.getChildren();
-    const idx = siblings.indexOf(current);
-    if (idx > 0) {
-      minder.select(siblings[idx - 1], true);
+  }
+  // 3. If node is in Right-side branch (node is to the right of Root)
+  else if (orientation === 'right') {
+    if (direction === 'left') {
+      // Left key on right branch: Retract inwards towards parent/root
+      targetNode = parent;
+    } else if (direction === 'right') {
+      // Right key on right branch: Expand outwards to child nodes
+      const isCollapsed = (typeof current.isCollapsed === 'function' && current.isCollapsed()) || current.getData('expandState') === 'collapse';
+      if (!isCollapsed && children.length > 0) {
+        const sortedChildren = [...children].sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
+        targetNode = sortedChildren[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'right');
+      }
+    } else if (direction === 'up') {
+      if (parent) {
+        const siblings = (parent.getChildren ? parent.getChildren() : []) as any[];
+        const aboveSiblings = siblings.filter(s => getNodeCenter(s).y < curCenter.y - 4);
+        if (aboveSiblings.length > 0) {
+          aboveSiblings.sort((a, b) => getNodeCenter(b).y - getNodeCenter(a).y);
+          targetNode = aboveSiblings[0];
+        } else {
+          targetNode = findNearestNodeInDirection(current, 'up');
+        }
+      }
+    } else if (direction === 'down') {
+      if (parent) {
+        const siblings = (parent.getChildren ? parent.getChildren() : []) as any[];
+        const belowSiblings = siblings.filter(s => getNodeCenter(s).y > curCenter.y + 4);
+        if (belowSiblings.length > 0) {
+          belowSiblings.sort((a, b) => getNodeCenter(a).y - getNodeCenter(b).y);
+          targetNode = belowSiblings[0];
+        } else {
+          targetNode = findNearestNodeInDirection(current, 'down');
+        }
+      }
     }
-  } else if (direction === 'down' && parent) {
-    const siblings = parent.getChildren();
-    const idx = siblings.indexOf(current);
-    if (idx < siblings.length - 1) {
-      minder.select(siblings[idx + 1], true);
+  }
+  // 4. If node is in Top-branch (e.g. Org chart upwards)
+  else if (orientation === 'top') {
+    if (direction === 'up') {
+      const isCollapsed = (typeof current.isCollapsed === 'function' && current.isCollapsed()) || current.getData('expandState') === 'collapse';
+      if (!isCollapsed && children.length > 0) {
+        targetNode = children[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'up');
+      }
+    } else if (direction === 'down') {
+      targetNode = parent;
+    } else if (direction === 'left' || direction === 'right') {
+      targetNode = findNearestNodeInDirection(current, direction);
+    }
+  }
+  // 5. If node is in Bottom-branch (e.g. Org chart downwards)
+  else if (orientation === 'bottom') {
+    if (direction === 'down') {
+      const isCollapsed = (typeof current.isCollapsed === 'function' && current.isCollapsed()) || current.getData('expandState') === 'collapse';
+      if (!isCollapsed && children.length > 0) {
+        targetNode = children[0];
+      } else {
+        targetNode = findNearestNodeInDirection(current, 'down');
+      }
+    } else if (direction === 'up') {
+      targetNode = parent;
+    } else if (direction === 'left' || direction === 'right') {
+      targetNode = findNearestNodeInDirection(current, direction);
+    }
+  }
+
+  // 6. Global spatial fallback if no topology match found
+  if (!targetNode) {
+    targetNode = findNearestNodeInDirection(current, direction);
+  }
+
+  // Apply selection and ensure visibility
+  if (targetNode && targetNode !== current) {
+    try {
+      minder.select(targetNode, true);
+      const targetId = getNodeStableId(targetNode);
+      activeSelectedNodeId.value = targetId;
+      outlineTreeVersion.value++;
+      if (isOutlineOpen.value && targetId) {
+        expandAncestorsInOutline(targetNode);
+        scrollOutlineNodeIntoView(targetId);
+      }
+    } catch (err) {
+      console.warn('Navigation selection error', err);
     }
   }
 }
