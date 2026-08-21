@@ -50,7 +50,7 @@ const emit = defineEmits<{
   (e: 'saveConfig', config: Partial<CloudConfig>): void;
   (e: 'clearConfig'): void;
   (e: 'checkDiff', config: CloudConfig): void;
-  (e: 'performSync', mode: 'merge' | 'push_all' | 'pull_all', config?: CloudConfig): void;
+  (e: 'performSync', mode: 'merge' | 'pull_all', config?: CloudConfig): void;
 }>();
 
 // Form state
@@ -152,7 +152,7 @@ async function handleCheckDiff() {
   }
 }
 
-async function handleSync(mode: 'merge' | 'push_all' | 'pull_all' = 'merge') {
+async function handleSync(mode: 'merge' | 'pull_all' = 'merge') {
   isPerformingSync.value = true;
   try {
     emit('performSync', mode, getFormConfig());
@@ -433,7 +433,7 @@ function formatSyncTime(timestamp?: number | null) {
             <!-- Action Buttons for Sync -->
             <div class="space-y-2 pt-1">
               <div class="text-xs font-semibold text-slate-500">同步操作方式：</div>
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <button
                   @click="handleSync('merge')"
                   :disabled="isPerformingSync || isSyncing"
@@ -442,26 +442,12 @@ function formatSyncTime(timestamp?: number | null) {
                   <div class="flex items-center justify-between">
                     <span class="font-medium text-xs flex items-center gap-1.5">
                       <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isPerformingSync }" />
-                      智能双向合并
+                      智能双向合并同步
                     </span>
-                    <span class="text-[10px] bg-blue-500 px-1.5 py-0.2 rounded text-white">推荐</span>
+                    <span class="text-[10px] bg-blue-500 px-1.5 py-0.2 rounded text-white">推荐 / 安全</span>
                   </div>
                   <p class="text-[11px] text-blue-100 mt-2 leading-tight">
-                    智能比对两端更新时间戳，上传本地修改并下载云端更新
-                  </p>
-                </button>
-
-                <button
-                  @click="handleSync('push_all')"
-                  :disabled="isPerformingSync || isSyncing"
-                  class="p-3 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-800 rounded-xl text-left transition-all cursor-pointer flex flex-col justify-between disabled:opacity-50"
-                >
-                  <div class="font-medium text-xs flex items-center gap-1.5 text-slate-700">
-                    <ArrowUpRight class="w-3.5 h-3.5 text-blue-600" />
-                    完全上传至云端
-                  </div>
-                  <p class="text-[11px] text-slate-500 mt-2 leading-tight">
-                    以当前本地数据为准，强制覆盖上传至云端服务器
+                    智能比对两端最新更新时间戳，安全上传本地修改并下载云端更新（无损合并）
                   </p>
                 </button>
 
@@ -472,10 +458,10 @@ function formatSyncTime(timestamp?: number | null) {
                 >
                   <div class="font-medium text-xs flex items-center gap-1.5 text-slate-700">
                     <ArrowDownLeft class="w-3.5 h-3.5 text-emerald-600" />
-                    从云端拉取覆盖
+                    从云端拉取覆盖本地
                   </div>
                   <p class="text-[11px] text-slate-500 mt-2 leading-tight">
-                    从云端下载全部笔记，覆盖当前浏览器本地数据
+                    从云端下载全部最新笔记与目录，覆盖当前浏览器本地数据
                   </p>
                 </button>
               </div>
@@ -487,20 +473,30 @@ function formatSyncTime(timestamp?: number | null) {
         <div v-if="activeTab === 'config'" class="space-y-4">
           <!-- API URL Input -->
           <div class="space-y-1.5">
-            <label class="block text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-              <Server class="w-3.5 h-3.5 text-blue-600" />
-              服务端 API 地址 (Base URL) <span class="text-red-500">*</span>
-            </label>
+            <div class="flex items-center justify-between">
+              <label class="block text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                <Server class="w-3.5 h-3.5 text-blue-600" />
+                服务端 API 地址 (Base URL) <span class="text-red-500">*</span>
+              </label>
+              <button
+                type="button"
+                @click="apiUrl = '/api'"
+                class="text-[11px] text-blue-600 hover:text-blue-700 font-medium hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <Zap class="w-3 h-3 text-amber-500" />
+                使用内置全栈服务 (/api)
+              </button>
+            </div>
             <div class="relative">
               <input
                 v-model="apiUrl"
                 type="text"
-                placeholder="例如: https://notes.yourdomain.com/api 或 http://localhost:8000/api"
+                placeholder="例如: /api 或 https://notes.yourdomain.com/api"
                 class="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white font-mono transition-colors"
               />
             </div>
             <p class="text-[11px] text-slate-400">
-              支持任何支持 JSON REST API 协议的服务端（如附带的 PHP 示例服务端）
+              支持本站内置云端同步接口（填入 <code>/api</code>），亦支持外部自定义 PHP/Node/Go 服务端
             </p>
           </div>
 

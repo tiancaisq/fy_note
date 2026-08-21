@@ -46,9 +46,20 @@ const menuContainerRef = ref<HTMLElement | null>(null);
 
 // Direct children of this folder
 const subfolders = computed(() => {
-  return props.allFolders
-    .filter((f) => f.parentId === props.folder.id)
-    .sort((a, b) => a.order - b.order);
+  const list = props.allFolders || [];
+  const validIds = new Set(list.map((f) => f.id));
+  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
+  const isFirstFolder = props.folder.id === firstId;
+
+  return list
+    .filter((f) => {
+      if (f.parentId === props.folder.id) return true;
+      if (isFirstFolder && f.parentId && !validIds.has(f.parentId) && f.id !== firstId) {
+        return true;
+      }
+      return false;
+    })
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
 });
 
 function handleFolderClick() {

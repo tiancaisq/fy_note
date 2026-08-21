@@ -85,10 +85,10 @@ export async function initStorageAndMigrate(): Promise<{
   const finalNotes = storedNotes || INITIAL_NOTES;
   const finalFolders = storedFolders || INITIAL_FOLDERS;
   const finalConfig = storedConfig || {
-    enabled: false,
-    apiUrl: '',
+    enabled: true,
+    apiUrl: '/api',
     apiToken: '',
-    userId: '',
+    userId: 'default_user',
     autoSync: true,
     lastSyncedAt: null,
   };

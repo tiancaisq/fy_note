@@ -87,11 +87,32 @@ const selectedFolder = computed(() => {
 // Full path of selected target folder
 function getFolderPath(folderId: string): string[] {
   const parts: string[] = [];
-  let curr = props.folders.find((f) => f.id === folderId);
-  while (curr) {
+  const list = props.folders || [];
+  const validIds = new Set(list.map((f) => f.id));
+  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
+  const visited = new Set<string>();
+
+  let curr = list.find((f) => f.id === folderId);
+  if (!curr) {
+    const firstF = list.find((f) => f.id === firstId);
+    return firstF ? [firstF.name] : ['我的笔记'];
+  }
+
+  while (curr && !visited.has(curr.id)) {
+    visited.add(curr.id);
     parts.unshift(curr.name);
     if (curr.parentId) {
-      curr = props.folders.find((f) => f.id === curr!.parentId);
+      if (validIds.has(curr.parentId)) {
+        curr = list.find((f) => f.id === curr!.parentId);
+      } else {
+        if (firstId && curr.id !== firstId) {
+          const firstFolderObj = list.find((f) => f.id === firstId);
+          if (firstFolderObj && !visited.has(firstFolderObj.id)) {
+            parts.unshift(firstFolderObj.name);
+          }
+        }
+        break;
+      }
     } else {
       break;
     }

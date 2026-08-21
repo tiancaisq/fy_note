@@ -87,13 +87,31 @@ const localTags = ref<string[]>([...props.note.tags]);
 // Hierarchical folders formatted with level indentation
 const hierarchicalFolders = computed(() => {
   const result: { id: string; name: string; level: number; fullPath: string; prefix: string }[] = [];
+  const list = props.folders || [];
+  const validIds = new Set(list.map((f) => f.id));
+  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
 
-  function traverse(parentId: string | null = null, level = 0, parentPath = '') {
-    const children = (props.folders || [])
-      .filter((f) => (parentId ? f.parentId === parentId : !f.parentId))
-      .sort((a, b) => a.order - b.order);
+  function getChildren(pId: string | null = null) {
+    if (!pId) {
+      return list.filter((f) => !f.parentId).sort((a, b) => (a.order || 0) - (b.order || 0));
+    }
+    return list
+      .filter((f) => {
+        if (f.parentId === pId) return true;
+        if (pId === firstId && f.parentId && !validIds.has(f.parentId) && f.id !== firstId) {
+          return true;
+        }
+        return false;
+      })
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+  }
+
+  function traverse(parentId: string | null = null, level = 0, parentPath = '', visited = new Set<string>()) {
+    const children = getChildren(parentId);
 
     for (const child of children) {
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
       const currentPath = parentPath ? `${parentPath} / ${child.name}` : child.name;
       const indent = level === 0 ? '' : '　'.repeat(level) + '└ ';
       result.push({
@@ -103,7 +121,7 @@ const hierarchicalFolders = computed(() => {
         fullPath: currentPath,
         prefix: indent,
       });
-      traverse(child.id, level + 1, currentPath);
+      traverse(child.id, level + 1, currentPath, visited);
     }
   }
 

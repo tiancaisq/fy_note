@@ -34,8 +34,29 @@ export interface CloudTestResponse {
 export function normalizeApiUrl(url: string): string {
   let trimmed = (url || '').trim();
   if (!trimmed) return '';
+
+  // Handle relative URLs (e.g. "/api" or "/api/")
+  if (trimmed.startsWith('/')) {
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      return `${window.location.origin}${trimmed}`.replace(/\/+$/, '');
+    }
+    return trimmed.replace(/\/+$/, '');
+  }
+
+  // Handle protocol-relative URLs (e.g. "//localhost:3000/api")
+  if (trimmed.startsWith('//')) {
+    const protocol = typeof window !== 'undefined' ? window.location.protocol : 'https:';
+    return `${protocol}${trimmed}`.replace(/\/+$/, '');
+  }
+
+  // Add protocol if missing
   if (!/^https?:\/\//i.test(trimmed)) {
-    trimmed = 'http://' + trimmed;
+    // If running in HTTPS browser environment and user points to external domain without protocol, default to https
+    const defaultProto =
+      typeof window !== 'undefined' && window.location.protocol === 'https:' && !trimmed.startsWith('localhost') && !trimmed.startsWith('127.0.0.1')
+        ? 'https://'
+        : 'http://';
+    trimmed = defaultProto + trimmed;
   }
   return trimmed.replace(/\/+$/, '');
 }
@@ -529,7 +550,11 @@ export async function pushSyncToCloud(
   config: CloudConfig,
   localNotes: Note[],
   localFolders: Folder[],
-  mode: 'merge' | 'push_all' | 'pull_all' = 'merge'
+  mode: 'merge' | 'push_all' | 'pull_all' = 'merge',
+  options?: {
+    deletedNoteIds?: string[];
+    deletedFolderIds?: string[];
+  }
 ): Promise<{
   success: boolean;
   message: string;
@@ -565,6 +590,8 @@ export async function pushSyncToCloud(
       lastSyncedAt: config.lastSyncedAt || 0,
       notes: localNotes,
       folders: localFolders,
+      deletedNoteIds: options?.deletedNoteIds || [],
+      deletedFolderIds: options?.deletedFolderIds || [],
       timestamp: Date.now(),
     };
 
@@ -730,6 +757,66 @@ export async function deleteSingleNoteFromCloud(
     return { success: false, message: '云端删除未成功' };
   } catch (err: any) {
     return { success: false, message: `删除同步失败: ${err.message}` };
+  }
+}
+
+// 6.1. Empty Trash on Cloud (Permanently delete all trash notes on cloud)
+export async function emptyTrashOnCloud(
+  config: CloudConfig,
+  noteIds?: string[]
+): Promise<{ success: boolean; message?: string; deletedCount?: number }> {
+  const baseUrl = normalizeApiUrl(config.apiUrl);
+  if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+
+  try {
+    const urls = getActionCandidateUrls(
+      baseUrl,
+      'empty_trash',
+      '/trash/empty'
+    );
+    const headers = getHeaders(config);
+    const payload = {
+      action: 'empty_trash',
+      noteIds: noteIds || [],
+    };
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '云端回收站已清空'),
+            deletedCount: data?.data?.deletedCount ?? noteIds?.length,
+          };
+        }
+      } catch {}
+    }
+
+    // Fallback: If dedicated empty_trash endpoint is not present, delete specified notes individually
+    if (noteIds && noteIds.length > 0) {
+      let failCount = 0;
+      await Promise.all(
+        noteIds.map((id) =>
+          deleteSingleNoteFromCloud(config, id).catch(() => {
+            failCount++;
+          })
+        )
+      );
+      if (failCount === 0) {
+        return { success: true, message: '云端回收站已成功清空', deletedCount: noteIds.length };
+      }
+    }
+
+    return { success: false, message: '清空云端回收站接口未响应' };
+  } catch (err: any) {
+    return { success: false, message: `清空云端回收站失败: ${err.message}` };
   }
 }
 

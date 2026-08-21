@@ -91,32 +91,77 @@ function getFolderLevel(folderId: string): number {
     return Math.max(0, ancestors.length - 1);
   }
   let depth = 0;
+  const validIds = new Set(props.folders.map((f) => f.id));
+  const firstId = props.folders.find((f) => !f.parentId)?.id || props.folders[0]?.id || '';
   let curr = props.folders.find((f) => f.id === folderId);
-  while (curr && curr.parentId) {
+  const visited = new Set<string>();
+
+  while (curr && !visited.has(curr.id)) {
+    visited.add(curr.id);
     depth++;
-    curr = props.folders.find((f) => f.id === curr!.parentId);
+    if (curr.parentId) {
+      if (validIds.has(curr.parentId)) {
+        curr = props.folders.find((f) => f.id === curr!.parentId);
+      } else {
+        if (firstId && curr.id !== firstId) {
+          depth++;
+        }
+        break;
+      }
+    } else {
+      break;
+    }
     if (depth > 10) break;
   }
-  return depth;
+  return Math.max(0, depth - 1);
 }
 
 // Get immediate parent folder name for subfolders
 function getParentFolderName(folder: Folder): string | null {
   if (!folder.parentId) return null;
-  const parent = props.folders.find((f) => f.id === folder.parentId);
-  return parent ? parent.name : null;
+  const validIds = new Set(props.folders.map((f) => f.id));
+  const firstId = props.folders.find((f) => !f.parentId)?.id || props.folders[0]?.id || '';
+  if (validIds.has(folder.parentId)) {
+    const parent = props.folders.find((f) => f.id === folder.parentId);
+    return parent ? parent.name : null;
+  }
+  // If parent does not exist, it defaults to the first folder
+  if (firstId && folder.id !== firstId) {
+    const firstF = props.folders.find((f) => f.id === firstId);
+    return firstF ? firstF.name : null;
+  }
+  return null;
 }
 
 // Flat list sorted hierarchically for the add menu
 const hierarchicalFolders = computed(() => {
   const result: Folder[] = [];
-  function traverse(parentId: string | null = null) {
-    const children = props.folders
-      .filter((f) => (parentId ? f.parentId === parentId : !f.parentId))
+  const list = props.folders;
+  const validIds = new Set(list.map((f) => f.id));
+  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
+
+  function getChildren(pId: string | null = null) {
+    if (!pId) {
+      return list.filter((f) => !f.parentId).sort((a, b) => (a.order || 0) - (b.order || 0));
+    }
+    return list
+      .filter((f) => {
+        if (f.parentId === pId) return true;
+        if (pId === firstId && f.parentId && !validIds.has(f.parentId) && f.id !== firstId) {
+          return true;
+        }
+        return false;
+      })
       .sort((a, b) => (a.order || 0) - (b.order || 0));
+  }
+
+  function traverse(parentId: string | null = null, visited = new Set<string>()) {
+    const children = getChildren(parentId);
     for (const child of children) {
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
       result.push(child);
-      traverse(child.id);
+      traverse(child.id, visited);
     }
   }
   traverse(null);

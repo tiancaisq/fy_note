@@ -13,6 +13,7 @@ import NewFolderModal from './components/NewFolderModal.vue';
 import RenameNoteModal from './components/RenameNoteModal.vue';
 import ShortcutsModal from './components/ShortcutsModal.vue';
 import CloudSyncModal from './components/CloudSyncModal.vue';
+import ConfirmModal from './components/ConfirmModal.vue';
 import TimelineView from './components/TimelineView.vue';
 import { Folder, Note } from './types';
 
@@ -65,6 +66,7 @@ const {
   getFolderFullPath,
   getFolderAncestors,
   getSubFolders,
+  getAllDescendantFolderIds,
   getFolderNoteCount,
   getDirectFolderNoteCount,
   sharedNotesCount,
@@ -102,6 +104,122 @@ const {
   importMindMapFile,
   navigateToNoteFromSearch,
 } = useNotes();
+
+// Confirmation Modal State for Secondary Confirmations
+interface ConfirmDialogState {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  subMessage?: string;
+  confirmText?: string;
+  cancelText?: string;
+  dangerLevel?: 'danger' | 'warning' | 'info';
+  itemType?: 'note' | 'folder' | 'trash';
+  itemName?: string;
+  itemFormat?: 'markdown' | 'mindmap' | string;
+  noteCount?: number;
+  subFolderCount?: number;
+  onConfirm: () => void;
+}
+
+const confirmDialog = ref<ConfirmDialogState>({
+  isOpen: false,
+  title: '',
+  message: '',
+  onConfirm: () => {},
+});
+
+function handlePromptMoveToTrash(noteId: string) {
+  const note = notes.value.find((n) => n.id === noteId);
+  if (!note) return;
+  confirmDialog.value = {
+    isOpen: true,
+    title: '移入回收站',
+    message: `确定要将笔记《${note.title || '无标题笔记'}》移入回收站吗？`,
+    subMessage: '移入回收站后，文件将不再出现在当前列表中，但您可以随时在“我的回收站”中查看或还原。',
+    confirmText: '移入回收站',
+    cancelText: '取消',
+    dangerLevel: 'warning',
+    itemType: 'note',
+    itemName: note.title || '无标题笔记',
+    itemFormat: note.format || note.type || 'markdown',
+    onConfirm: () => {
+      moveToTrash(noteId);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+function handlePromptPermanentlyDelete(noteId: string) {
+  const note = notes.value.find((n) => n.id === noteId);
+  if (!note) return;
+  confirmDialog.value = {
+    isOpen: true,
+    title: '彻底删除笔记',
+    message: `确定要彻底删除笔记《${note.title || '无标题笔记'}》吗？`,
+    subMessage: '⚠️ 此操作不可撤销，该笔记及其所有内容将被永久清除且无法找回。',
+    confirmText: '彻底删除',
+    cancelText: '取消',
+    dangerLevel: 'danger',
+    itemType: 'note',
+    itemName: note.title || '无标题笔记',
+    itemFormat: note.format || note.type || 'markdown',
+    onConfirm: () => {
+      permanentlyDeleteNote(noteId);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+function handlePromptDeleteFolder(folderId: string) {
+  const folder = folders.value.find((f) => f.id === folderId);
+  if (!folder) return;
+
+  const allDescendants = getAllDescendantFolderIds(folderId);
+  const totalNotes = getFolderNoteCount(folderId);
+
+  confirmDialog.value = {
+    isOpen: true,
+    title: '删除文件夹',
+    message: `确定要删除文件夹「${folder.name}」吗？`,
+    subMessage: `该操作会将此文件夹${allDescendants.length > 0 ? `及其 ${allDescendants.length} 个子文件夹` : ''}中的所有笔记（共 ${totalNotes} 篇）全部移入回收站。`,
+    confirmText: '确认删除',
+    cancelText: '取消',
+    dangerLevel: 'danger',
+    itemType: 'folder',
+    itemName: folder.name,
+    noteCount: totalNotes,
+    subFolderCount: allDescendants.length,
+    onConfirm: () => {
+      deleteFolder(folderId);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+function handlePromptEmptyTrash() {
+  const trashNotes = notes.value.filter((n) => n.isDeleted);
+  if (trashNotes.length === 0) {
+    showToast('回收站为空');
+    return;
+  }
+
+  confirmDialog.value = {
+    isOpen: true,
+    title: '清空回收站',
+    message: '确定要清空回收站中的所有内容吗？',
+    subMessage: `⚠️ 回收站内的全部 ${trashNotes.length} 篇笔记将被彻底删除，此操作不可撤销且无法恢复。`,
+    confirmText: '清空回收站',
+    cancelText: '取消',
+    dangerLevel: 'danger',
+    itemType: 'trash',
+    noteCount: trashNotes.length,
+    onConfirm: () => {
+      emptyTrash();
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
 
 // Header reference for focusing search
 const headerRef = ref<InstanceType<typeof Header> | null>(null);
@@ -307,7 +425,7 @@ onUnmounted(() => {
       @select-search-result="navigateToNoteFromSearch"
       @open-import="isImportModalOpen = true"
       @export-all="exportAllNotesBackup"
-      @empty-trash="emptyTrash"
+      @empty-trash="handlePromptEmptyTrash"
       @open-shortcuts="isShortcutsModalOpen = true"
       @open-cloud-sync="openCloudSyncModal"
     />
@@ -335,7 +453,7 @@ onUnmounted(() => {
         @open-import="isImportModalOpen = true"
         @open-new-folder="handleOpenNewFolder"
         @rename-folder="handleOpenRenameFolder"
-        @delete-folder="deleteFolder"
+        @delete-folder="handlePromptDeleteFolder"
         @toggle-collapse="toggleFolderCollapse"
         @toggle-frequent-folder="toggleFrequentFolder"
         @add-frequent-folder="addFrequentFolder"
@@ -371,10 +489,10 @@ onUnmounted(() => {
         @create-new-mind-map="createNewMindMap()"
         @toggle-star="toggleStar"
         @toggle-favorite="toggleFavorite"
-        @move-to-trash="moveToTrash"
+        @move-to-trash="handlePromptMoveToTrash"
         @restore-from-trash="restoreFromTrash"
-        @permanently-delete="permanentlyDeleteNote"
-        @empty-trash="emptyTrash"
+        @permanently-delete="handlePromptPermanentlyDelete"
+        @empty-trash="handlePromptEmptyTrash"
         @open-share-modal="openShareModal"
         @open-move-modal="openMoveModal"
         @duplicate-note="duplicateNote"
@@ -452,6 +570,24 @@ onUnmounted(() => {
       :note="noteToRename"
       @close="isRenameNoteModalOpen = false"
       @submit="handleRenameNoteSubmit"
+    />
+
+    <!-- Secondary Confirmation Dialog (For File Deletion, Directory Deletion, and Empty Trash) -->
+    <ConfirmModal
+      v-if="confirmDialog.isOpen"
+      :title="confirmDialog.title"
+      :message="confirmDialog.message"
+      :sub-message="confirmDialog.subMessage"
+      :confirm-text="confirmDialog.confirmText"
+      :cancel-text="confirmDialog.cancelText"
+      :danger-level="confirmDialog.dangerLevel"
+      :item-type="confirmDialog.itemType"
+      :item-name="confirmDialog.itemName"
+      :item-format="confirmDialog.itemFormat"
+      :note-count="confirmDialog.noteCount"
+      :sub-folder-count="confirmDialog.subFolderCount"
+      @close="confirmDialog.isOpen = false"
+      @confirm="confirmDialog.onConfirm()"
     />
 
     <!-- Keyboard Shortcuts Guide Modal -->

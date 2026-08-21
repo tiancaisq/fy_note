@@ -28,8 +28,19 @@ const emit = defineEmits<{
 
 // Direct subfolders
 const subfolders = computed(() => {
-  return props.allFolders
-    .filter((f) => f.parentId === props.folder.id)
+  const list = props.allFolders || [];
+  const validIds = new Set(list.map((f) => f.id));
+  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
+  const isFirstFolder = props.folder.id === firstId;
+
+  return list
+    .filter((f) => {
+      if (f.parentId === props.folder.id) return true;
+      if (isFirstFolder && f.parentId && !validIds.has(f.parentId) && f.id !== firstId) {
+        return true;
+      }
+      return false;
+    })
     .sort((a, b) => a.order - b.order);
 });
 
@@ -42,9 +53,17 @@ const isSelfMatch = computed(() => {
 const hasMatchingDescendant = computed(() => {
   if (!props.searchKeyword.trim()) return true;
   const kw = props.searchKeyword.trim().toLowerCase();
+  const validIds = new Set((props.allFolders || []).map((f) => f.id));
+  const firstId = (props.allFolders || []).find((f) => !f.parentId)?.id || props.allFolders[0]?.id || '';
+
   function checkMatch(f: Folder): boolean {
     if (f.name.toLowerCase().includes(kw)) return true;
-    const children = props.allFolders.filter((child) => child.parentId === f.id);
+    const isFirst = f.id === firstId;
+    const children = (props.allFolders || []).filter((child) => {
+      if (child.parentId === f.id) return true;
+      if (isFirst && child.parentId && !validIds.has(child.parentId) && child.id !== firstId) return true;
+      return false;
+    });
     return children.some(checkMatch);
   }
   return subfolders.value.some(checkMatch);
