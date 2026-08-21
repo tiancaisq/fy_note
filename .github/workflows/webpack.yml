@@ -33,7 +33,7 @@ jobs:
         path: dist/ # 这里填你Webpack配置里的实际输出目录，如果输出路径不是dist就改这里
         retention-days: 7 # 可选：制品保留天数，默认30天，到期自动删除
     - name: 上传打包文件到服务器
-      uses: appleboy/scp-action@v1.0
+      uses: nogsantos/scp-deploy@master
       with:
         host: ${{ secrets.SERVER_HOST }}
         user: ${{ secrets.SERVER_USER }}
