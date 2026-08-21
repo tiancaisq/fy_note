@@ -57,7 +57,7 @@ export function useNotes() {
 
   // Frequent / Pinned Folders
   const frequentFolderIds = ref<string[]>(
-    loadStoredData(STORAGE_KEY_FREQUENT_FOLDERS, ['folder-concurrency'])
+    loadStoredData(STORAGE_KEY_FREQUENT_FOLDERS, [])
   );
 
   watch(
@@ -118,8 +118,8 @@ export function useNotes() {
     try {
       isApplyingRemoteSync.value = true;
       const { notes: idbNotes, folders: idbFolders, cloudConfig: idbConfig } = await initStorageAndMigrate();
-      if (idbNotes && idbNotes.length > 0) notes.value = idbNotes;
-      if (idbFolders && idbFolders.length > 0) folders.value = idbFolders;
+      if (Array.isArray(idbNotes)) notes.value = idbNotes;
+      if (Array.isArray(idbFolders)) folders.value = idbFolders;
       if (idbConfig) cloudConfig.value = idbConfig;
       isStorageReady.value = true;
       await updateStorageEstimate();
@@ -184,7 +184,7 @@ export function useNotes() {
 
   // Current active view and selection
   const currentView = ref<ViewType>('folder');
-  const activeFolderId = ref<string>('folder-concurrency');
+  const activeFolderId = ref<string>(folders.value[0]?.id || '');
   const searchQuery = ref<string>('');
 
   // Active note for editor / viewer modal
@@ -844,8 +844,35 @@ export function useNotes() {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  function resolveTargetFolderId(folderId?: string): string {
+    if (folderId && folders.value.some((f) => f.id === folderId)) {
+      return folderId;
+    }
+    if (activeFolderId.value && folders.value.some((f) => f.id === activeFolderId.value)) {
+      return activeFolderId.value;
+    }
+    if (firstRootFolderId.value) {
+      return firstRootFolderId.value;
+    }
+    if (folders.value.length > 0) {
+      return folders.value[0].id;
+    }
+    // If no folders exist, create a clean default root folder
+    const defaultFolder: Folder = {
+      id: 'folder-' + Date.now(),
+      name: '我的笔记',
+      parentId: null,
+      order: 1,
+      isOpen: true,
+    };
+    folders.value.push(defaultFolder);
+    activeFolderId.value = defaultFolder.id;
+    triggerAutoSyncDebounced({ folderId: defaultFolder.id });
+    return defaultFolder.id;
+  }
+
   function createNewNote(title = '无标题笔记', folderId?: string) {
-    const targetFolder = folderId || activeFolderId.value || firstRootFolderId.value || 'folder-concurrency';
+    const targetFolder = resolveTargetFolderId(folderId);
     const now = formatDateTime();
     const newNote: Note = {
       id: 'note-' + Date.now(),
@@ -872,7 +899,7 @@ export function useNotes() {
   }
 
   function createNewMindMap(title = '无标题思维导图', folderId?: string) {
-    const targetFolder = folderId || activeFolderId.value || firstRootFolderId.value || 'folder-concurrency';
+    const targetFolder = resolveTargetFolderId(folderId);
     const now = formatDateTime();
     const defaultMindMapJson = {
       root: {
@@ -1265,7 +1292,7 @@ export function useNotes() {
   }
 
   function importMarkdownFile(filename: string, content: string, targetFolderId?: string) {
-    const folder = targetFolderId || activeFolderId.value || folders.value[0]?.id || 'folder-concurrency';
+    const folder = resolveTargetFolderId(targetFolderId);
     const now = formatDateTime();
     const title = filename.replace(/\.(md|txt|markdown)$/i, '') || '导入的笔记';
     const newNote: Note = {
@@ -1287,7 +1314,7 @@ export function useNotes() {
   }
 
   function importMindMapFile(filename: string, content: string, targetFolderId?: string) {
-    const folder = targetFolderId || activeFolderId.value || folders.value[0]?.id || 'folder-concurrency';
+    const folder = resolveTargetFolderId(targetFolderId);
     const now = formatDateTime();
     const title = filename.replace(/\.(xmind|km|json)$/i, '') || '导入的思维导图';
     const newNote: Note = {

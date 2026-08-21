@@ -3,218 +3,31 @@
     "default_user": {
       "notes": [
         {
-          "id": "note-1",
-          "title": "多线程-并发编程随记",
-          "folderId": "folder-concurrency",
-          "createdAt": "2025-12-30 10:06",
-          "updatedAt": "2025-12-30 10:06",
-          "isStarred": true,
-          "isFavorite": true,
-          "isShared": false,
-          "isDeleted": false,
-          "tags": [
-            "并发",
-            "多线程",
-            "JUC",
-            "锁优化"
-          ],
-          "format": "markdown",
-          "content": "# 多线程与高并发编程随记\n\n## 一、并发与并行的本质区别\n\n- **并发 (Concurrency)**: 多个任务在**同一个时间段**内交替执行（逻辑上的同时）。\n- **并行 (Parallelism)**: 多个任务在**同一物理时刻**在不同的 CPU 核心上同时执行。\n\n---\n\n## 二、线程安全的核心三要素\n\n1. **原子性 (Atomicity)**: 一个操作不可中断，要么全部执行成功，要么全部失败。\n2. **可见性 (Visibility)**: 一个线程对共享变量的修改，另一个线程能立刻感知到。\n3. **有序性 (Ordering)**: 程序执行的顺序按照代码的先后顺序执行（防止指令重排）。\n\n---\n\n## 三、常用锁与同步机制对比\n\n| 机制类型 | 典型实现 | 适用场景 | 性能开销 |\n| :--- | :--- | :--- | :--- |\n| **乐观锁** | CAS / AtomicInteger | 读多写少、冲突极小 | 极低（无上下文切换） |\n| **悲观锁** | synchronized / ReentrantLock | 写操作频繁、长临界区 | 中等到高 |\n| **读写锁** | ReentrantReadWriteLock | 读远多于写的共享资源 | 读并行，写独占 |\n| **无锁并发** | ThreadLocal / CopyOnWrite | 线程独享或写极少 | 空间换时间 |\n\n---\n\n## 四、经典示例代码：双重检查锁定 (DCL) 单例模式\n\n```java\npublic class Singleton {\n    // 必须加上 volatile 防止指令重排\n    private static volatile Singleton instance;\n\n    private Singleton() {}\n\n    public static Singleton getInstance() {\n        if (instance == null) {\n            synchronized (Singleton.class) {\n                if (instance == null) {\n                    instance = new Singleton();\n                }\n            }\n        }\n        return instance;\n    }\n}\n```\n\n> 💡 **重点提示**: `instance = new Singleton()` 包含三个步骤：分配内存 -> 初始化对象 -> 变量指向内存。没有 `volatile` 可能导致其他线程拿到未完全初始化的半成品对象。\n"
-        },
-        {
-          "id": "note-2",
-          "title": "学习引用",
-          "folderId": "folder-concurrency",
-          "createdAt": "2025-12-30 10:02",
-          "updatedAt": "2025-12-30 10:02",
-          "isStarred": false,
-          "isFavorite": false,
-          "isShared": true,
-          "shareUrl": "https://maple-note.cloud/s/c98df23a",
-          "isDeleted": false,
-          "tags": [
-            "参考资料",
-            "知识体系",
-            "书籍清单"
-          ],
-          "format": "markdown",
-          "content": "# 并发编程与计算机系统学习引用文献\n\n> “编写正确的并发程序是一门平衡的艺术，它要求我们既要保证状态的一致性，又要最大化系统的吞吐量。”\n\n---\n\n## 推荐书籍与论文\n\n1. **《Java 并发编程实战》 (Java Concurrency in Practice)** - Brian Goetz\n   - 必读经典，深入剖析 Java 内存模型 (JMM)、线程池设计与并发集合。\n2. **《深入理解计算机系统》 (CS:APP)** - Randal E. Bryant\n   - 掌握现代 CPU 多核架构、L1/L2/L3 缓存一致性协议 (MESI) 以及虚拟内存。\n3. **《Designing Data-Intensive Applications》 (DDIA)** - Martin Kleppmann\n   - 分布式并发控制、事务隔离级别 (ACID)、2PC 与 Raft 共识算法。\n\n---\n\n## 核心知识卡片\n\n- [x] Java Memory Model 8 种原子操作\n- [x] CAS 算法中的 ABA 问题及版本戳解决方法 (`AtomicStampedReference`)\n- [ ] AQS (AbstractQueuedSynchronizer) 独占式与共享式节点同步队列原理\n- [ ] Disruptor 高性能环形缓冲区 (RingBuffer) 无锁架构\n\n---\n\n## 在线资源与规范\n- [JSR-133: Java Memory Model and Thread Specification](https://jcp.org/en/jsr/detail?id=133)\n- [Linux Man Pages: pthread_create & epoll](https://man7.org/linux/man-pages/)\n"
-        },
-        {
-          "id": "note-juc-aqs",
-          "title": "AQS 同步器设计原理与 Node 队列解析",
-          "folderId": "folder-juc-source",
-          "createdAt": "2025-12-29 16:20",
-          "updatedAt": "2025-12-30 08:30",
-          "isStarred": true,
-          "isFavorite": true,
-          "isShared": false,
-          "isDeleted": false,
-          "tags": [
-            "AQS",
-            "CLH队列",
-            "CAS",
-            "ReentrantLock"
-          ],
-          "format": "markdown",
-          "content": "# AQS (AbstractQueuedSynchronizer) 核心机制\n\n## 1. 核心架构组成\n- **volatile int state**: 资源同步状态（0 表示空闲，>=1 表示已被线程持有）。\n- **CLH 双向 FIFO 队列**: 等待锁的线程被封装为 `Node`，通过 CAS 自旋入队并被挂起 (`LockSupport.park`)。\n- **独占模式 vs 共享模式**:\n  - 独占式（如 `ReentrantLock`）：只有一个线程能成功获取 state。\n  - 共享式（如 `CountDownLatch`, `Semaphore`）：多个线程可以同时获取资源。\n"
-        },
-        {
-          "id": "note-3",
-          "title": "Vue 3 与 Composition API 核心精粹",
-          "folderId": "folder-troubleshooting",
-          "createdAt": "2025-12-28 15:30",
-          "updatedAt": "2025-12-29 11:20",
-          "isStarred": true,
-          "isFavorite": true,
-          "isShared": false,
-          "isDeleted": false,
-          "tags": [
-            "Vue3",
-            "前端开发",
-            "响应式原理"
-          ],
-          "format": "markdown",
-          "content": "# Vue 3 核心架构与 Composition API 实战\n\n## 响应式系统的底层跃迁\n\nVue 3 采用 **Proxy** 完全重写了响应式系统，解决了 Vue 2 中 `Object.defineProperty` 的核心痛点：\n- 支持动态新增/删除对象属性的拦截\n- 原生支持 Array 索引修改及 `length` 变更\n- 支持 `Map`, `Set`, `WeakMap`, `WeakSet` 等新集合类型\n\n```typescript\nimport { ref, reactive, computed, watchEffect } from 'vue';\n\nexport function useCounter(initialVal = 0) {\n  const count = ref(initialVal);\n  const doubleCount = computed(() => count.value * 2);\n\n  function increment() {\n    count.value++;\n  }\n\n  return { count, doubleCount, increment };\n}\n```\n"
-        },
-        {
-          "id": "note-4",
-          "title": "2026 年度技术与生活规划",
-          "folderId": "folder-diary",
-          "createdAt": "2025-12-25 09:15",
-          "updatedAt": "2025-12-26 18:00",
-          "isStarred": false,
-          "isFavorite": true,
-          "isShared": false,
-          "isDeleted": false,
-          "tags": [
-            "个人成长",
-            "目标管理",
-            "年终复盘"
-          ],
-          "format": "markdown",
-          "content": "# 2026 年度规划与成长目标\n\n## 🎯 技术精进目标\n1. 深入掌握 Rust 语言及 WebAssembly 编译链路\n2. 架构设计：主导 1 个高可用微服务重构项目\n3. 开源贡献：参与主流开源前端工具链 PR 提交\n\n## 🧘 生活与健康\n- 保持每周至少 3 次有氧跑步 (每次 5km)\n- 保持每天深度阅读 30 分钟\n- 保证规律作息，充足睡眠\n"
-        },
-        {
-          "id": "note-5",
-          "title": "Linux 生产环境常用命令速查",
-          "folderId": "folder-linux",
-          "createdAt": "2025-12-20 14:00",
-          "updatedAt": "2025-12-22 16:45",
-          "isStarred": true,
-          "isFavorite": false,
-          "isShared": false,
-          "isDeleted": false,
-          "tags": [
-            "Linux",
-            "DevOps",
-            "运维命令"
-          ],
-          "format": "markdown",
-          "content": "# Linux 运维与排查必备命令备忘\n\n### 1. CPU 与内存分析\n```bash\n# 实时监控进程及负载\ntop -c\nhtop\n\n# 内存使用详情\nfree -h\n```\n\n### 2. 网络与端口排查\n```bash\n# 查看监听端口与对应进程\nss -tulpn | grep 3000\nnetstat -anp | grep 8080\n```\n\n### 3. 磁盘空间快速分析\n```bash\n# 查看各分区占用\ndf -h\n\n# 查看当前目录下各文件夹占用大小\ndu -sh * | sort -hr | head -n 10\n```\n"
-        },
-        {
-          "id": "note-docker",
-          "title": "Docker 常用命令与 Compose 模版",
-          "folderId": "folder-linux-docker",
-          "createdAt": "2025-12-21 11:00",
-          "updatedAt": "2025-12-21 11:30",
+          "id": "note-1787315922477",
+          "title": "无标题笔记",
+          "content": "# 无标题笔记\n\n在这里开始编写你的笔记内容...\n",
+          "folderId": "folder-1787315922477",
+          "createdAt": "2026-08-21 20:38",
+          "updatedAt": "2026-08-21 20:38",
           "isStarred": false,
           "isFavorite": false,
           "isShared": false,
           "isDeleted": false,
-          "tags": [
-            "Docker",
-            "容器",
-            "Compose"
-          ],
+          "tags": [],
           "format": "markdown",
-          "content": "# Docker 与 Docker Compose 生产实战\n\n## 常用操作指令\n```bash\n# 查看容器状态与资源占用\ndocker ps -a\ndocker stats\n\n# 清理无用镜像与缓存\ndocker system prune -a --volumes\n```\n"
-        },
-        {
-          "id": "note-mindmap-concurrency",
-          "title": "高并发核心架构与锁机制思维导图",
-          "folderId": "folder-concurrency",
-          "createdAt": "2025-12-30 11:20",
-          "updatedAt": "2025-12-30 11:20",
-          "isStarred": true,
-          "isFavorite": true,
-          "isShared": false,
-          "isDeleted": false,
-          "tags": [
-            "思维导图",
-            "高并发",
-            "架构设计"
-          ],
-          "format": "mindmap",
-          "type": "mindmap",
-          "content": "{\n  \"root\": {\n    \"data\": {\n      \"text\": \"高并发与多线程架构\",\n      \"expandState\": \"expand\"\n    },\n    \"children\": [\n      {\n        \"data\": {\n          \"text\": \"线程安全三大特性\",\n          \"priority\": 1\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"原子性 (Atomicity)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"可见性 (Visibility)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"有序性 (Ordering)\"\n            }\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"text\": \"锁优化与同步机制\",\n          \"priority\": 2\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"乐观锁 (CAS / Atomic)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"悲观锁 (synchronized / ReentrantLock)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"读写分离锁 (ReentrantReadWriteLock)\"\n            }\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"text\": \"JUC 并发工具集\",\n          \"priority\": 3\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"CountDownLatch (倒计时门闩)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"CyclicBarrier (循环栅栏)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"Semaphore (信号量限流)\"\n            }\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"text\": \"线程池最佳实践\",\n          \"priority\": 4\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"核心线程数与最大线程数\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"阻塞队列选型 (Array vs Linked)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"四大拒绝策略 (Abort/CallerRuns)\"\n            }\n          }\n        ]\n      }\n    ]\n  },\n  \"template\": \"default\",\n  \"theme\": \"fresh-green\"\n}"
-        },
-        {
-          "id": "note-mindmap-linux",
-          "title": "Linux 知识体系与排障脑图",
-          "folderId": "folder-linux",
-          "createdAt": "2025-12-22 17:00",
-          "updatedAt": "2025-12-22 17:00",
-          "isStarred": false,
-          "isFavorite": true,
-          "isShared": false,
-          "isDeleted": false,
-          "tags": [
-            "思维导图",
-            "Linux",
-            "运维"
-          ],
-          "format": "mindmap",
-          "type": "mindmap",
-          "content": "{\n  \"root\": {\n    \"data\": {\n      \"text\": \"Linux 系统核心全景\",\n      \"expandState\": \"expand\"\n    },\n    \"children\": [\n      {\n        \"data\": {\n          \"text\": \"系统资源排查\",\n          \"priority\": 1\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"CPU (top / htop / uptime)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"内存 (free -h / vmstat)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"磁盘 (df -h / du -sh / iostat)\"\n            }\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"text\": \"网络与端口监控\",\n          \"priority\": 2\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"端口状态 (ss -tulpn / netstat)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"网络抓包 (tcpdump / wireshark)\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"路由连通性 (ping / traceroute)\"\n            }\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"text\": \"进程与服务管理\",\n          \"priority\": 3\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"systemctl 管理服务\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"kill / pkill 信号处理\"\n            }\n          },\n          {\n            \"data\": {\n              \"text\": \"crontab 定时任务\"\n            }\n          }\n        ]\n      }\n    ]\n  },\n  \"template\": \"right\",\n  \"theme\": \"fresh-blue\"\n}"
+          "type": "markdown"
         }
       ],
       "folders": [
         {
-          "id": "folder-concurrency",
-          "name": "多线程-并发编程",
+          "id": "folder-1787315922477",
+          "name": "我的笔记",
           "parentId": null,
-          "order": 1,
-          "isOpen": true
-        },
-        {
-          "id": "folder-juc-source",
-          "name": "JUC底层源码",
-          "parentId": "folder-concurrency",
-          "order": 1,
-          "isOpen": true
-        },
-        {
-          "id": "folder-troubleshooting",
-          "name": "专治疑难杂症",
-          "parentId": null,
-          "order": 2,
-          "isOpen": true
-        },
-        {
-          "id": "folder-diary",
-          "name": "日记",
-          "parentId": null,
-          "order": 3,
-          "isOpen": true
-        },
-        {
-          "id": "folder-linux",
-          "name": "Linux",
-          "parentId": null,
-          "order": 4,
-          "isOpen": false
-        },
-        {
-          "id": "folder-linux-docker",
-          "name": "Docker与容器化",
-          "parentId": "folder-linux",
-          "order": 1,
-          "isOpen": false
+          "isOpen": true,
+          "order": 1
         }
       ],
-      "updatedAt": 1787303621302
+      "updatedAt": 1787316202137
     }
   }
 }
