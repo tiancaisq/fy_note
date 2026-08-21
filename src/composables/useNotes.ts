@@ -31,6 +31,7 @@ import {
   deleteSingleNoteFromCloud,
   emptyTrashOnCloud,
   saveSingleFolderToCloud,
+  saveFoldersToCloud,
   deleteSingleFolderFromCloud,
 } from '../utils/cloudApi';
 
@@ -289,11 +290,15 @@ export function useNotes() {
   function triggerAutoSyncDebounced(options?: {
     noteId?: string;
     folderId?: string;
+    folderIds?: string[];
     deletedNoteId?: string;
     deletedFolderId?: string;
   }) {
     if (options?.noteId) pendingModifiedNoteIds.add(options.noteId);
     if (options?.folderId) pendingModifiedFolderIds.add(options.folderId);
+    if (options?.folderIds && Array.isArray(options.folderIds)) {
+      options.folderIds.forEach((id) => pendingModifiedFolderIds.add(id));
+    }
     if (options?.deletedNoteId) pendingDeletedNoteIds.add(options.deletedNoteId);
     if (options?.deletedFolderId) pendingDeletedFolderIds.add(options.deletedFolderId);
 
@@ -326,7 +331,7 @@ export function useNotes() {
           pendingDeletedNoteIds.size +
           pendingDeletedFolderIds.size;
 
-        if (totalPending > 0 && totalPending <= 5) {
+        if (totalPending > 0 && totalPending <= 15) {
           let allOk = true;
 
           // Sync modified notes individually
@@ -344,11 +349,11 @@ export function useNotes() {
             if (!res.success) allOk = false;
           }
 
-          // Sync modified folders
-          for (const fid of Array.from(pendingModifiedFolderIds)) {
-            const folder = folders.value.find((f) => f.id === fid);
-            if (folder) {
-              const res = await saveSingleFolderToCloud(cloudConfig.value, folder);
+          // Sync modified folders in batch (preserving all updated orders and parentIds)
+          if (pendingModifiedFolderIds.size > 0) {
+            const modifiedFolders = folders.value.filter((f) => pendingModifiedFolderIds.has(f.id));
+            if (modifiedFolders.length > 0) {
+              const res = await saveFoldersToCloud(cloudConfig.value, modifiedFolders);
               if (!res.success) allOk = false;
             }
           }
@@ -1111,16 +1116,29 @@ export function useNotes() {
       if (parent) parent.isOpen = true;
     }
 
+    // Mark all siblings in this group as modified to ensure continuous order sync to cloud
+    const affectedSiblings = folders.value
+      .filter((f) => (f.parentId || null) === targetParentId)
+      .map((f) => f.id);
+    affectedSiblings.forEach((id) => pendingModifiedFolderIds.add(id));
+
+    // Save to IDB & LocalStorage immediately
+    saveFoldersToIDB(folders.value).catch(console.error);
+    try {
+      localStorage.setItem(STORAGE_KEY_FOLDERS, JSON.stringify(folders.value));
+    } catch {}
+
     activeFolderId.value = newFolder.id;
     currentView.value = 'folder';
     showToast(targetParentId ? `子文件夹 "${name}" 创建成功` : `文件夹 "${name}" 创建成功`);
-    triggerAutoSyncDebounced({ folderId: newFolder.id });
+    triggerAutoSyncDebounced({ folderIds: affectedSiblings });
   }
 
   function deleteFolder(folderId: string) {
     const folder = folders.value.find((f) => f.id === folderId);
     if (!folder) return;
 
+    const parentId = folder.parentId || null;
     // Collect all descendant folder IDs
     const allFolderIds = [folderId, ...getAllDescendantFolderIds(folderId)];
 
@@ -1137,8 +1155,21 @@ export function useNotes() {
     if (allFolderIds.includes(activeFolderId.value)) {
       activeFolderId.value = folders.value[0]?.id || '';
     }
+
+    // Mark remaining siblings in this group as modified to update continuous orders
+    const remainingSiblings = folders.value
+      .filter((f) => (f.parentId || null) === parentId)
+      .map((f) => f.id);
+    remainingSiblings.forEach((id) => pendingModifiedFolderIds.add(id));
+
+    // Save to IDB & LocalStorage immediately
+    saveFoldersToIDB(folders.value).catch(console.error);
+    try {
+      localStorage.setItem(STORAGE_KEY_FOLDERS, JSON.stringify(folders.value));
+    } catch {}
+
     showToast(`文件夹 "${folder.name}" 及其子内容已删除`);
-    triggerAutoSyncDebounced({ deletedFolderId: folderId });
+    triggerAutoSyncDebounced({ deletedFolderId: folderId, folderIds: remainingSiblings });
   }
 
   function renameFolder(folderId: string, newName: string) {
@@ -1146,6 +1177,14 @@ export function useNotes() {
     if (folder && newName.trim()) {
       folder.name = newName.trim();
       normalizeFolderOrders(folders.value);
+      pendingModifiedFolderIds.add(folderId);
+
+      // Save to IDB & LocalStorage immediately
+      saveFoldersToIDB(folders.value).catch(console.error);
+      try {
+        localStorage.setItem(STORAGE_KEY_FOLDERS, JSON.stringify(folders.value));
+      } catch {}
+
       showToast('文件夹重命名成功');
       triggerAutoSyncDebounced({ folderId });
     }
@@ -1171,6 +1210,16 @@ export function useNotes() {
       return;
     }
 
+    // Collect all affected sibling folders whose order or parentId changed
+    const affectedFolderIds = result.affectedFolderIds || [draggedFolderId];
+    affectedFolderIds.forEach((id) => pendingModifiedFolderIds.add(id));
+
+    // Save to IDB & LocalStorage immediately
+    saveFoldersToIDB(folders.value).catch(console.error);
+    try {
+      localStorage.setItem(STORAGE_KEY_FOLDERS, JSON.stringify(folders.value));
+    } catch {}
+
     if (position === 'inside') {
       if (targetParentId) {
         const parent = folders.value.find((f) => f.id === targetParentId);
@@ -1187,8 +1236,8 @@ export function useNotes() {
       showToast(`已调整文件夹 "${draggedFolder.name}" 顺序`);
     }
 
-    // 触发云端自动同步并写入持久化
-    triggerAutoSyncDebounced({ folderId: draggedFolderId });
+    // 触发云端自动同步并更新所有同级目录的 order
+    triggerAutoSyncDebounced({ folderIds: affectedFolderIds });
   }
 
   function toggleFolderCollapse(folderId: string) {

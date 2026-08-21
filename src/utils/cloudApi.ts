@@ -51,9 +51,11 @@ export function normalizeApiUrl(url: string): string {
 
   // Add protocol if missing
   if (!/^https?:\/\//i.test(trimmed)) {
-    // If running in HTTPS browser environment and user points to external domain without protocol, default to https
     const defaultProto =
-      typeof window !== 'undefined' && window.location.protocol === 'https:' && !trimmed.startsWith('localhost') && !trimmed.startsWith('127.0.0.1')
+      typeof window !== 'undefined' &&
+      window.location.protocol === 'https:' &&
+      !trimmed.startsWith('localhost') &&
+      !trimmed.startsWith('127.0.0.1')
         ? 'https://'
         : 'http://';
     trimmed = defaultProto + trimmed;
@@ -95,11 +97,15 @@ export function normalizeRemoteNote(raw: any): Note {
         tags = [raw.tags];
       }
     } catch {
-      tags = raw.tags.split(',').map((s: string) => s.trim()).filter(Boolean);
+      tags = raw.tags
+        .split(',')
+        .map((s: string) => s.trim())
+        .filter(Boolean);
     }
   }
 
-  const format = raw.format === 'mindmap' || raw.type === 'mindmap' ? 'mindmap' : (raw.format || 'markdown');
+  const format =
+    raw.format === 'mindmap' || raw.type === 'mindmap' ? 'mindmap' : raw.format || 'markdown';
 
   return {
     id: String(raw.id || raw.noteId || raw._id || 'note-' + Date.now()),
@@ -107,7 +113,13 @@ export function normalizeRemoteNote(raw: any): Note {
     content: String(raw.content !== undefined && raw.content !== null ? raw.content : ''),
     folderId: String(raw.folderId ?? raw.folder_id ?? raw.folder ?? ''),
     createdAt: String(raw.createdAt || raw.created_at || new Date().toISOString()),
-    updatedAt: String(raw.updatedAt || raw.updated_at || raw.createdAt || raw.created_at || new Date().toISOString()),
+    updatedAt: String(
+      raw.updatedAt ||
+        raw.updated_at ||
+        raw.createdAt ||
+        raw.created_at ||
+        new Date().toISOString()
+    ),
     isStarred: Boolean(raw.isStarred || raw.is_starred || raw.starred),
     isFavorite: Boolean(raw.isFavorite || raw.is_favorite || raw.favorite),
     isShared: Boolean(raw.isShared || raw.is_shared || raw.shared),
@@ -134,9 +146,24 @@ export function normalizeRemoteFolder(raw: any): Folder {
     };
   }
 
-  const rawParent = raw.parentId !== undefined ? raw.parentId : (raw.parent_id !== undefined ? raw.parent_id : null);
-  const parentId = rawParent === '' || rawParent === '0' || rawParent === 0 ? null : (rawParent ? String(rawParent) : null);
-  const isOpen = raw.isOpen !== undefined ? Boolean(raw.isOpen) : (raw.is_collapsed !== undefined ? !raw.is_collapsed : true);
+  const rawParent =
+    raw.parentId !== undefined
+      ? raw.parentId
+      : raw.parent_id !== undefined
+      ? raw.parent_id
+      : null;
+  const parentId =
+    rawParent === '' || rawParent === '0' || rawParent === 0
+      ? null
+      : rawParent
+      ? String(rawParent)
+      : null;
+  const isOpen =
+    raw.isOpen !== undefined
+      ? Boolean(raw.isOpen)
+      : raw.is_collapsed !== undefined
+      ? !raw.is_collapsed
+      : true;
 
   return {
     id: String(raw.id || raw.folderId || 'folder-' + Date.now()),
@@ -151,7 +178,7 @@ export function normalizeRemoteFolder(raw: any): Folder {
 function getHeaders(config: CloudConfig): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'Accept': 'application/json, text/plain, */*',
+    Accept: 'application/json, text/plain, */*',
   };
   if (config.apiToken && config.apiToken.trim()) {
     headers['Authorization'] = `Bearer ${config.apiToken.trim()}`;
@@ -163,18 +190,69 @@ function getHeaders(config: CloudConfig): Record<string, string> {
   return headers;
 }
 
-// Helper to generate candidate URLs for any action across PHP, REST, and query-param setups
+// Global cache for detected backend working mode to eliminate probe queries
+type ApiFlavor = 'rest' | 'php' | 'query';
+let cachedApiFlavor: ApiFlavor | null = null;
+const cachedEndpointMap = new Map<string, string>();
+
+/**
+ * Resolve target URL directly based on URL structure and detected server flavor.
+ * Primary choice is calculated without trial-and-error.
+ */
+function resolveActionUrl(baseUrl: string, action: string, restPath?: string): string {
+  const normalized = normalizeApiUrl(baseUrl);
+  if (!normalized) return '';
+
+  const cacheKey = `${normalized}::${action}`;
+  if (cachedEndpointMap.has(cacheKey)) {
+    return cachedEndpointMap.get(cacheKey)!;
+  }
+
+  const isPhp = normalized.includes('.php') || cachedApiFlavor === 'php';
+  const endsWithApi = normalized.endsWith('/api') || cachedApiFlavor === 'rest';
+
+  if (isPhp) {
+    const sep = normalized.includes('?') ? '&' : '?';
+    return `${normalized}${sep}action=${action}`;
+  }
+
+  if (endsWithApi) {
+    if (restPath) {
+      return `${normalized}${restPath}`;
+    }
+    // Default rest mappings
+    if (action === 'pull' || action === 'data') return `${normalized}/data`;
+    if (action === 'sync' || action === 'merge' || action === 'push_all' || action === 'pull_all') return `${normalized}/sync`;
+    if (action === 'ping' || action === 'health') return `${normalized}/ping`;
+    if (action === 'upsert_note' || action === 'delete_note') return `${normalized}/notes`;
+    if (action === 'upsert_folder' || action === 'delete_folder') return `${normalized}/folders`;
+    if (action === 'empty_trash') return `${normalized}/trash/empty`;
+    return `${normalized}?action=${action}`;
+  }
+
+  // Bare domain or unknown path
+  if (restPath) {
+    return `${normalized}/api${restPath}`;
+  }
+  return `${normalized}/api/data`;
+}
+
+/**
+ * Returns prioritized candidates in order of highest probability.
+ * Primary URL is always index 0. Fallbacks are only used if index 0 returns 404 or connection failure.
+ */
 function getActionCandidateUrls(baseUrl: string, action: string, restPath?: string): string[] {
   const normalized = normalizeApiUrl(baseUrl);
   if (!normalized) return [];
 
-  const urls: string[] = [];
-  const seen = new Set<string>();
+  const primary = resolveActionUrl(baseUrl, action, restPath);
+  const candidates: string[] = [primary];
+  const seen = new Set<string>([primary]);
 
   const add = (u: string) => {
     if (u && !seen.has(u)) {
       seen.add(u);
-      urls.push(u);
+      candidates.push(u);
     }
   };
 
@@ -186,26 +264,33 @@ function getActionCandidateUrls(baseUrl: string, action: string, restPath?: stri
     const sep = normalized.includes('?') ? '&' : '?';
     add(`${normalized}${sep}action=${action}`);
     add(normalized);
+  } else if (endsWithApi) {
+    if (restPath) add(`${normalized}${restPath}`);
+    add(`${normalized}?action=${action}`);
+    add(`${baseWithoutApi}/api.php?action=${action}`);
   } else {
-    // 1. If base ends with /api (e.g. http://localhost:8000/api)
-    if (endsWithApi) {
-      if (restPath) add(`${normalized}${restPath}`);
-      add(`${normalized}?action=${action}`);
-      add(`${baseWithoutApi}/api.php?action=${action}`);
-      add(`${normalized}/api.php?action=${action}`);
-      add(`${normalized}`);
-    } else {
-      // 2. Base is domain or root (e.g. http://localhost:8000)
-      if (restPath) add(`${normalized}/api${restPath}`);
-      if (restPath) add(`${normalized}${restPath}`);
-      add(`${normalized}/api.php?action=${action}`);
-      add(`${normalized}/api?action=${action}`);
-      add(`${normalized}?action=${action}`);
-      add(`${normalized}`);
-    }
+    if (restPath) add(`${normalized}/api${restPath}`);
+    add(`${normalized}/api?action=${action}`);
+    add(`${normalized}/api.php?action=${action}`);
+    add(`${normalized}?action=${action}`);
   }
 
-  return urls;
+  return candidates;
+}
+
+// Record working endpoint in cache to prevent probe calls
+function recordSuccessfulEndpoint(baseUrl: string, action: string, url: string) {
+  const normalized = normalizeApiUrl(baseUrl);
+  if (!normalized) return;
+
+  const cacheKey = `${normalized}::${action}`;
+  cachedEndpointMap.set(cacheKey, url);
+
+  if (url.includes('.php')) {
+    cachedApiFlavor = 'php';
+  } else if (url.includes('/api/') || url.endsWith('/api')) {
+    cachedApiFlavor = 'rest';
+  }
 }
 
 // Helper to determine if code / status / success flag indicates success
@@ -246,7 +331,9 @@ function extractResponseMessage(data: any, fallback: string): string {
 }
 
 // 1. Test Server Connectivity
-export async function testCloudApi(config: CloudConfig): Promise<{ success: boolean; message: string; data?: any }> {
+export async function testCloudApi(
+  config: CloudConfig
+): Promise<{ success: boolean; message: string; data?: any }> {
   const baseUrl = normalizeApiUrl(config.apiUrl);
   if (!baseUrl) {
     return { success: false, message: '请输入有效的云端 API 地址' };
@@ -260,18 +347,17 @@ export async function testCloudApi(config: CloudConfig): Promise<{ success: bool
 
     let lastError = '';
     let matchedRes: Response | null = null;
+    let matchedUrl = '';
     const headers = getHeaders(config);
 
     for (const url of candidates) {
       try {
-        // Try GET first
         let res = await fetch(url, {
           method: 'GET',
           headers,
           signal: controller.signal,
         });
 
-        // If method not allowed, try POST
         if (res.status === 405) {
           res = await fetch(url, {
             method: 'POST',
@@ -281,7 +367,6 @@ export async function testCloudApi(config: CloudConfig): Promise<{ success: bool
           });
         }
 
-        // If 401 or 403, stop immediately as auth failed
         if (res.status === 401 || res.status === 403) {
           clearTimeout(timeoutId);
           return {
@@ -292,9 +377,11 @@ export async function testCloudApi(config: CloudConfig): Promise<{ success: bool
 
         if (res.ok) {
           matchedRes = res;
+          matchedUrl = url;
           break;
         } else if (res.status !== 404 && res.status !== 405) {
           matchedRes = res;
+          matchedUrl = url;
           break;
         }
       } catch (err: any) {
@@ -317,24 +404,27 @@ export async function testCloudApi(config: CloudConfig): Promise<{ success: bool
       };
     }
 
-    // Try parsing JSON
     const data = await matchedRes.json().catch(() => null);
 
     if (!matchedRes.ok) {
       return {
         success: false,
-        message: extractResponseMessage(data, `服务端响应异常 (HTTP ${matchedRes.status}): ${matchedRes.statusText || '请求失败'}`),
+        message: extractResponseMessage(
+          data,
+          `服务端响应异常 (HTTP ${matchedRes.status}): ${matchedRes.statusText || '请求失败'}`
+        ),
       };
     }
 
     const isSuccess = isResponseSuccessful(data, matchedRes.ok);
-
     if (!isSuccess) {
       return {
         success: false,
         message: extractResponseMessage(data, '服务端返回连接未就绪状态'),
       };
     }
+
+    recordSuccessfulEndpoint(baseUrl, 'ping', matchedUrl);
 
     return {
       success: true,
@@ -349,20 +439,21 @@ export async function testCloudApi(config: CloudConfig): Promise<{ success: bool
   }
 }
 
-// 2. Fetch Remote Data from Cloud
-export async function fetchRemoteData(config: CloudConfig): Promise<{ success: boolean; data?: { notes: Note[]; folders: Folder[]; serverTime: number }; message?: string }> {
+// 2. Fetch Remote Data from Cloud (Direct Single Request with Fallback)
+export async function fetchRemoteData(
+  config: CloudConfig
+): Promise<{
+  success: boolean;
+  data?: { notes: Note[]; folders: Folder[]; serverTime: number };
+  message?: string;
+}> {
   const baseUrl = normalizeApiUrl(config.apiUrl);
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
 
   try {
-    const urlsToTry = getActionCandidateUrls(baseUrl, 'pull', '/sync?action=pull');
-    // Also include 'data' actions
-    const dataUrls = getActionCandidateUrls(baseUrl, 'data', '/data');
-    for (const du of dataUrls) {
-      if (!urlsToTry.includes(du)) urlsToTry.push(du);
-    }
-
+    const urlsToTry = getActionCandidateUrls(baseUrl, 'pull', '/data');
     let lastRes: Response | null = null;
+    let matchedUrl = '';
     const headers = getHeaders(config);
 
     for (const url of urlsToTry) {
@@ -370,6 +461,7 @@ export async function fetchRemoteData(config: CloudConfig): Promise<{ success: b
         const res = await fetch(url, { method: 'GET', headers });
         if (res.ok || res.status === 401 || res.status === 403) {
           lastRes = res;
+          matchedUrl = url;
           break;
         }
       } catch {}
@@ -419,6 +511,8 @@ export async function fetchRemoteData(config: CloudConfig): Promise<{ success: b
     if (!isSuccess && rawNotesList.length === 0 && rawFoldersList.length === 0 && !json.data) {
       return { success: false, message: extractResponseMessage(json, '服务端返回错误') };
     }
+
+    recordSuccessfulEndpoint(baseUrl, 'pull', matchedUrl);
 
     const notes: Note[] = rawNotesList.map(normalizeRemoteNote);
     const folders: Folder[] = rawFoldersList.map(normalizeRemoteFolder);
@@ -483,7 +577,6 @@ export function calculateSyncDiff(
       if (localTime > remoteTime) {
         localUpdatedNotes++;
       } else if (localTime === remoteTime) {
-        // If timestamps are identical, check if content or flags differ
         const isContentDiff =
           (local.title || '') !== (remote.title || '') ||
           (local.content || '') !== (remote.content || '') ||
@@ -513,10 +606,21 @@ export function calculateSyncDiff(
     }
   }
 
-  // Compare folders
+  // Compare folders (order, name, parentId)
   for (const localF of localFolderList) {
-    if (!remoteFolderMap.has(String(localF.id))) {
+    const remoteF = remoteFolderMap.get(String(localF.id));
+    if (!remoteF) {
       localOnlyFolders++;
+    } else {
+      const localOrder = typeof localF.order === 'number' ? localF.order : 0;
+      const remoteOrder = typeof remoteF.order === 'number' ? remoteF.order : 0;
+      const isDiff =
+        (localF.name || '') !== (remoteF.name || '') ||
+        (localF.parentId || null) !== (remoteF.parentId || null) ||
+        localOrder !== remoteOrder;
+      if (isDiff) {
+        localOnlyFolders++;
+      }
     }
   }
 
@@ -567,7 +671,7 @@ export async function pushSyncToCloud(
     return { success: false, message: '未配置云端 API 地址' };
   }
 
-  // Special optimization for pull_all: first fetch remote data directly
+  // Special optimization for pull_all
   if (mode === 'pull_all') {
     const remoteRes = await fetchRemoteData(config);
     if (remoteRes.success && remoteRes.data) {
@@ -596,6 +700,7 @@ export async function pushSyncToCloud(
     };
 
     let lastRes: Response | null = null;
+    let matchedUrl = '';
     const headers = getHeaders(config);
 
     for (const url of urlsToTry) {
@@ -607,6 +712,7 @@ export async function pushSyncToCloud(
         });
         if (res.ok || res.status === 401 || res.status === 403) {
           lastRes = res;
+          matchedUrl = url;
           break;
         }
       } catch {}
@@ -633,6 +739,8 @@ export async function pushSyncToCloud(
       return { success: false, message: extractResponseMessage(result, '服务端返回同步失败') };
     }
 
+    recordSuccessfulEndpoint(baseUrl, 'sync', matchedUrl);
+
     const data = result.data || result;
 
     const rawNotesList = Array.isArray(data.notes)
@@ -656,7 +764,9 @@ export async function pushSyncToCloud(
       : null;
 
     const mergedNotes: Note[] = rawNotesList ? rawNotesList.map(normalizeRemoteNote) : localNotes;
-    const mergedFolders: Folder[] = rawFoldersList ? rawFoldersList.map(normalizeRemoteFolder) : localFolders;
+    const mergedFolders: Folder[] = rawFoldersList
+      ? rawFoldersList.map(normalizeRemoteFolder)
+      : localFolders;
 
     const successMessage =
       mode === 'push_all'
@@ -702,6 +812,7 @@ export async function saveSingleNoteToCloud(
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'upsert_note', url);
           return {
             success: isResponseSuccessful(data, true),
             message: extractResponseMessage(data, '已增量同步至云端'),
@@ -746,6 +857,7 @@ export async function deleteSingleNoteFromCloud(
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'delete_note', url);
           return {
             success: isResponseSuccessful(data, true),
             message: extractResponseMessage(data, '云端已删除'),
@@ -760,7 +872,7 @@ export async function deleteSingleNoteFromCloud(
   }
 }
 
-// 6.1. Empty Trash on Cloud (Permanently delete all trash notes on cloud)
+// 6.1. Empty Trash on Cloud
 export async function emptyTrashOnCloud(
   config: CloudConfig,
   noteIds?: string[]
@@ -769,11 +881,7 @@ export async function emptyTrashOnCloud(
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
 
   try {
-    const urls = getActionCandidateUrls(
-      baseUrl,
-      'empty_trash',
-      '/trash/empty'
-    );
+    const urls = getActionCandidateUrls(baseUrl, 'empty_trash', '/trash/empty');
     const headers = getHeaders(config);
     const payload = {
       action: 'empty_trash',
@@ -790,6 +898,7 @@ export async function emptyTrashOnCloud(
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'empty_trash', url);
           return {
             success: isResponseSuccessful(data, true),
             message: extractResponseMessage(data, '云端回收站已清空'),
@@ -799,7 +908,7 @@ export async function emptyTrashOnCloud(
       } catch {}
     }
 
-    // Fallback: If dedicated empty_trash endpoint is not present, delete specified notes individually
+    // Fallback: delete notes individually
     if (noteIds && noteIds.length > 0) {
       let failCount = 0;
       await Promise.all(
@@ -825,26 +934,42 @@ export async function saveSingleFolderToCloud(
   config: CloudConfig,
   folder: Folder
 ): Promise<{ success: boolean; message?: string }> {
+  return saveFoldersToCloud(config, [folder]);
+}
+
+// 7.1. Batch / Group Sync: Save Multiple Folders to Cloud (Preserves all orders)
+export async function saveFoldersToCloud(
+  config: CloudConfig,
+  folders: Folder[]
+): Promise<{ success: boolean; message?: string }> {
   const baseUrl = normalizeApiUrl(config.apiUrl);
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+  if (!folders || folders.length === 0) return { success: true };
 
   try {
     const urls = getActionCandidateUrls(baseUrl, 'upsert_folder', '/folders');
     const headers = getHeaders(config);
+
+    const payload = {
+      folders,
+      folder: folders[0],
+      action: 'upsert_folder',
+    };
 
     for (const url of urls) {
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ folder, action: 'upsert_folder' }),
+          body: JSON.stringify(payload),
         });
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'upsert_folder', url);
           return {
             success: isResponseSuccessful(data, true),
-            message: extractResponseMessage(data, '文件夹已同步至云端'),
+            message: extractResponseMessage(data, '文件夹排序及结构已同步至云端'),
           };
         }
       } catch {}
@@ -886,6 +1011,7 @@ export async function deleteSingleFolderFromCloud(
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'delete_folder', url);
           return {
             success: isResponseSuccessful(data, true),
             message: extractResponseMessage(data, '云端文件夹已删除'),

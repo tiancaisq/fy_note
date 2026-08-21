@@ -71,18 +71,27 @@ export function reorderFolder(
   targetParentId: string | null,
   position: 'inside' | 'before' | 'after' = 'inside',
   targetFolderId?: string
-): { success: boolean; message?: string } {
+): { success: boolean; message?: string; affectedFolderIds: string[] } {
   if (draggedFolderId === targetFolderId && position !== 'inside') {
-    return { success: false };
+    return { success: false, affectedFolderIds: [] };
   }
   if (draggedFolderId === targetParentId && position === 'inside') {
-    return { success: false };
+    return { success: false, affectedFolderIds: [] };
   }
 
   const draggedFolder = foldersList.find((f) => f.id === draggedFolderId);
   if (!draggedFolder) {
-    return { success: false };
+    return { success: false, affectedFolderIds: [] };
   }
+
+  // 记录移动前所有目录的 order 和 parentId，用于精确比对受影响的目录
+  const previousState = new Map<string, { order: number; parentId: string | null }>();
+  foldersList.forEach((f) => {
+    previousState.set(f.id, {
+      order: typeof f.order === 'number' ? f.order : 0,
+      parentId: f.parentId || null,
+    });
+  });
 
   // 获取该目录的所有子孙目录 ID（防止移动到自己或自己的子目录下造成循环引用）
   function getDescendantIds(parentId: string): string[] {
@@ -96,20 +105,22 @@ export function reorderFolder(
 
   const descendants = getDescendantIds(draggedFolderId);
   if (targetParentId && (descendants.includes(targetParentId) || targetParentId === draggedFolderId)) {
-    return { success: false, message: '不能将文件夹移动至其自身的子文件夹中' };
+    return { success: false, message: '不能将文件夹移动至其自身的子文件夹中', affectedFolderIds: [] };
   }
   if (targetFolderId && (descendants.includes(targetFolderId) || targetFolderId === draggedFolderId)) {
-    return { success: false, message: '不能将文件夹移动至其自身的子文件夹中' };
+    return { success: false, message: '不能将文件夹移动至其自身的子文件夹中', affectedFolderIds: [] };
   }
 
   const oldParentId = draggedFolder.parentId || null;
+  let newParentId: string | null = targetParentId || null;
 
   if (position === 'inside') {
-    draggedFolder.parentId = targetParentId || null;
+    newParentId = targetParentId || null;
+    draggedFolder.parentId = newParentId;
 
     // 获取目标同级已有兄弟节点并稳定排序
     const siblings = foldersList
-      .filter((f) => f.id !== draggedFolderId && (f.parentId || null) === (targetParentId || null))
+      .filter((f) => f.id !== draggedFolderId && (f.parentId || null) === newParentId)
       .sort(compareFolders);
 
     siblings.push(draggedFolder);
@@ -119,10 +130,10 @@ export function reorderFolder(
   } else if (targetFolderId && (position === 'before' || position === 'after')) {
     const targetFolder = foldersList.find((f) => f.id === targetFolderId);
     if (!targetFolder) {
-      return { success: false };
+      return { success: false, affectedFolderIds: [] };
     }
 
-    const newParentId = targetFolder.parentId || null;
+    newParentId = targetFolder.parentId || null;
     draggedFolder.parentId = newParentId;
 
     // 获取目标同级已有兄弟节点并稳定排序
@@ -145,7 +156,7 @@ export function reorderFolder(
   }
 
   // 如果原父级发生了改变，也对原父级的剩余同级兄弟重新计算 order
-  if (oldParentId !== (draggedFolder.parentId || null)) {
+  if (oldParentId !== newParentId) {
     const oldSiblings = foldersList
       .filter((f) => f.id !== draggedFolderId && (f.parentId || null) === oldParentId)
       .sort(compareFolders);
@@ -157,5 +168,24 @@ export function reorderFolder(
   // 全量规范化，确保所有同级 order 均从 1 连续递增且无重复
   normalizeFolderOrders(foldersList);
 
-  return { success: true };
+  // 收集所有 order 或 parentId 发生变更的目录 ID 以及目标/原分组的所有同级兄弟目录 ID
+  const affectedSet = new Set<string>();
+  affectedSet.add(draggedFolderId);
+
+  // 目标同级与原同级所有兄弟均标记为受影响，确保同步到远端后顺序绝对一致
+  foldersList.forEach((f) => {
+    const currentParent = f.parentId || null;
+    if (currentParent === newParentId || currentParent === oldParentId) {
+      affectedSet.add(f.id);
+    }
+    const prev = previousState.get(f.id);
+    if (prev && (prev.order !== f.order || prev.parentId !== (f.parentId || null))) {
+      affectedSet.add(f.id);
+    }
+  });
+
+  return {
+    success: true,
+    affectedFolderIds: Array.from(affectedSet),
+  };
 }

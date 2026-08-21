@@ -367,22 +367,36 @@ app.delete('/api/notes/:id', handleDeleteNote);
 app.delete('/api/notes', handleDeleteNote);
 
 // ==========================================
-// 5. Single Folder Upsert & Delete (Incremental)
+// 5. Folder Upsert & Delete (Incremental & Batch)
 // ==========================================
 function handleUpsertFolder(req: express.Request, res: express.Response) {
   const userId = extractUserId(req);
   const userStore = getUserStore(userId);
-  const folder: Folder = req.body.folder || req.body;
+  
+  const foldersToUpsert: Folder[] = Array.isArray(req.body.folders)
+    ? req.body.folders
+    : req.body.folder
+    ? [req.body.folder]
+    : req.body.id
+    ? [req.body]
+    : [];
 
-  if (!folder || !folder.id) {
+  if (!foldersToUpsert || foldersToUpsert.length === 0) {
     return res.status(400).json({ code: 400, success: false, message: '缺少有效的文件夹数据' });
   }
 
-  const idx = userStore.folders.findIndex((f) => String(f.id) === String(folder.id));
-  if (idx !== -1) {
-    userStore.folders[idx] = { ...userStore.folders[idx], ...folder };
-  } else {
-    userStore.folders.push(folder);
+  for (const folder of foldersToUpsert) {
+    if (!folder || !folder.id) continue;
+    const cleanFolder: Folder = {
+      ...folder,
+      order: typeof folder.order === 'number' && !isNaN(folder.order) ? folder.order : 0,
+    };
+    const idx = userStore.folders.findIndex((f) => String(f.id) === String(folder.id));
+    if (idx !== -1) {
+      userStore.folders[idx] = { ...userStore.folders[idx], ...cleanFolder };
+    } else {
+      userStore.folders.push(cleanFolder);
+    }
   }
 
   userStore.updatedAt = Date.now();
@@ -391,8 +405,8 @@ function handleUpsertFolder(req: express.Request, res: express.Response) {
   return res.json({
     code: 200,
     success: true,
-    message: '文件夹已增量同步至云端',
-    data: { id: folder.id },
+    message: `${foldersToUpsert.length} 个文件夹已同步至云端`,
+    data: { count: foldersToUpsert.length, ids: foldersToUpsert.map((f) => f.id) },
     serverTime: Date.now(),
   });
 }
@@ -419,10 +433,36 @@ function handleDeleteFolder(req: express.Request, res: express.Response) {
   });
 }
 
+// 5.1 Empty Trash
+function handleEmptyTrash(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  const noteIds: string[] = req.body?.noteIds || [];
+
+  if (Array.isArray(noteIds) && noteIds.length > 0) {
+    const idSet = new Set(noteIds.map((id) => String(id)));
+    userStore.notes = userStore.notes.filter((n) => !idSet.has(String(n.id)));
+  } else {
+    userStore.notes = userStore.notes.filter((n) => !n.isDeleted);
+  }
+
+  userStore.updatedAt = Date.now();
+  saveDatabase();
+
+  return res.json({
+    code: 200,
+    success: true,
+    message: '云端回收站已清空',
+    data: { deletedCount: noteIds.length },
+    serverTime: Date.now(),
+  });
+}
+
 app.post('/api/folders', handleUpsertFolder);
 app.put('/api/folders', handleUpsertFolder);
 app.delete('/api/folders/:id', handleDeleteFolder);
 app.delete('/api/folders', handleDeleteFolder);
+app.post('/api/trash/empty', handleEmptyTrash);
 
 // ==========================================
 // 6. Unified Query Dispatcher for /api.php & /api
@@ -451,12 +491,20 @@ app.all(['/api.php', '/api'], (req, res) => {
   if (action === 'delete_folder') {
     return handleDeleteFolder(req, res);
   }
-
-  // Default fallback for /api or /api.php
-  if (req.method === 'GET') {
-    return handlePing(req, res);
+  if (action === 'empty_trash') {
+    return handleEmptyTrash(req, res);
   }
-  return handleSync(req, res);
+
+  // Default fallback for GET
+  if (req.method === 'GET') {
+    return handleGetAllData(req, res);
+  }
+
+  return res.status(400).json({
+    code: 400,
+    success: false,
+    message: `未知的操作指令 action: ${action}`,
+  });
 });
 
 // ==========================================
