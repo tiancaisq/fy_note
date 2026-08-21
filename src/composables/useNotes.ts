@@ -14,6 +14,7 @@ import {
 } from '../types';
 import { INITIAL_FOLDERS, INITIAL_NOTES } from '../data/initialData';
 import { exportToXMind } from '../utils/xmind';
+import { compareFolders, normalizeFolderOrders, reorderFolder } from '../utils/folderSort';
 import {
   initStorageAndMigrate,
   saveNotesToIDB,
@@ -52,7 +53,7 @@ function loadStoredData<T>(key: string, fallback: T): T {
 
 export function useNotes() {
   const isStorageReady = ref<boolean>(false);
-  const folders = ref<Folder[]>(loadStoredData(STORAGE_KEY_FOLDERS, INITIAL_FOLDERS));
+  const folders = ref<Folder[]>(normalizeFolderOrders(loadStoredData(STORAGE_KEY_FOLDERS, INITIAL_FOLDERS)));
   const notes = ref<Note[]>(loadStoredData(STORAGE_KEY_NOTES, INITIAL_NOTES));
 
   // Frequent / Pinned Folders
@@ -119,7 +120,9 @@ export function useNotes() {
       isApplyingRemoteSync.value = true;
       const { notes: idbNotes, folders: idbFolders, cloudConfig: idbConfig } = await initStorageAndMigrate();
       if (Array.isArray(idbNotes)) notes.value = idbNotes;
-      if (Array.isArray(idbFolders)) folders.value = idbFolders;
+      if (Array.isArray(idbFolders)) {
+        folders.value = normalizeFolderOrders(idbFolders);
+      }
       if (idbConfig) cloudConfig.value = idbConfig;
       isStorageReady.value = true;
       await updateStorageEstimate();
@@ -172,7 +175,7 @@ export function useNotes() {
           const parsed = JSON.parse(e.newValue);
           if (Array.isArray(parsed) && parsed.length > 0) {
             isApplyingRemoteSync.value = true;
-            folders.value = parsed;
+            folders.value = normalizeFolderOrders(parsed);
             await nextTick();
             isApplyingRemoteSync.value = false;
           }
@@ -389,7 +392,7 @@ export function useNotes() {
           }
           if (res.mergedFolders) {
             const deletedFSet = new Set(deletedFoldersToSync);
-            folders.value = res.mergedFolders.filter((f) => !deletedFSet.has(f.id));
+            folders.value = normalizeFolderOrders(res.mergedFolders.filter((f) => !deletedFSet.has(f.id)));
           }
           cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
           await nextTick();
@@ -487,7 +490,7 @@ export function useNotes() {
     if (!parentId) {
       return folders.value
         .filter((f) => !f.parentId)
-        .sort((a, b) => (a.order || 0) - (b.order || 0));
+        .sort(compareFolders);
     }
 
     return folders.value
@@ -499,7 +502,7 @@ export function useNotes() {
         }
         return false;
       })
-      .sort((a, b) => (a.order || 0) - (b.order || 0));
+      .sort(compareFolders);
   }
 
   function getAllDescendantFolderIds(folderId: string): string[] {
@@ -552,7 +555,7 @@ export function useNotes() {
   const rootFolders = computed<Folder[]>(() => {
     return folders.value
       .filter((f) => !f.parentId)
-      .sort((a, b) => (a.order || 0) - (b.order || 0));
+      .sort(compareFolders);
   });
 
   // Frequent Folders list resolved from IDs
@@ -1088,24 +1091,29 @@ export function useNotes() {
   // Create folder or subfolder
   function createFolder(name: string, parentId: string | null = null) {
     if (!name.trim()) return;
+    const targetParentId = parentId || null;
+    const siblings = folders.value.filter((f) => (f.parentId || null) === targetParentId);
+    const maxOrder = siblings.reduce((max, f) => Math.max(max, typeof f.order === 'number' ? f.order : 0), 0);
+
     const newFolder: Folder = {
       id: 'folder-' + Date.now(),
       name: name.trim(),
-      parentId: parentId,
-      order: folders.value.length + 1,
+      parentId: targetParentId,
+      order: maxOrder + 1,
       isOpen: true,
     };
     folders.value.push(newFolder);
+    normalizeFolderOrders(folders.value);
 
     // If has parent, ensure parent is open
-    if (parentId) {
-      const parent = folders.value.find((f) => f.id === parentId);
+    if (targetParentId) {
+      const parent = folders.value.find((f) => f.id === targetParentId);
       if (parent) parent.isOpen = true;
     }
 
     activeFolderId.value = newFolder.id;
     currentView.value = 'folder';
-    showToast(parentId ? `子文件夹 "${name}" 创建成功` : `文件夹 "${name}" 创建成功`);
+    showToast(targetParentId ? `子文件夹 "${name}" 创建成功` : `文件夹 "${name}" 创建成功`);
     triggerAutoSyncDebounced({ folderId: newFolder.id });
   }
 
@@ -1124,6 +1132,7 @@ export function useNotes() {
     });
 
     folders.value = folders.value.filter((f) => !allFolderIds.includes(f.id));
+    normalizeFolderOrders(folders.value);
     frequentFolderIds.value = frequentFolderIds.value.filter((id) => !allFolderIds.includes(id));
     if (allFolderIds.includes(activeFolderId.value)) {
       activeFolderId.value = folders.value[0]?.id || '';
@@ -1136,6 +1145,7 @@ export function useNotes() {
     const folder = folders.value.find((f) => f.id === folderId);
     if (folder && newName.trim()) {
       folder.name = newName.trim();
+      normalizeFolderOrders(folders.value);
       showToast('文件夹重命名成功');
       triggerAutoSyncDebounced({ folderId });
     }
@@ -1148,32 +1158,20 @@ export function useNotes() {
     position: 'inside' | 'before' | 'after' = 'inside',
     targetFolderId?: string
   ) {
-    if (draggedFolderId === targetFolderId && position !== 'inside') return;
-    if (draggedFolderId === targetParentId && position === 'inside') return;
-
     const draggedFolder = folders.value.find((f) => f.id === draggedFolderId);
     if (!draggedFolder) return;
 
-    // Guard: cannot move folder into its own descendant
-    const descendants = getAllDescendantFolderIds(draggedFolderId);
-    if (targetParentId && (descendants.includes(targetParentId) || targetParentId === draggedFolderId)) {
-      showToast('不能将文件夹移动至其自身的子文件夹中');
-      return;
-    }
-    if (targetFolderId && (descendants.includes(targetFolderId) || targetFolderId === draggedFolderId)) {
-      showToast('不能将文件夹移动至其自身的子文件夹中');
+    const oldParentId = draggedFolder.parentId || null;
+    const result = reorderFolder(folders.value, draggedFolderId, targetParentId, position, targetFolderId);
+
+    if (!result.success) {
+      if (result.message) {
+        showToast(result.message);
+      }
       return;
     }
 
     if (position === 'inside') {
-      const oldParentId = draggedFolder.parentId;
-      draggedFolder.parentId = targetParentId;
-      
-      // Place at the end of the new sibling list
-      const siblings = folders.value.filter((f) => f.id !== draggedFolderId && (f.parentId || null) === (targetParentId || null));
-      const maxOrder = siblings.reduce((max, f) => Math.max(max, f.order || 0), 0);
-      draggedFolder.order = maxOrder + 1;
-
       if (targetParentId) {
         const parent = folders.value.find((f) => f.id === targetParentId);
         if (parent) parent.isOpen = true;
@@ -1185,31 +1183,12 @@ export function useNotes() {
           showToast(`已将 "${draggedFolder.name}" 移动至根目录`);
         }
       }
-    } else if (targetFolderId && (position === 'before' || position === 'after')) {
-      const targetFolder = folders.value.find((f) => f.id === targetFolderId);
-      if (!targetFolder) return;
-
-      const newParentId = targetFolder.parentId || null;
-      draggedFolder.parentId = newParentId;
-
-      // Get siblings list (excluding draggedFolder)
-      const siblings = folders.value
-        .filter((f) => f.id !== draggedFolderId && (f.parentId || null) === newParentId)
-        .sort((a, b) => (a.order || 0) - (b.order || 0));
-
-      const targetIndex = siblings.findIndex((f) => f.id === targetFolderId);
-      if (targetIndex === -1) return;
-
-      const insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
-      siblings.splice(insertIndex, 0, draggedFolder);
-
-      // Re-assign 1-based order to all siblings
-      siblings.forEach((f, idx) => {
-        f.order = idx + 1;
-      });
-
+    } else {
       showToast(`已调整文件夹 "${draggedFolder.name}" 顺序`);
     }
+
+    // 触发云端自动同步并写入持久化
+    triggerAutoSyncDebounced({ folderId: draggedFolderId });
   }
 
   function toggleFolderCollapse(folderId: string) {
@@ -1402,7 +1381,7 @@ export function useNotes() {
         }
         if (res.mergedFolders) {
           const deletedFSet = new Set(deletedFoldersToSync);
-          folders.value = res.mergedFolders.filter((f) => !deletedFSet.has(f.id));
+          folders.value = normalizeFolderOrders(res.mergedFolders.filter((f) => !deletedFSet.has(f.id)));
         }
 
         // If current activeFolderId is not found in folders, fallback to first available folder or root

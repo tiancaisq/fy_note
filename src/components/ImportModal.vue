@@ -3,6 +3,7 @@ import { ref, computed } from 'vue';
 import { X, UploadCloud, FileText, Check, AlertCircle } from 'lucide-vue-next';
 import { Folder } from '../types';
 import { importFromXMind } from '../utils/xmind';
+import { compareFolders } from '../utils/folderSort';
 
 const props = defineProps<{
   folders: Folder[];
@@ -23,7 +24,7 @@ const hierarchicalFolders = computed(() => {
 
   function getChildren(pId: string | null = null) {
     if (!pId) {
-      return list.filter((f) => !f.parentId).sort((a, b) => (a.order || 0) - (b.order || 0));
+      return list.filter((f) => !f.parentId).sort(compareFolders);
     }
     return list
       .filter((f) => {
@@ -33,7 +34,7 @@ const hierarchicalFolders = computed(() => {
         }
         return false;
       })
-      .sort((a, b) => (a.order || 0) - (b.order || 0));
+      .sort(compareFolders);
   }
 
   function traverse(parentId: string | null = null, level = 0, parentPath = '', visited = new Set<string>()) {

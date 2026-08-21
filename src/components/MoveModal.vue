@@ -13,6 +13,7 @@ import {
   FolderTree
 } from 'lucide-vue-next';
 import { Note, Folder as FolderType } from '../types';
+import { compareFolders } from '../utils/folderSort';
 import MoveFolderTreeItem from './MoveFolderTreeItem.vue';
 
 const props = defineProps<{
@@ -76,7 +77,7 @@ watch(
 const rootFolders = computed(() => {
   return props.folders
     .filter((f) => !f.parentId)
-    .sort((a, b) => a.order - b.order);
+    .sort(compareFolders);
 });
 
 // Target folder object

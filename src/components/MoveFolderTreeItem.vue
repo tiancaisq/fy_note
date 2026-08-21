@@ -9,6 +9,7 @@ import {
   CornerDownRight
 } from 'lucide-vue-next';
 import { Folder } from '../types';
+import { compareFolders } from '../utils/folderSort';
 
 const props = defineProps<{
   folder: Folder;
@@ -41,7 +42,7 @@ const subfolders = computed(() => {
       }
       return false;
     })
-    .sort((a, b) => a.order - b.order);
+    .sort(compareFolders);
 });
 
 // Check if matches keyword or has descendant match

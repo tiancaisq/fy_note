@@ -13,6 +13,7 @@ import {
   PinOff
 } from 'lucide-vue-next';
 import { Folder, ViewType } from '../types';
+import { compareFolders } from '../utils/folderSort';
 
 export type DropPosition = 'before' | 'inside' | 'after';
 
@@ -59,7 +60,7 @@ const subfolders = computed(() => {
       }
       return false;
     })
-    .sort((a, b) => (a.order || 0) - (b.order || 0));
+    .sort(compareFolders);
 });
 
 function handleFolderClick() {

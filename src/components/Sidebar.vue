@@ -20,6 +20,7 @@ import {
   Check
 } from 'lucide-vue-next';
 import { Folder, ViewType } from '../types';
+import { compareFolders } from '../utils/folderSort';
 import FolderTreeItem from './FolderTreeItem.vue';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
 import MindmapIcon from './icons/MindmapIcon.vue';
@@ -81,7 +82,7 @@ function handleNewMindMapClick() {
 const rootFolders = computed(() => {
   return props.folders
     .filter((f) => !f.parentId)
-    .sort((a, b) => a.order - b.order);
+    .sort(compareFolders);
 });
 
 // Calculate folder hierarchy depth (0 for root folder, 1 for subfolder, etc.)
