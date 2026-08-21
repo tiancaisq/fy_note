@@ -32,12 +32,98 @@ export interface CloudTestResponse {
 
 // Clean and normalize API base URL
 export function normalizeApiUrl(url: string): string {
-  let trimmed = url.trim();
+  let trimmed = (url || '').trim();
   if (!trimmed) return '';
   if (!/^https?:\/\//i.test(trimmed)) {
     trimmed = 'http://' + trimmed;
   }
   return trimmed.replace(/\/+$/, '');
+}
+
+/**
+ * Standardize note fields coming from server (e.g. folder_id -> folderId, is_starred -> isStarred, JSON tags)
+ */
+export function normalizeRemoteNote(raw: any): Note {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      id: 'note-' + Date.now(),
+      title: '未命名笔记',
+      content: '',
+      folderId: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      isStarred: false,
+      isFavorite: false,
+      isShared: false,
+      isDeleted: false,
+      tags: [],
+      format: 'markdown',
+    };
+  }
+
+  // Parse tags safely
+  let tags: string[] = [];
+  if (Array.isArray(raw.tags)) {
+    tags = raw.tags.map((t: any) => String(t));
+  } else if (typeof raw.tags === 'string' && raw.tags.trim()) {
+    try {
+      const parsed = JSON.parse(raw.tags);
+      if (Array.isArray(parsed)) {
+        tags = parsed.map((t: any) => String(t));
+      } else {
+        tags = [raw.tags];
+      }
+    } catch {
+      tags = raw.tags.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+  }
+
+  const format = raw.format === 'mindmap' || raw.type === 'mindmap' ? 'mindmap' : (raw.format || 'markdown');
+
+  return {
+    id: String(raw.id || raw.noteId || raw._id || 'note-' + Date.now()),
+    title: String(raw.title !== undefined && raw.title !== null ? raw.title : '未命名笔记'),
+    content: String(raw.content !== undefined && raw.content !== null ? raw.content : ''),
+    folderId: String(raw.folderId ?? raw.folder_id ?? raw.folder ?? ''),
+    createdAt: String(raw.createdAt || raw.created_at || new Date().toISOString()),
+    updatedAt: String(raw.updatedAt || raw.updated_at || raw.createdAt || raw.created_at || new Date().toISOString()),
+    isStarred: Boolean(raw.isStarred || raw.is_starred || raw.starred),
+    isFavorite: Boolean(raw.isFavorite || raw.is_favorite || raw.favorite),
+    isShared: Boolean(raw.isShared || raw.is_shared || raw.shared),
+    isDeleted: Boolean(raw.isDeleted || raw.is_deleted || raw.deleted),
+    deletedAt: raw.deletedAt || raw.deleted_at || undefined,
+    shareUrl: raw.shareUrl || raw.share_url || undefined,
+    tags,
+    format,
+    type: format,
+  };
+}
+
+/**
+ * Standardize folder fields coming from server (e.g. parent_id -> parentId, is_collapsed -> isOpen)
+ */
+export function normalizeRemoteFolder(raw: any): Folder {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      id: 'folder-' + Date.now(),
+      name: '新建文件夹',
+      parentId: null,
+      isOpen: true,
+      order: 1,
+    };
+  }
+
+  const rawParent = raw.parentId !== undefined ? raw.parentId : (raw.parent_id !== undefined ? raw.parent_id : null);
+  const parentId = rawParent === '' || rawParent === '0' || rawParent === 0 ? null : (rawParent ? String(rawParent) : null);
+  const isOpen = raw.isOpen !== undefined ? Boolean(raw.isOpen) : (raw.is_collapsed !== undefined ? !raw.is_collapsed : true);
+
+  return {
+    id: String(raw.id || raw.folderId || 'folder-' + Date.now()),
+    name: String(raw.name || raw.folderName || '新建文件夹'),
+    parentId,
+    isOpen,
+    order: Number(raw.order || raw.order_num || raw.sort || 0),
+  };
 }
 
 // Build standard request headers
@@ -54,6 +140,51 @@ function getHeaders(config: CloudConfig): Record<string, string> {
     headers['X-User-Id'] = config.userId.trim();
   }
   return headers;
+}
+
+// Helper to generate candidate URLs for any action across PHP, REST, and query-param setups
+function getActionCandidateUrls(baseUrl: string, action: string, restPath?: string): string[] {
+  const normalized = normalizeApiUrl(baseUrl);
+  if (!normalized) return [];
+
+  const urls: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (u: string) => {
+    if (u && !seen.has(u)) {
+      seen.add(u);
+      urls.push(u);
+    }
+  };
+
+  const isPhp = normalized.includes('.php');
+  const endsWithApi = normalized.endsWith('/api');
+  const baseWithoutApi = endsWithApi ? normalized.replace(/\/api$/, '') : normalized;
+
+  if (isPhp) {
+    const sep = normalized.includes('?') ? '&' : '?';
+    add(`${normalized}${sep}action=${action}`);
+    add(normalized);
+  } else {
+    // 1. If base ends with /api (e.g. http://localhost:8000/api)
+    if (endsWithApi) {
+      if (restPath) add(`${normalized}${restPath}`);
+      add(`${normalized}?action=${action}`);
+      add(`${baseWithoutApi}/api.php?action=${action}`);
+      add(`${normalized}/api.php?action=${action}`);
+      add(`${normalized}`);
+    } else {
+      // 2. Base is domain or root (e.g. http://localhost:8000)
+      if (restPath) add(`${normalized}/api${restPath}`);
+      if (restPath) add(`${normalized}${restPath}`);
+      add(`${normalized}/api.php?action=${action}`);
+      add(`${normalized}/api?action=${action}`);
+      add(`${normalized}?action=${action}`);
+      add(`${normalized}`);
+    }
+  }
+
+  return urls;
 }
 
 // Helper to determine if code / status / success flag indicates success
@@ -104,47 +235,30 @@ export async function testCloudApi(config: CloudConfig): Promise<{ success: bool
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-    // Build candidate test URLs in order of likelihood
-    const candidates: { url: string; method: 'GET' | 'POST' }[] = [];
-
-    if (baseUrl.includes('.php')) {
-      const pingUrl = baseUrl.includes('?') ? `${baseUrl}&action=ping` : `${baseUrl}?action=ping`;
-      candidates.push({ url: pingUrl, method: 'GET' });
-      candidates.push({ url: baseUrl, method: 'POST' });
-    } else if (baseUrl.endsWith('/api')) {
-      candidates.push({ url: `${baseUrl}/ping`, method: 'GET' });
-      candidates.push({ url: `${baseUrl}?action=ping`, method: 'GET' });
-      candidates.push({ url: `${baseUrl}/test`, method: 'POST' });
-      candidates.push({ url: `${baseUrl}/health`, method: 'GET' });
-      candidates.push({ url: baseUrl, method: 'GET' });
-    } else if (baseUrl.endsWith('/ping') || baseUrl.endsWith('/test') || baseUrl.endsWith('/health')) {
-      candidates.push({ url: baseUrl, method: 'GET' });
-      candidates.push({ url: baseUrl, method: 'POST' });
-    } else {
-      candidates.push({ url: `${baseUrl}/api/ping`, method: 'GET' });
-      candidates.push({ url: `${baseUrl}/api.php?action=ping`, method: 'GET' });
-      candidates.push({ url: `${baseUrl}/ping`, method: 'GET' });
-      candidates.push({ url: `${baseUrl}?action=ping`, method: 'GET' });
-      candidates.push({ url: `${baseUrl}/api/test`, method: 'POST' });
-      candidates.push({ url: baseUrl, method: 'GET' });
-    }
+    const candidates = getActionCandidateUrls(baseUrl, 'ping', '/ping');
 
     let lastError = '';
     let matchedRes: Response | null = null;
     const headers = getHeaders(config);
 
-    for (const candidate of candidates) {
+    for (const url of candidates) {
       try {
-        const fetchOptions: RequestInit = {
-          method: candidate.method,
+        // Try GET first
+        let res = await fetch(url, {
+          method: 'GET',
           headers,
           signal: controller.signal,
-        };
-        if (candidate.method === 'POST') {
-          fetchOptions.body = JSON.stringify({ action: 'ping', timestamp: Date.now() });
-        }
+        });
 
-        const res = await fetch(candidate.url, fetchOptions);
+        // If method not allowed, try POST
+        if (res.status === 405) {
+          res = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ action: 'ping', timestamp: Date.now() }),
+            signal: controller.signal,
+          });
+        }
 
         // If 401 or 403, stop immediately as auth failed
         if (res.status === 401 || res.status === 403) {
@@ -159,7 +273,6 @@ export async function testCloudApi(config: CloudConfig): Promise<{ success: bool
           matchedRes = res;
           break;
         } else if (res.status !== 404 && res.status !== 405) {
-          // If server returned a 500 or 400 error, record it
           matchedRes = res;
           break;
         }
@@ -221,18 +334,11 @@ export async function fetchRemoteData(config: CloudConfig): Promise<{ success: b
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
 
   try {
-    const urlsToTry: string[] = [];
-    if (baseUrl.includes('.php')) {
-      urlsToTry.push(baseUrl.includes('?') ? `${baseUrl}&action=pull` : `${baseUrl}?action=pull`);
-      urlsToTry.push(baseUrl.includes('?') ? `${baseUrl}&action=data` : `${baseUrl}?action=data`);
-    } else if (baseUrl.endsWith('/api')) {
-      urlsToTry.push(`${baseUrl}/sync?action=pull`);
-      urlsToTry.push(`${baseUrl}/data`);
-      urlsToTry.push(`${baseUrl}?action=pull`);
-    } else {
-      urlsToTry.push(`${baseUrl}/api/sync?action=pull`);
-      urlsToTry.push(`${baseUrl}/api/data`);
-      urlsToTry.push(`${baseUrl}?action=pull`);
+    const urlsToTry = getActionCandidateUrls(baseUrl, 'pull', '/sync?action=pull');
+    // Also include 'data' actions
+    const dataUrls = getActionCandidateUrls(baseUrl, 'data', '/data');
+    for (const du of dataUrls) {
+      if (!urlsToTry.includes(du)) urlsToTry.push(du);
     }
 
     let lastRes: Response | null = null;
@@ -249,7 +355,7 @@ export async function fetchRemoteData(config: CloudConfig): Promise<{ success: b
     }
 
     if (!lastRes) {
-      return { success: false, message: '无法连接到云端拉取数据接口' };
+      return { success: false, message: '无法连接到云端拉取数据接口，请确认服务端 API 地址' };
     }
 
     if (!lastRes.ok) {
@@ -265,19 +371,42 @@ export async function fetchRemoteData(config: CloudConfig): Promise<{ success: b
     }
 
     const isSuccess = isResponseSuccessful(json, lastRes.ok);
-    if (!isSuccess && !json.data && !json.notes) {
+    const resData = json.data || json;
+
+    const rawNotesList = Array.isArray(resData.notes)
+      ? resData.notes
+      : Array.isArray(json.notes)
+      ? json.notes
+      : Array.isArray(resData.mergedNotes)
+      ? resData.mergedNotes
+      : Array.isArray(json.mergedNotes)
+      ? json.mergedNotes
+      : Array.isArray(resData)
+      ? resData
+      : [];
+
+    const rawFoldersList = Array.isArray(resData.folders)
+      ? resData.folders
+      : Array.isArray(json.folders)
+      ? json.folders
+      : Array.isArray(resData.mergedFolders)
+      ? resData.mergedFolders
+      : Array.isArray(json.mergedFolders)
+      ? json.mergedFolders
+      : [];
+
+    if (!isSuccess && rawNotesList.length === 0 && rawFoldersList.length === 0 && !json.data) {
       return { success: false, message: extractResponseMessage(json, '服务端返回错误') };
     }
 
-    const resData = json.data || json;
-    const rawNotes = Array.isArray(resData.notes) ? resData.notes : (Array.isArray(json.notes) ? json.notes : []);
-    const rawFolders = Array.isArray(resData.folders) ? resData.folders : (Array.isArray(json.folders) ? json.folders : []);
+    const notes: Note[] = rawNotesList.map(normalizeRemoteNote);
+    const folders: Folder[] = rawFoldersList.map(normalizeRemoteFolder);
 
     return {
       success: true,
       data: {
-        notes: rawNotes,
-        folders: rawFolders,
+        notes,
+        folders,
         serverTime: resData.serverTime || json.serverTime || Date.now(),
       },
     };
@@ -304,10 +433,15 @@ export function calculateSyncDiff(
   remoteNotes: Note[],
   remoteFolders: Folder[]
 ): SyncDiffResult {
-  const remoteNoteMap = new Map(remoteNotes.map((n) => [n.id, n]));
-  const remoteFolderMap = new Map(remoteFolders.map((f) => [f.id, f]));
-  const localNoteMap = new Map(localNotes.map((n) => [n.id, n]));
-  const localFolderMap = new Map(localFolders.map((f) => [f.id, f]));
+  const remoteNoteList = Array.isArray(remoteNotes) ? remoteNotes : [];
+  const remoteFolderList = Array.isArray(remoteFolders) ? remoteFolders : [];
+  const localNoteList = Array.isArray(localNotes) ? localNotes : [];
+  const localFolderList = Array.isArray(localFolders) ? localFolders : [];
+
+  const remoteNoteMap = new Map(remoteNoteList.map((n) => [String(n.id), n]));
+  const remoteFolderMap = new Map(remoteFolderList.map((f) => [String(f.id), f]));
+  const localNoteMap = new Map(localNoteList.map((n) => [String(n.id), n]));
+  const localFolderMap = new Map(localFolderList.map((f) => [String(f.id), f]));
 
   let localOnlyNotes = 0;
   let localUpdatedNotes = 0;
@@ -317,8 +451,8 @@ export function calculateSyncDiff(
   let cloudOnlyFolders = 0;
 
   // Compare local notes against remote
-  for (const local of localNotes) {
-    const remote = remoteNoteMap.get(local.id);
+  for (const local of localNoteList) {
+    const remote = remoteNoteMap.get(String(local.id));
     if (!remote) {
       localOnlyNotes++;
     } else {
@@ -328,15 +462,15 @@ export function calculateSyncDiff(
       if (localTime > remoteTime) {
         localUpdatedNotes++;
       } else if (localTime === remoteTime) {
-        // If timestamps are identical, check if content or title differs
+        // If timestamps are identical, check if content or flags differ
         const isContentDiff =
-          local.title !== remote.title ||
-          local.content !== remote.content ||
-          local.folderId !== remote.folderId ||
-          local.isStarred !== remote.isStarred ||
-          local.isFavorite !== remote.isFavorite ||
-          local.isDeleted !== remote.isDeleted ||
-          local.format !== remote.format;
+          (local.title || '') !== (remote.title || '') ||
+          (local.content || '') !== (remote.content || '') ||
+          (local.folderId || '') !== (remote.folderId || '') ||
+          Boolean(local.isStarred) !== Boolean(remote.isStarred) ||
+          Boolean(local.isFavorite) !== Boolean(remote.isFavorite) ||
+          Boolean(local.isDeleted) !== Boolean(remote.isDeleted) ||
+          (local.format || 'markdown') !== (remote.format || 'markdown');
         if (isContentDiff) {
           localUpdatedNotes++;
         }
@@ -345,8 +479,8 @@ export function calculateSyncDiff(
   }
 
   // Compare remote notes against local (for cloud-newer items)
-  for (const remote of remoteNotes) {
-    const local = localNoteMap.get(remote.id);
+  for (const remote of remoteNoteList) {
+    const local = localNoteMap.get(String(remote.id));
     if (!local) {
       cloudOnlyNotes++;
     } else {
@@ -359,14 +493,14 @@ export function calculateSyncDiff(
   }
 
   // Compare folders
-  for (const localF of localFolders) {
-    if (!remoteFolderMap.has(localF.id)) {
+  for (const localF of localFolderList) {
+    if (!remoteFolderMap.has(String(localF.id))) {
       localOnlyFolders++;
     }
   }
 
-  for (const remoteF of remoteFolders) {
-    if (!localFolderMap.has(remoteF.id)) {
+  for (const remoteF of remoteFolderList) {
+    if (!localFolderMap.has(String(remoteF.id))) {
       cloudOnlyFolders++;
     }
   }
@@ -390,7 +524,7 @@ export function calculateSyncDiff(
   };
 }
 
-// 4. Perform Two-Way Smart Merge Sync
+// 4. Perform Two-Way Smart Merge Sync or Full Upload / Pull
 export async function pushSyncToCloud(
   config: CloudConfig,
   localNotes: Note[],
@@ -408,21 +542,26 @@ export async function pushSyncToCloud(
     return { success: false, message: '未配置云端 API 地址' };
   }
 
-  try {
-    const urlsToTry: string[] = [];
-    if (baseUrl.includes('.php')) {
-      urlsToTry.push(baseUrl.includes('?') ? `${baseUrl}&action=sync` : `${baseUrl}?action=sync`);
-    } else if (baseUrl.endsWith('/api')) {
-      urlsToTry.push(`${baseUrl}/sync`);
-      urlsToTry.push(`${baseUrl}?action=sync`);
-    } else {
-      urlsToTry.push(`${baseUrl}/api/sync`);
-      urlsToTry.push(`${baseUrl}/sync`);
-      urlsToTry.push(`${baseUrl}?action=sync`);
+  // Special optimization for pull_all: first fetch remote data directly
+  if (mode === 'pull_all') {
+    const remoteRes = await fetchRemoteData(config);
+    if (remoteRes.success && remoteRes.data) {
+      return {
+        success: true,
+        message: '已成功从云端拉取全量最新数据，已覆盖本地！',
+        mergedNotes: remoteRes.data.notes,
+        mergedFolders: remoteRes.data.folders,
+        serverTime: remoteRes.data.serverTime,
+      };
     }
+  }
+
+  try {
+    const urlsToTry = getActionCandidateUrls(baseUrl, 'sync', '/sync');
 
     const payload = {
       action: mode,
+      mode,
       lastSyncedAt: config.lastSyncedAt || 0,
       notes: localNotes,
       folders: localFolders,
@@ -447,7 +586,7 @@ export async function pushSyncToCloud(
     }
 
     if (!lastRes) {
-      return { success: false, message: '无法连接到云端同步接口' };
+      return { success: false, message: '无法连接到云端同步接口，请检查服务端地址' };
     }
 
     if (!lastRes.ok) {
@@ -468,12 +607,40 @@ export async function pushSyncToCloud(
     }
 
     const data = result.data || result;
-    const mergedNotes: Note[] = Array.isArray(data.notes) ? data.notes : (Array.isArray(result.notes) ? result.notes : localNotes);
-    const mergedFolders: Folder[] = Array.isArray(data.folders) ? data.folders : (Array.isArray(result.folders) ? result.folders : localFolders);
+
+    const rawNotesList = Array.isArray(data.notes)
+      ? data.notes
+      : Array.isArray(result.notes)
+      ? result.notes
+      : Array.isArray(data.mergedNotes)
+      ? data.mergedNotes
+      : Array.isArray(result.mergedNotes)
+      ? result.mergedNotes
+      : null;
+
+    const rawFoldersList = Array.isArray(data.folders)
+      ? data.folders
+      : Array.isArray(result.folders)
+      ? result.folders
+      : Array.isArray(data.mergedFolders)
+      ? data.mergedFolders
+      : Array.isArray(result.mergedFolders)
+      ? result.mergedFolders
+      : null;
+
+    const mergedNotes: Note[] = rawNotesList ? rawNotesList.map(normalizeRemoteNote) : localNotes;
+    const mergedFolders: Folder[] = rawFoldersList ? rawFoldersList.map(normalizeRemoteFolder) : localFolders;
+
+    const successMessage =
+      mode === 'push_all'
+        ? '本地数据已完全强制覆盖上传至云端服务器！'
+        : mode === 'pull_all'
+        ? '已成功从云端拉取覆盖本地数据！'
+        : extractResponseMessage(result, '云端双向智能同步成功！');
 
     return {
       success: true,
-      message: extractResponseMessage(result, '云端同步成功！'),
+      message: successMessage,
       mergedNotes,
       mergedFolders,
       serverTime: data.serverTime || result.serverTime || Date.now(),
@@ -495,26 +662,28 @@ export async function saveSingleNoteToCloud(
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
 
   try {
-    const url = baseUrl.includes('.php')
-      ? `${baseUrl}?action=upsert_note`
-      : `${baseUrl}/notes`;
+    const urls = getActionCandidateUrls(baseUrl, 'upsert_note', '/notes');
+    const headers = getHeaders(config);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: getHeaders(config),
-      body: JSON.stringify({ note }),
-    });
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ note, action: 'upsert_note' }),
+        });
 
-    if (!res.ok) {
-      return { success: false, message: `单篇笔记同步失败 (HTTP ${res.status})` };
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '已增量同步至云端'),
+          };
+        }
+      } catch {}
     }
 
-    const data = await res.json().catch(() => null);
-    const isSuccess = isResponseSuccessful(data, res.ok);
-    return {
-      success: isSuccess,
-      message: extractResponseMessage(data, '已同步至云端'),
-    };
+    return { success: false, message: '单篇笔记同步未成功' };
   } catch (err: any) {
     return { success: false, message: `增量同步失败: ${err.message}` };
   }
@@ -529,26 +698,36 @@ export async function deleteSingleNoteFromCloud(
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
 
   try {
-    const url = baseUrl.includes('.php')
-      ? `${baseUrl}?action=delete_note&id=${encodeURIComponent(noteId)}`
-      : `${baseUrl}/notes/${encodeURIComponent(noteId)}`;
+    const urls = getActionCandidateUrls(
+      baseUrl,
+      'delete_note',
+      `/notes/${encodeURIComponent(noteId)}`
+    );
+    const headers = getHeaders(config);
 
-    const res = await fetch(url, {
-      method: 'DELETE',
-      headers: getHeaders(config),
-      body: JSON.stringify({ id: noteId }),
-    });
+    for (const url of urls) {
+      try {
+        const fullUrl = url.includes('?')
+          ? `${url}&id=${encodeURIComponent(noteId)}`
+          : `${url}?id=${encodeURIComponent(noteId)}`;
 
-    if (!res.ok) {
-      return { success: false, message: `云端删除失败 (HTTP ${res.status})` };
+        const res = await fetch(fullUrl, {
+          method: 'DELETE',
+          headers,
+          body: JSON.stringify({ id: noteId, action: 'delete_note' }),
+        });
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '云端已删除'),
+          };
+        }
+      } catch {}
     }
 
-    const data = await res.json().catch(() => null);
-    const isSuccess = isResponseSuccessful(data, res.ok);
-    return {
-      success: isSuccess,
-      message: extractResponseMessage(data, '云端已删除'),
-    };
+    return { success: false, message: '云端删除未成功' };
   } catch (err: any) {
     return { success: false, message: `删除同步失败: ${err.message}` };
   }
@@ -563,26 +742,28 @@ export async function saveSingleFolderToCloud(
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
 
   try {
-    const url = baseUrl.includes('.php')
-      ? `${baseUrl}?action=upsert_folder`
-      : `${baseUrl}/folders`;
+    const urls = getActionCandidateUrls(baseUrl, 'upsert_folder', '/folders');
+    const headers = getHeaders(config);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: getHeaders(config),
-      body: JSON.stringify({ folder }),
-    });
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ folder, action: 'upsert_folder' }),
+        });
 
-    if (!res.ok) {
-      return { success: false, message: `文件夹同步失败 (HTTP ${res.status})` };
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '文件夹已同步至云端'),
+          };
+        }
+      } catch {}
     }
 
-    const data = await res.json().catch(() => null);
-    const isSuccess = isResponseSuccessful(data, res.ok);
-    return {
-      success: isSuccess,
-      message: extractResponseMessage(data, '文件夹已同步至云端'),
-    };
+    return { success: false, message: '文件夹同步未成功' };
   } catch (err: any) {
     return { success: false, message: `文件夹同步失败: ${err.message}` };
   }
@@ -597,29 +778,37 @@ export async function deleteSingleFolderFromCloud(
   if (!baseUrl) return { success: false, message: '未配置 API 地址' };
 
   try {
-    const url = baseUrl.includes('.php')
-      ? `${baseUrl}?action=delete_folder&id=${encodeURIComponent(folderId)}`
-      : `${baseUrl}/folders/${encodeURIComponent(folderId)}`;
+    const urls = getActionCandidateUrls(
+      baseUrl,
+      'delete_folder',
+      `/folders/${encodeURIComponent(folderId)}`
+    );
+    const headers = getHeaders(config);
 
-    const res = await fetch(url, {
-      method: 'DELETE',
-      headers: getHeaders(config),
-      body: JSON.stringify({ id: folderId }),
-    });
+    for (const url of urls) {
+      try {
+        const fullUrl = url.includes('?')
+          ? `${url}&id=${encodeURIComponent(folderId)}`
+          : `${url}?id=${encodeURIComponent(folderId)}`;
 
-    if (!res.ok) {
-      return { success: false, message: `云端删除文件夹失败 (HTTP ${res.status})` };
+        const res = await fetch(fullUrl, {
+          method: 'DELETE',
+          headers,
+          body: JSON.stringify({ id: folderId, action: 'delete_folder' }),
+        });
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '云端文件夹已删除'),
+          };
+        }
+      } catch {}
     }
 
-    const data = await res.json().catch(() => null);
-    const isSuccess = isResponseSuccessful(data, res.ok);
-    return {
-      success: isSuccess,
-      message: extractResponseMessage(data, '云端文件夹已删除'),
-    };
+    return { success: false, message: '云端文件夹删除未成功' };
   } catch (err: any) {
     return { success: false, message: `删除文件夹同步失败: ${err.message}` };
   }
 }
-
-

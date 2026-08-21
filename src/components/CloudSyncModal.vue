@@ -391,22 +391,35 @@ function formatSyncTime(timestamp?: number | null) {
               </div>
 
               <!-- Diff counts -->
-              <div v-if="syncDiff" class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
-                <div class="p-2.5 bg-blue-50/60 border border-blue-100 rounded-lg text-center">
-                  <div class="text-lg font-bold text-blue-600">{{ syncDiff.localOnlyNotes + syncDiff.localOnlyFolders }}</div>
-                  <div class="text-[11px] text-blue-700">本地待上传新增项</div>
+              <div v-if="syncDiff" class="space-y-2.5 pt-1">
+                <div
+                  v-if="syncDiff.totalDiff === 0"
+                  class="p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between text-xs text-emerald-800"
+                >
+                  <div class="flex items-center gap-1.5 font-medium">
+                    <CheckCircle2 class="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>本地与云端数据已完全同步一致</span>
+                  </div>
+                  <span class="text-[11px] bg-emerald-100/80 text-emerald-700 px-2 py-0.5 rounded font-mono">0 项差异</span>
                 </div>
-                <div class="p-2.5 bg-amber-50/60 border border-amber-100 rounded-lg text-center">
-                  <div class="text-lg font-bold text-amber-600">{{ syncDiff.localUpdatedNotes }}</div>
-                  <div class="text-[11px] text-amber-700">本地待更新笔记</div>
-                </div>
-                <div class="p-2.5 bg-emerald-50/60 border border-emerald-100 rounded-lg text-center">
-                  <div class="text-lg font-bold text-emerald-600">{{ syncDiff.cloudOnlyNotes + syncDiff.cloudOnlyFolders }}</div>
-                  <div class="text-[11px] text-emerald-700">云端待拉取新增项</div>
-                </div>
-                <div class="p-2.5 bg-purple-50/60 border border-purple-100 rounded-lg text-center">
-                  <div class="text-lg font-bold text-purple-600">{{ syncDiff.cloudUpdatedNotes }}</div>
-                  <div class="text-[11px] text-purple-700">云端最新修改项</div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <div class="p-2.5 bg-blue-50/60 border border-blue-100 rounded-lg text-center">
+                    <div class="text-lg font-bold text-blue-600">{{ syncDiff.localOnlyNotes + syncDiff.localOnlyFolders }}</div>
+                    <div class="text-[11px] text-blue-700">本地待上传新增项</div>
+                  </div>
+                  <div class="p-2.5 bg-amber-50/60 border border-amber-100 rounded-lg text-center">
+                    <div class="text-lg font-bold text-amber-600">{{ syncDiff.localUpdatedNotes }}</div>
+                    <div class="text-[11px] text-amber-700">本地待更新笔记</div>
+                  </div>
+                  <div class="p-2.5 bg-emerald-50/60 border border-emerald-100 rounded-lg text-center">
+                    <div class="text-lg font-bold text-emerald-600">{{ syncDiff.cloudOnlyNotes + syncDiff.cloudOnlyFolders }}</div>
+                    <div class="text-[11px] text-emerald-700">云端待拉取新增项</div>
+                  </div>
+                  <div class="p-2.5 bg-purple-50/60 border border-purple-100 rounded-lg text-center">
+                    <div class="text-lg font-bold text-purple-600">{{ syncDiff.cloudUpdatedNotes }}</div>
+                    <div class="text-[11px] text-purple-700">云端最新修改项</div>
+                  </div>
                 </div>
               </div>
 

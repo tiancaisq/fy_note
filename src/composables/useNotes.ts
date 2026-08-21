@@ -271,6 +271,10 @@ export function useNotes() {
     if (options?.deletedNoteId) pendingDeletedNoteIds.add(options.deletedNoteId);
     if (options?.deletedFolderId) pendingDeletedFolderIds.add(options.deletedFolderId);
 
+    if (isSyncing.value) {
+      return;
+    }
+
     if (!cloudConfig.value.enabled || !cloudConfig.value.apiUrl || !cloudConfig.value.autoSync) {
       if (!cloudConfig.value.enabled) {
         syncStatus.value = 'unconfigured';
@@ -1188,10 +1192,28 @@ export function useNotes() {
         if (res.mergedFolders) {
           folders.value = res.mergedFolders;
         }
+
+        // If current activeFolderId is not found in folders, fallback to first available folder or root
+        if (activeFolderId.value && !folders.value.some((f) => f.id === activeFolderId.value)) {
+          activeFolderId.value = firstRootFolderId.value || (folders.value[0]?.id ?? '');
+        }
+
         cloudConfig.value.enabled = true;
         cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
         syncStatus.value = 'synced';
-        syncDiff.value = null;
+        pendingModifiedNoteIds.clear();
+        pendingModifiedFolderIds.clear();
+        pendingDeletedNoteIds.clear();
+        pendingDeletedFolderIds.clear();
+        syncDiff.value = {
+          localOnlyNotes: 0,
+          localUpdatedNotes: 0,
+          cloudOnlyNotes: 0,
+          cloudUpdatedNotes: 0,
+          localOnlyFolders: 0,
+          cloudOnlyFolders: 0,
+          totalDiff: 0,
+        };
         showToast(res.message || '数据已成功同步至云端');
         return { success: true, message: res.message };
       } else {

@@ -401,7 +401,7 @@ if (
 if (
     $resource === 'sync' || 
     $action === 'sync' || 
-    ($action === 'merge' || $action === 'push_all')
+    ($action === 'merge' || $action === 'push_all' || $action === 'pull_all')
 ) {
     if ($method !== 'POST') {
         jsonResponse(405, false, '同步接口仅支持 POST 请求');
@@ -460,7 +460,49 @@ if (
             $mergedNotes = $clientNotes;
             $mergedFolders = $clientFolders;
         } 
-        // 模式 2: merge (双向基于时间戳智能合并)
+        // 模式 2: pull_all (仅从云端拉取，绝不把本地数据写入云端)
+        elseif ($mode === 'pull_all') {
+            $fStmt = $pdo->prepare("SELECT * FROM folders WHERE user_id = :userId AND is_deleted = 0 ORDER BY order_num ASC");
+            $fStmt->execute([':userId' => $userId]);
+            $mergedFolders = array_map(function($f) {
+                return [
+                    'id' => $f['id'],
+                    'name' => $f['name'],
+                    'parentId' => $f['parent_id'],
+                    'order' => (int)$f['order_num'],
+                    'isCollapsed' => (bool)$f['is_collapsed'],
+                    'color' => $f['color'] ?? null,
+                    'createdAt' => $f['created_at'],
+                    'updatedAt' => $f['updated_at'],
+                ];
+            }, $fStmt->fetchAll());
+
+            $nStmt = $pdo->prepare("SELECT * FROM notes WHERE user_id = :userId ORDER BY updated_at DESC");
+            $nStmt->execute([':userId' => $userId]);
+            $mergedNotes = array_map(function($n) {
+                $tags = [];
+                if (!empty($n['tags'])) {
+                    $decoded = json_decode($n['tags'], true);
+                    if (is_array($decoded)) $tags = $decoded;
+                }
+                return [
+                    'id' => $n['id'],
+                    'title' => $n['title'],
+                    'content' => $n['content'],
+                    'folderId' => $n['folder_id'],
+                    'format' => $n['format'] ?? 'markdown',
+                    'type' => $n['type'] ?? 'markdown',
+                    'tags' => $tags,
+                    'isStarred' => (bool)$n['is_starred'],
+                    'isFavorite' => (bool)$n['is_favorite'],
+                    'isShared' => (bool)$n['is_shared'],
+                    'isDeleted' => (bool)$n['is_deleted'],
+                    'createdAt' => $n['created_at'],
+                    'updatedAt' => $n['updated_at'],
+                ];
+            }, $nStmt->fetchAll());
+        }
+        // 模式 3: merge (双向基于时间戳智能合并)
         else {
             // 获取云端现有数据
             $fStmt = $pdo->prepare("SELECT * FROM folders WHERE user_id = :userId");

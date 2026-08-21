@@ -788,18 +788,20 @@ function handleArrowNavigation(direction: 'up' | 'down' | 'left' | 'right') {
   // 2. If node is in Left-side branch (node is to the left of Root)
   else if (orientation === 'left') {
     if (direction === 'left') {
-      // Left key on left branch: Expand outwards to child nodes
+      // Pressing Left on a left-side node: expand outwards into children further to the left
       const isCollapsed = (typeof current.isCollapsed === 'function' && current.isCollapsed()) || current.getData('expandState') === 'collapse';
       if (!isCollapsed && children.length > 0) {
-        // Pick child vertically closest to current node center
-        const sortedChildren = [...children].sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
+        // Filter children strictly to the left of current node, or pick child vertically closest
+        const leftChildren = children.filter(c => getNodeCenter(c).x <= curCenter.x);
+        const candidateChildren = leftChildren.length > 0 ? leftChildren : children;
+        const sortedChildren = [...candidateChildren].sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
         targetNode = sortedChildren[0];
       } else {
         targetNode = findNearestNodeInDirection(current, 'left');
       }
     } else if (direction === 'right') {
-      // Right key on left branch: Retract inwards towards parent/root
-      targetNode = parent;
+      // Pressing Right on a left-side node: navigate towards the right (inward towards parent/root)
+      targetNode = parent || findNearestNodeInDirection(current, 'right');
     } else if (direction === 'up') {
       // Up key: Previous sibling in vertical order
       if (parent) {
@@ -829,13 +831,15 @@ function handleArrowNavigation(direction: 'up' | 'down' | 'left' | 'right') {
   // 3. If node is in Right-side branch (node is to the right of Root)
   else if (orientation === 'right') {
     if (direction === 'left') {
-      // Left key on right branch: Retract inwards towards parent/root
-      targetNode = parent;
+      // Pressing Left on a right-side node: navigate towards the left (inward towards parent/root)
+      targetNode = parent || findNearestNodeInDirection(current, 'left');
     } else if (direction === 'right') {
-      // Right key on right branch: Expand outwards to child nodes
+      // Pressing Right on a right-side node: expand outwards into children further to the right
       const isCollapsed = (typeof current.isCollapsed === 'function' && current.isCollapsed()) || current.getData('expandState') === 'collapse';
       if (!isCollapsed && children.length > 0) {
-        const sortedChildren = [...children].sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
+        const rightChildren = children.filter(c => getNodeCenter(c).x >= curCenter.x);
+        const candidateChildren = rightChildren.length > 0 ? rightChildren : children;
+        const sortedChildren = [...candidateChildren].sort((a, b) => Math.abs(getNodeCenter(a).y - curCenter.y) - Math.abs(getNodeCenter(b).y - curCenter.y));
         targetNode = sortedChildren[0];
       } else {
         targetNode = findNearestNodeInDirection(current, 'right');
