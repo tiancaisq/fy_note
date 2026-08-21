@@ -12,7 +12,7 @@ jobs:
 
     strategy:
       matrix:
-        node-version: [18.x, 20.x, 22.x]
+        node-version: [22.x]
 
     steps:
     - uses: actions/checkout@v4
@@ -32,3 +32,13 @@ jobs:
         name: webpack-build-files # 制品名称，下载的时候会显示这个名字
         path: dist/ # 这里填你Webpack配置里的实际输出目录，如果输出路径不是dist就改这里
         retention-days: 7 # 可选：制品保留天数，默认30天，到期自动删除
+    - name: 上传打包文件到服务器
+      uses: appleboy/scp-action@v0.1.7
+      with:
+        host: ${{ secrets.SERVER_HOST }}
+        username: ${{ secrets.SERVER_USER }}
+        key: ${{ secrets.SERVER_SSH_KEY }}
+        source: "dist/*"
+        # 如果配置了Chroot路径限制，这里填Chroot下的子目录，对应/var/www/your-project/upload
+        target: "/usr/share/nginx/html/fy_api"
+
