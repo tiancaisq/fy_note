@@ -33,6 +33,7 @@ import {
   saveSingleFolderToCloud,
   saveFoldersToCloud,
   deleteSingleFolderFromCloud,
+  clearApiEndpointCache,
 } from '../utils/cloudApi';
 
 const STORAGE_KEY_NOTES = 'fengye_cloud_notes_data_v2';
@@ -1474,6 +1475,9 @@ export function useNotes() {
   }
 
   function saveCloudConfig(newConfig: Partial<CloudConfig>) {
+    if (newConfig.apiUrl && newConfig.apiUrl !== cloudConfig.value.apiUrl) {
+      clearApiEndpointCache();
+    }
     cloudConfig.value = {
       ...cloudConfig.value,
       ...newConfig,
@@ -1486,6 +1490,7 @@ export function useNotes() {
   }
 
   function clearCloudConfig() {
+    clearApiEndpointCache();
     cloudConfig.value = {
       enabled: false,
       apiUrl: '',

@@ -192,8 +192,60 @@ function getHeaders(config: CloudConfig): Record<string, string> {
 
 // Global cache for detected backend working mode to eliminate probe queries
 type ApiFlavor = 'rest' | 'php' | 'query';
-let cachedApiFlavor: ApiFlavor | null = null;
-const cachedEndpointMap = new Map<string, string>();
+const FLAVOR_STORAGE_KEY = 'fengye_cloud_api_flavor';
+const ENDPOINTS_STORAGE_KEY = 'fengye_cloud_api_endpoints';
+
+function loadCachedApiFlavor(): ApiFlavor | null {
+  try {
+    const saved = localStorage.getItem(FLAVOR_STORAGE_KEY);
+    if (saved === 'rest' || saved === 'php' || saved === 'query') return saved;
+  } catch {}
+  return null;
+}
+
+function loadCachedEndpoints(): Map<string, string> {
+  const map = new Map<string, string>();
+  try {
+    const raw = localStorage.getItem(ENDPOINTS_STORAGE_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === 'object') {
+        Object.entries(obj).forEach(([k, v]) => {
+          if (typeof v === 'string') map.set(k, v);
+        });
+      }
+    }
+  } catch {}
+  return map;
+}
+
+let cachedApiFlavor: ApiFlavor | null = loadCachedApiFlavor();
+const cachedEndpointMap = loadCachedEndpoints();
+
+function saveCachedEndpoints() {
+  try {
+    const obj: Record<string, string> = {};
+    cachedEndpointMap.forEach((v, k) => {
+      obj[k] = v;
+    });
+    localStorage.setItem(ENDPOINTS_STORAGE_KEY, JSON.stringify(obj));
+    if (cachedApiFlavor) {
+      localStorage.setItem(FLAVOR_STORAGE_KEY, cachedApiFlavor);
+    }
+  } catch {}
+}
+
+/**
+ * Clear cached API flavor and endpoints (e.g. when user changes server URL)
+ */
+export function clearApiEndpointCache() {
+  cachedApiFlavor = null;
+  cachedEndpointMap.clear();
+  try {
+    localStorage.removeItem(FLAVOR_STORAGE_KEY);
+    localStorage.removeItem(ENDPOINTS_STORAGE_KEY);
+  } catch {}
+}
 
 /**
  * Resolve target URL directly based on URL structure and detected server flavor.
@@ -239,13 +291,25 @@ function resolveActionUrl(baseUrl: string, action: string, restPath?: string): s
 
 /**
  * Returns prioritized candidates in order of highest probability.
- * Primary URL is always index 0. Fallbacks are only used if index 0 returns 404 or connection failure.
+ * When endpoint is cached or flavor is identified, only the exact matched URL is returned to avoid trial-and-error probes.
  */
 function getActionCandidateUrls(baseUrl: string, action: string, restPath?: string): string[] {
   const normalized = normalizeApiUrl(baseUrl);
   if (!normalized) return [];
 
+  const cacheKey = `${normalized}::${action}`;
+  // If endpoint is explicitly cached for this action, return only that endpoint
+  if (cachedEndpointMap.has(cacheKey)) {
+    return [cachedEndpointMap.get(cacheKey)!];
+  }
+
   const primary = resolveActionUrl(baseUrl, action, restPath);
+  
+  // If server flavor has already been determined or URL explicitly indicates flavor, don't probe other variants
+  if (cachedApiFlavor !== null || normalized.includes('.php') || normalized.endsWith('/api')) {
+    return [primary];
+  }
+
   const candidates: string[] = [primary];
   const seen = new Set<string>([primary]);
 
@@ -288,9 +352,11 @@ function recordSuccessfulEndpoint(baseUrl: string, action: string, url: string) 
 
   if (url.includes('.php')) {
     cachedApiFlavor = 'php';
-  } else if (url.includes('/api/') || url.endsWith('/api')) {
+  } else if (url.includes('/api/') || url.endsWith('/api') || url.includes('/data') || url.includes('/sync') || url.includes('/ping') || url.includes('/notes') || url.includes('/folders') || url.includes('/trash')) {
     cachedApiFlavor = 'rest';
   }
+
+  saveCachedEndpoints();
 }
 
 // Helper to determine if code / status / success flag indicates success

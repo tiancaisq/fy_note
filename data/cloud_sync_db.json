@@ -23,7 +23,7 @@
           "id": "folder-1787315922477",
           "name": "我的笔记",
           "parentId": null,
-          "isOpen": true,
+          "isOpen": false,
           "order": 1
         },
         {
@@ -31,17 +31,24 @@
           "name": "222",
           "parentId": null,
           "isOpen": true,
-          "order": 3
+          "order": 2
         },
         {
           "id": "folder-1787324776666",
           "name": "333",
           "parentId": null,
           "isOpen": true,
-          "order": 2
+          "order": 3
+        },
+        {
+          "id": "folder-1787325616155",
+          "name": "666",
+          "parentId": "folder-1787315922477",
+          "isOpen": true,
+          "order": 1
         }
       ],
-      "updatedAt": 1787325214031
+      "updatedAt": 1787326445665
     }
   }
 }
