@@ -3822,19 +3822,19 @@ onUnmounted(() => {
           />
         </div>
 
-        <!-- Floating Quick Navigation Bar (悬浮功能导航条: 备注、新增链接节点、大纲视图) -->
+        <!-- Floating Quick Navigation Bar (全功能垂直悬浮导航条: 备注、链接节点、大纲视图、小地图、居中、整理、缩放) -->
         <div
           id="mindmap-floating-quick-bar"
-          class="absolute top-4 right-4 z-20 flex flex-col items-center gap-1.5 p-1.5 bg-white/95 backdrop-blur-md rounded-2xl shadow-lg border border-gray-200/90 select-none pointer-events-auto"
+          class="absolute top-4 right-4 z-20 flex flex-col items-center gap-1 p-1.5 bg-white/95 backdrop-blur-md rounded-2xl shadow-lg border border-gray-200/90 select-none pointer-events-auto"
         >
           <!-- 备注 (Note) -->
           <button
             @click="openNoteModal()"
-            class="relative flex flex-col items-center justify-center w-12 h-12 rounded-xl text-gray-700 hover:text-amber-800 hover:bg-amber-50/80 transition-all cursor-pointer group"
+            class="relative flex flex-col items-center justify-center w-11 h-11 rounded-xl text-gray-700 hover:text-amber-800 hover:bg-amber-50/80 transition-all cursor-pointer group"
             title="备注 (为当前节点添加或编辑备注，快捷键: F8)"
           >
             <FileText class="w-4 h-4 text-amber-600 group-hover:scale-110 transition-transform" />
-            <span class="text-[10px] font-medium mt-0.5">备注</span>
+            <span class="text-[9.5px] font-medium mt-0.5">备注</span>
             <span
               v-if="selectedNodeHasNote"
               class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-500 ring-2 ring-white"
@@ -3842,16 +3842,14 @@ onUnmounted(() => {
             ></span>
           </button>
 
-          <div class="w-6 h-px bg-gray-200/80 my-0.5"></div>
-
           <!-- 新增链接节点 (Add Link Node / Bi-directional Link) -->
           <button
             @click="openBiLinkModal()"
-            class="relative flex flex-col items-center justify-center w-12 h-12 rounded-xl text-gray-700 hover:text-cyan-800 hover:bg-cyan-50/80 transition-all cursor-pointer group"
+            class="relative flex flex-col items-center justify-center w-11 h-11 rounded-xl text-gray-700 hover:text-cyan-800 hover:bg-cyan-50/80 transition-all cursor-pointer group"
             title="新增链接节点 / 双向关联 (快捷键: Cmd/Ctrl+K)"
           >
             <ArrowLeftRight class="w-4 h-4 text-cyan-600 group-hover:scale-110 transition-transform" />
-            <span class="text-[10px] font-medium mt-0.5">链接节点</span>
+            <span class="text-[9.5px] font-medium mt-0.5">链接节点</span>
             <span
               v-if="selectedNodeLinkCount > 0"
               class="absolute top-1 right-1 min-w-4 h-4 px-1 rounded-full bg-cyan-600 text-white text-[9px] font-bold flex items-center justify-center ring-2 ring-white"
@@ -3861,13 +3859,11 @@ onUnmounted(() => {
             </span>
           </button>
 
-          <div class="w-6 h-px bg-gray-200/80 my-0.5"></div>
-
           <!-- 大纲视图 (Outline View) -->
           <button
             @click="toggleOutline"
             :class="[
-              'relative flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all cursor-pointer group',
+              'relative flex flex-col items-center justify-center w-11 h-11 rounded-xl transition-all cursor-pointer group',
               isOutlineOpen
                 ? 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-300 shadow-2xs'
                 : 'text-gray-700 hover:text-emerald-700 hover:bg-emerald-50/80'
@@ -3878,8 +3874,71 @@ onUnmounted(() => {
               class="w-4 h-4"
               :class="isOutlineOpen ? 'text-emerald-600 scale-105' : 'text-emerald-600 group-hover:scale-110 transition-transform'"
             />
-            <span class="text-[10px] font-medium mt-0.5">大纲视图</span>
+            <span class="text-[9.5px] font-medium mt-0.5">大纲视图</span>
           </button>
+
+          <div class="w-6 h-px bg-gray-200/80 my-0.5"></div>
+
+          <!-- 小地图切换 (Minimap Toggle) -->
+          <button
+            @click="isMinimapOpen = !isMinimapOpen"
+            :class="[
+              'relative flex flex-col items-center justify-center w-11 h-11 rounded-xl transition-all cursor-pointer group',
+              isMinimapOpen
+                ? 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-300 shadow-2xs'
+                : 'text-gray-700 hover:text-emerald-700 hover:bg-emerald-50/80'
+            ]"
+            title="切换小地图 (左下角缩略全景与快速漫游)"
+          >
+            <MapIcon
+              class="w-4 h-4"
+              :class="isMinimapOpen ? 'text-emerald-600 scale-105' : 'text-emerald-600 group-hover:scale-110 transition-transform'"
+            />
+            <span class="text-[9.5px] font-medium mt-0.5">小地图</span>
+          </button>
+
+          <!-- 居中视野 (Center View) -->
+          <button
+            @click="centerView"
+            class="relative flex flex-col items-center justify-center w-11 h-11 rounded-xl text-gray-700 hover:text-emerald-700 hover:bg-emerald-50/80 transition-all cursor-pointer group"
+            title="居中视野 (将思维导图居中对齐)"
+          >
+            <Compass class="w-4 h-4 text-emerald-600 group-hover:scale-110 transition-transform" />
+            <span class="text-[9.5px] font-medium mt-0.5">居中</span>
+          </button>
+
+          <!-- 整理排版 / 重置布局 (Reset Layout) -->
+          <button
+            @click="resetLayout"
+            class="relative flex flex-col items-center justify-center w-11 h-11 rounded-xl text-gray-700 hover:text-emerald-700 hover:bg-emerald-50/80 transition-all cursor-pointer group"
+            title="重置布局 (恢复默认节点排布与整齐排列)"
+          >
+            <LayoutGrid class="w-4 h-4 text-emerald-600 group-hover:scale-110 transition-transform" />
+            <span class="text-[9.5px] font-medium mt-0.5">整理排版</span>
+          </button>
+
+          <div class="w-6 h-px bg-gray-200/80 my-0.5"></div>
+
+          <!-- 画布缩放组 (Zoom Controls: In, Percent, Out) -->
+          <div class="flex flex-col items-center gap-0.5">
+            <button
+              @click="zoomIn"
+              class="flex items-center justify-center w-8 h-7 rounded-lg text-gray-600 hover:text-emerald-700 hover:bg-emerald-50/80 transition-colors cursor-pointer"
+              title="放大画布 (Ctrl + +)"
+            >
+              <ZoomIn class="w-4 h-4" />
+            </button>
+            <span class="text-[10px] font-mono text-gray-600 font-semibold text-center select-none leading-none py-0.5">
+              {{ zoomPercent }}%
+            </span>
+            <button
+              @click="zoomOut"
+              class="flex items-center justify-center w-8 h-7 rounded-lg text-gray-600 hover:text-emerald-700 hover:bg-emerald-50/80 transition-colors cursor-pointer"
+              title="缩小画布 (Ctrl + -)"
+            >
+              <ZoomOut class="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         <!-- Floating Minimap (小地图/鹰眼导航器) Widget - 放置在左下角 -->
@@ -3890,54 +3949,6 @@ onUnmounted(() => {
             @update:is-open="isMinimapOpen = $event"
             @close="isMinimapOpen = false"
           />
-        </div>
-
-        <!-- Floating Bottom Right Canvas Controls -->
-        <div class="absolute bottom-4 right-4 z-20 flex items-center gap-1 bg-white/95 backdrop-blur-xs p-1.5 rounded-xl shadow-lg border border-gray-200 select-none">
-          <button
-            @click="isMinimapOpen = !isMinimapOpen"
-            :class="[
-              'p-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1 text-xs',
-              isMinimapOpen ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-gray-100 text-gray-600'
-            ]"
-            title="切换小地图 (缩略全景与快速拖拽漫游)"
-          >
-            <MapIcon class="w-4 h-4" :class="isMinimapOpen ? 'text-emerald-600' : 'text-gray-500'" />
-            <span class="text-[11px] font-medium hidden sm:inline">小地图</span>
-          </button>
-          <div class="h-4 w-px bg-gray-200 mx-0.5"></div>
-          <button
-            @click="zoomOut"
-            class="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition-colors cursor-pointer"
-            title="缩小 (Ctrl + -)"
-          >
-            <ZoomOut class="w-4 h-4" />
-          </button>
-          <span class="text-xs font-mono text-gray-700 font-semibold px-1 min-w-10 text-center">{{ zoomPercent }}%</span>
-          <button
-            @click="zoomIn"
-            class="p-1.5 rounded-lg hover:bg-gray-100 text-gray-600 transition-colors cursor-pointer"
-            title="放大 (Ctrl + +)"
-          >
-            <ZoomIn class="w-4 h-4" />
-          </button>
-          <div class="h-4 w-px bg-gray-200 mx-0.5"></div>
-          <button
-            @click="resetLayout"
-            class="p-1.5 rounded-lg hover:bg-emerald-50 text-gray-600 hover:text-emerald-700 transition-colors cursor-pointer flex items-center gap-1 text-xs"
-            title="重置布局 (恢复默认节点排布与整齐排列)"
-          >
-            <LayoutGrid class="w-4 h-4 text-emerald-600" />
-            <span class="text-[11px] font-medium text-gray-700 hidden sm:inline">重置布局</span>
-          </button>
-          <div class="h-4 w-px bg-gray-200 mx-0.5"></div>
-          <button
-            @click="centerView"
-            class="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600 transition-colors cursor-pointer"
-            title="居中视野"
-          >
-            <Compass class="w-4 h-4" />
-          </button>
         </div>
       </div>
       </div>
