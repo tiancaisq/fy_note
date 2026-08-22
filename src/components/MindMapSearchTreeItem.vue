@@ -7,7 +7,8 @@ import {
   Link as LinkIcon,
   GitBranch,
   Circle,
-  Hash
+  Hash,
+  ArrowLeftRight
 } from 'lucide-vue-next';
 
 export interface SearchTreeNode {
@@ -15,8 +16,10 @@ export interface SearchTreeNode {
   node: any;
   text: string;
   isMatch: boolean;
-  matchedField?: 'text' | 'note' | 'hyperlink';
+  matchedField?: 'text' | 'note' | 'hyperlink' | 'link';
   note?: string;
+  hyperlink?: string;
+  links?: Array<{ id: string; text?: string }>;
   priority?: number;
   progress?: number;
   children: SearchTreeNode[];
@@ -135,10 +138,26 @@ function highlightMatch(text: string, keyword: string) {
         </span>
 
         <span
+          v-if="item.links && item.links.length > 0"
+          class="shrink-0 text-cyan-700 bg-cyan-50 border border-cyan-200 px-1 py-0.2 rounded text-[9px] flex items-center gap-0.5 font-medium"
+          :title="`双向链接 (${item.links.length} 个): ${item.links.map(l => l.text || l.id).join(', ')}`"
+        >
+          <ArrowLeftRight class="w-2.5 h-2.5 text-cyan-600" />
+          <span>{{ item.links.length }}</span>
+        </span>
+
+        <span
           v-if="item.isMatch && item.matchedField === 'note'"
           class="text-[9px] bg-amber-100 text-amber-800 px-1 py-0.2 rounded font-mono font-normal"
         >
           备注匹配
+        </span>
+
+        <span
+          v-if="item.isMatch && item.matchedField === 'link'"
+          class="text-[9px] bg-cyan-100 text-cyan-800 px-1 py-0.2 rounded font-mono font-normal"
+        >
+          双向链接匹配
         </span>
 
         <!-- Subtree Match Count Badge if not leaf or if current is parent -->

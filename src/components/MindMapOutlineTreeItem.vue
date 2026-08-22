@@ -5,7 +5,8 @@ import {
   ChevronDown,
   FileText,
   Link as LinkIcon,
-  Circle
+  Circle,
+  ArrowLeftRight
 } from 'lucide-vue-next';
 
 export interface OutlineTreeNode {
@@ -17,6 +18,7 @@ export interface OutlineTreeNode {
   hyperlink?: string;
   priority?: number;
   progress?: number;
+  links?: Array<{ id: string; text?: string }>;
   children: OutlineTreeNode[];
   expanded: boolean;
   totalDescendants: number;
@@ -34,6 +36,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'locate', node: any): void;
   (e: 'toggle', item: OutlineTreeNode): void;
+  (e: 'open-bilink', node: any): void;
 }>();
 
 const currentLevel = computed(() => props.level || 0);
@@ -186,6 +189,18 @@ function handleItemClick() {
         <LinkIcon class="w-3 h-3" />
       </span>
 
+      <!-- Bidirectional Link Indicator -->
+      <button
+        v-if="item.links && item.links.length > 0"
+        type="button"
+        @click.stop.prevent="emit('open-bilink', item.node || item.id || item)"
+        class="shrink-0 text-cyan-700 bg-cyan-50 border border-cyan-200 hover:bg-cyan-100 hover:border-cyan-300 px-1.5 py-0.2 rounded text-[9px] flex items-center gap-0.5 font-medium transition-colors cursor-pointer"
+        :title="`双向链接 (${item.links.length} 个关联节点): ${item.links.map(l => l.text || l.id).join(', ')} (点击管理或跳转)`"
+      >
+        <ArrowLeftRight class="w-2.5 h-2.5 text-cyan-600" />
+        <span>{{ item.links.length }}</span>
+      </button>
+
       <!-- Child Count Badge -->
       <span
         v-if="item.children && item.children.length > 0"
@@ -211,6 +226,7 @@ function handleItemClick() {
         :wrap-text="wrapText"
         @locate="emit('locate', $event)"
         @toggle="emit('toggle', $event)"
+        @open-bilink="emit('open-bilink', $event)"
       />
     </div>
   </div>

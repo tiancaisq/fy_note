@@ -46,7 +46,10 @@ import {
   LayoutGrid,
   FileCode2,
   Map as MapIcon,
-  WrapText
+  WrapText,
+  ArrowLeftRight,
+  ArrowLeft,
+  Navigation
 } from 'lucide-vue-next';
 import { Note, Folder } from '../types';
 import { compareFolders } from '../utils/folderSort';
@@ -55,8 +58,20 @@ import MindMapSearchTreeItem, { SearchTreeNode } from './MindMapSearchTreeItem.v
 import MindMapOutlineTreeItem, { OutlineTreeNode } from './MindMapOutlineTreeItem.vue';
 import MindMapMarkdownModal from './MindMapMarkdownModal.vue';
 import MindMapMinimap from './MindMapMinimap.vue';
+import MindMapBiLinkModal from './MindMapBiLinkModal.vue';
 import { loadKityMinder } from '../utils/kityminder';
+import { registerKityMinderBiLinkModule } from '../utils/kityminderBiLinkModule';
 import { exportToXMind, importFromXMind } from '../utils/xmind';
+import {
+  addBidirectionalLink,
+  removeBidirectionalLink,
+  getNodeLinks,
+  setNodeLinks,
+  cleanDanglingLinks,
+  getNodeStableId,
+  getNodeText,
+  getNodePath
+} from '../utils/mindmapLinks';
 
 const props = withDefaults(
   defineProps<{
@@ -360,6 +375,7 @@ async function initKityMinder() {
 
   try {
     await loadKityMinder();
+    registerKityMinderBiLinkModule();
     const Minder = (window as any).kityminder?.Minder;
     if (!Minder) {
       console.error('KityMinder engine not found on window');
@@ -465,6 +481,14 @@ async function initKityMinder() {
           finishEditing(true);
         }
         openNoteModal(node);
+      }
+    });
+
+    // Native KityMinder bi-link badge click event handler (inside node)
+    minder.on('bilinkclick', (e: any) => {
+      const node = (e && e.node) || (e && e.getTargetNode && e.getTargetNode()) || minder.getSelectedNode();
+      if (node) {
+        handleNodeLinkBadgeClick(node, e.event || e);
       }
     });
 
@@ -1067,6 +1091,11 @@ function applySnapshot(index: number) {
 function handleContentChange() {
   outlineTreeVersion.value++;
   if (!minder) return;
+  try {
+    cleanDanglingLinks(minder.getRoot());
+  } catch (err) {
+    console.warn('[MindMap] handleContentChange biLink sync warning', err);
+  }
   if (!isHistoryNavigating.value) {
     recordSnapshot();
   }
@@ -1444,6 +1473,191 @@ function saveNodeLink() {
   isLinkModalOpen.value = false;
 }
 
+// Bidirectional Link (双向链接) State & Actions
+const isBiLinkModalOpen = ref(false);
+const biLinkTargetNode = ref<any>(null);
+const jumpBackInfo = ref<{ fromId: string; fromText: string; toId: string; toText: string } | null>(null);
+let jumpBackTimer: any = null;
+
+// Teleported multi-link dropdown
+const activeLinkDropdownNode = ref<any>(null);
+const linkDropdownPos = ref({ top: 0, left: 0 });
+
+const selectedNodeLinkCount = computed(() => {
+  const _v = outlineTreeVersion.value;
+  if (!minder) return 0;
+  const node = minder.getSelectedNode();
+  if (!node) return 0;
+  return getNodeLinks(node).length;
+});
+
+const activeLinkDropdownLinks = computed(() => {
+  if (!activeLinkDropdownNode.value || !minder) return [];
+  const links = getNodeLinks(activeLinkDropdownNode.value);
+  return links.map(l => {
+    const liveTarget = findLiveNode(l.id);
+    return {
+      id: l.id,
+      text: liveTarget ? getNodeText(liveTarget) : (l.text || '目标节点'),
+      path: liveTarget ? getNodePath(liveTarget) : []
+    };
+  });
+});
+
+function openBiLinkModal(targetNode?: any) {
+  if (!minder) return;
+  const node = isMinderNode(targetNode) ? targetNode : (minder.getSelectedNode() || minder.getRoot());
+  if (node && isMinderNode(node)) {
+    if (minder.getSelectedNode() !== node) {
+      minder.select(node, true);
+    }
+    biLinkTargetNode.value = node;
+    isBiLinkModalOpen.value = true;
+  }
+}
+
+function handleAddBidirectionalLink(targetNodeId: string) {
+  if (!minder || !biLinkTargetNode.value) return;
+  const sourceNode = biLinkTargetNode.value;
+  const targetNode = findLiveNode(targetNodeId);
+  if (!sourceNode || !targetNode) return;
+
+  const success = addBidirectionalLink(sourceNode, targetNode);
+  if (success) {
+    outlineTreeVersion.value++;
+    try {
+      if (typeof sourceNode.render === 'function') sourceNode.render();
+      if (typeof targetNode.render === 'function') targetNode.render();
+      if (typeof minder.layout === 'function') minder.layout(100);
+    } catch {}
+    recordSnapshot();
+    minder.fire('contentchange');
+  }
+}
+
+function handleRemoveBidirectionalLink(targetNodeId: string) {
+  if (!minder || !biLinkTargetNode.value) return;
+  const sourceNode = biLinkTargetNode.value;
+  const targetNode = findLiveNode(targetNodeId);
+  if (!sourceNode || !targetNode) return;
+
+  const success = removeBidirectionalLink(sourceNode, targetNode);
+  if (success) {
+    outlineTreeVersion.value++;
+    try {
+      if (typeof sourceNode.render === 'function') sourceNode.render();
+      if (typeof targetNode.render === 'function') targetNode.render();
+      if (typeof minder.layout === 'function') minder.layout(100);
+    } catch {}
+    recordSnapshot();
+    minder.fire('contentchange');
+  }
+}
+
+function handleCreateAndLinkNode({ text, type }: { text: string; type: 'child' | 'sibling' }) {
+  if (!minder || !biLinkTargetNode.value) return;
+  const sourceNode = biLinkTargetNode.value;
+  
+  let newNode: any = null;
+  if (type === 'sibling' && sourceNode.parent) {
+    newNode = minder.createNode(text, sourceNode.parent);
+    sourceNode.parent.insertChild(newNode, (sourceNode.getIndex ? sourceNode.getIndex() : 0) + 1);
+  } else {
+    newNode = minder.createNode(text, sourceNode);
+    sourceNode.appendChild(newNode);
+  }
+
+  if (newNode) {
+    try {
+      minder.renderNode(newNode);
+      minder.renderNode(sourceNode);
+      minder.layout(100);
+    } catch {}
+    addBidirectionalLink(sourceNode, newNode);
+    outlineTreeVersion.value++;
+    recordSnapshot();
+    minder.fire('contentchange');
+  }
+}
+
+function handleNodeLinkBadgeClick(node: any, event?: any) {
+  if (!minder || !node) return;
+  const links = getNodeLinks(node);
+  if (!links || links.length === 0) return;
+
+  if (links.length === 1) {
+    const targetId = links[0].id;
+    const targetNode = findLiveNode(targetId);
+    if (targetNode) {
+      const fromText = getNodeText(node);
+      const toText = getNodeText(targetNode);
+      const fromId = getNodeStableId(node);
+
+      jumpBackInfo.value = { fromId, fromText, toId: targetId, toText };
+      if (jumpBackTimer) clearTimeout(jumpBackTimer);
+      jumpBackTimer = setTimeout(() => {
+        jumpBackInfo.value = null;
+      }, 9000);
+
+      locateNode(targetNode);
+    } else {
+      openBiLinkModal(node);
+    }
+  } else {
+    // Multi-links dropdown
+    activeLinkDropdownNode.value = node;
+    let clientX = window.innerWidth / 2;
+    let clientY = window.innerHeight / 2;
+
+    const origin = event?.originEvent || event;
+    if (origin && typeof origin.clientX === 'number' && typeof origin.clientY === 'number') {
+      clientX = origin.clientX;
+      clientY = origin.clientY;
+    } else {
+      try {
+        const box = node.getRenderBox ? node.getRenderBox('screen') : null;
+        if (box) {
+          clientX = box.x + box.width;
+          clientY = box.y + box.height / 2;
+        }
+      } catch {}
+    }
+
+    linkDropdownPos.value = {
+      top: Math.min(clientY + 10, window.innerHeight - 320),
+      left: Math.min(Math.max(10, clientX - 20), window.innerWidth - 320)
+    };
+  }
+}
+
+function handleJumpToLink(targetId: string) {
+  const targetNode = findLiveNode(targetId);
+  if (targetNode) {
+    if (activeLinkDropdownNode.value) {
+      const fromText = getNodeText(activeLinkDropdownNode.value);
+      const toText = getNodeText(targetNode);
+      const fromId = getNodeStableId(activeLinkDropdownNode.value);
+      jumpBackInfo.value = { fromId, fromText, toId: targetId, toText };
+      if (jumpBackTimer) clearTimeout(jumpBackTimer);
+      jumpBackTimer = setTimeout(() => {
+        jumpBackInfo.value = null;
+      }, 9000);
+    }
+    locateNode(targetNode);
+  }
+}
+
+function handleJumpBack() {
+  if (!jumpBackInfo.value) return;
+  const fromId = jumpBackInfo.value.fromId;
+  jumpBackInfo.value = null;
+  locateNode(fromId);
+}
+
+function closeLinkDropdown() {
+  activeLinkDropdownNode.value = null;
+}
+
 // Search Navigation inside Mind Map
 const isSearchNavOpen = ref(false);
 const searchIncludeNotes = ref(true);
@@ -1463,7 +1677,8 @@ interface SearchResultItem {
   progress?: number;
   path: string[];
   level: number;
-  matchedField: 'text' | 'note' | 'hyperlink';
+  matchedField: 'text' | 'note' | 'hyperlink' | 'link';
+  links?: Array<{ id: string; text?: string }>;
 }
 
 function getNodeText(node: any): string {
@@ -1481,7 +1696,7 @@ function getNodePath(node: any): string[] {
   return path;
 }
 
-function checkNodeMatch(node: any, keyword: string): { isMatch: boolean; field?: 'text' | 'note' | 'hyperlink' } {
+function checkNodeMatch(node: any, keyword: string): { isMatch: boolean; field?: 'text' | 'note' | 'hyperlink' | 'link' } {
   if (!node || !keyword) return { isMatch: false };
   const text = getNodeText(node).toLowerCase();
   if (text.includes(keyword)) {
@@ -1497,6 +1712,10 @@ function checkNodeMatch(node: any, keyword: string): { isMatch: boolean; field?:
   const linkTitle = (node.getData('hyperlinkTitle') || '').toLowerCase();
   if (link.includes(keyword) || linkTitle.includes(keyword)) {
     return { isMatch: true, field: 'hyperlink' };
+  }
+  const biLinks = getNodeLinks(node);
+  if (biLinks.some(l => (l.text || '').toLowerCase().includes(keyword))) {
+    return { isMatch: true, field: 'link' };
   }
   return { isMatch: false };
 }
@@ -1625,7 +1844,8 @@ const searchResults = computed<SearchResultItem[]>(() => {
         progress: node.getData('progress'),
         path: getNodePath(node),
         level: typeof node.getLevel === 'function' ? node.getLevel() : 0,
-        matchedField: match.field || 'text'
+        matchedField: match.field || 'text',
+        links: getNodeLinks(node)
       });
     }
     const children = node.getChildren ? node.getChildren() : [];
@@ -1675,6 +1895,7 @@ const searchTree = computed<SearchTreeNode[]>(() => {
       note: node.getData('note'),
       priority: node.getData('priority'),
       progress: node.getData('progress'),
+      links: getNodeLinks(node),
       children: childTrees,
       expanded: true,
       matchCountInSubtree
@@ -2028,6 +2249,7 @@ const outlineTree = computed<OutlineTreeNode[]>(() => {
       hyperlink: node.getData('hyperlink'),
       priority: node.getData('priority'),
       progress: node.getData('progress'),
+      links: getNodeLinks(node),
       children: childNodes,
       expanded: isExpanded,
       totalDescendants
@@ -2044,7 +2266,8 @@ function filterOutlineTreeNode(nodeItem: OutlineTreeNode, keyword: string): Outl
 
   const selfTextMatch = (nodeItem.text || '').toLowerCase().includes(kw);
   const selfNoteMatch = (nodeItem.note || '').toLowerCase().includes(kw);
-  const isSelfMatch = selfTextMatch || selfNoteMatch;
+  const selfLinkMatch = (nodeItem.links || []).some(l => (l.text || '').toLowerCase().includes(kw));
+  const isSelfMatch = selfTextMatch || selfNoteMatch || selfLinkMatch;
 
   const filteredChildren: OutlineTreeNode[] = [];
   for (const child of nodeItem.children) {
@@ -2267,17 +2490,18 @@ function handleKeyDown(e: KeyboardEvent) {
   }
 
   // If modals are open, allow Escape to close them
-  if (isNoteModalOpen.value || isLinkModalOpen.value || isSearchNavOpen.value || isMarkdownModalOpen.value) {
+  if (isNoteModalOpen.value || isLinkModalOpen.value || isBiLinkModalOpen.value || isSearchNavOpen.value || isMarkdownModalOpen.value) {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
       isNoteModalOpen.value = false;
       isLinkModalOpen.value = false;
+      isBiLinkModalOpen.value = false;
       isSearchNavOpen.value = false;
       isMarkdownModalOpen.value = false;
       return;
     }
-    if (isNoteModalOpen.value || isLinkModalOpen.value || isMarkdownModalOpen.value) {
+    if (isNoteModalOpen.value || isLinkModalOpen.value || isBiLinkModalOpen.value || isMarkdownModalOpen.value) {
       return;
     }
   }
@@ -2445,6 +2669,13 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
+  // Bidirectional Link shortcut (Cmd/Ctrl + K or Alt + L)
+  if ((isMod && (e.key.toLowerCase() === 'k' || e.code === 'KeyK')) || (e.altKey && (e.key.toLowerCase() === 'l' || e.code === 'KeyL'))) {
+    e.preventDefault();
+    openBiLinkModal();
+    return;
+  }
+
   // Toggle expand/collapse of node (/)
   if (e.key === '/') {
     e.preventDefault();
@@ -2462,6 +2693,14 @@ function handleDocumentClick(e: MouseEvent) {
     const triggerEl = target.closest('.breadcrumb-dropdown-trigger');
     if (!triggerEl && (!dropdownEl || !dropdownEl.contains(target))) {
       activeBreadcrumbDropdown.value = null;
+    }
+  }
+
+  // Close multi-link dropdown if clicked outside
+  if (activeLinkDropdownNode.value) {
+    const linkDropdownEl = document.getElementById('node-links-teleport-dropdown');
+    if (!linkDropdownEl || !linkDropdownEl.contains(target)) {
+      closeLinkDropdown();
     }
   }
 
@@ -2827,6 +3066,22 @@ onUnmounted(() => {
             <span>备注</span>
           </button>
 
+          <!-- Bidirectional Link (双向链接) Button -->
+          <button
+            @click="openBiLinkModal()"
+            class="px-2.5 py-1 rounded bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs flex items-center gap-1.5 cursor-pointer transition-colors border border-cyan-200/70 font-medium shadow-2xs"
+            title="新增链接节点 / 管理双向链接 (快捷键: Cmd/Ctrl+K)"
+          >
+            <ArrowLeftRight class="w-3.5 h-3.5 text-cyan-600" />
+            <span>新增链接节点</span>
+            <span
+              v-if="selectedNodeLinkCount > 0"
+              class="w-4 h-4 rounded-full bg-cyan-600 text-white text-[9px] font-bold flex items-center justify-center -ml-0.5"
+            >
+              {{ selectedNodeLinkCount }}
+            </span>
+          </button>
+
           <!-- Outline (大纲) Button -->
           <button
             @click="toggleOutline"
@@ -3061,6 +3316,21 @@ onUnmounted(() => {
             >
               <LinkIcon class="w-3.5 h-3.5 text-blue-600" />
               <span>链接</span>
+            </button>
+
+            <button
+              @click="openBiLinkModal()"
+              class="px-2 py-1 rounded bg-cyan-50 hover:bg-cyan-100 text-cyan-800 text-xs flex items-center gap-1 cursor-pointer transition-colors border border-cyan-200/60 font-medium"
+              title="新增链接节点 / 双向链接 (快捷键: Cmd/Ctrl+K)"
+            >
+              <ArrowLeftRight class="w-3.5 h-3.5 text-cyan-600" />
+              <span>双向链接</span>
+              <span
+                v-if="selectedNodeLinkCount > 0"
+                class="w-4 h-4 rounded-full bg-cyan-600 text-white text-[9px] font-bold flex items-center justify-center"
+              >
+                {{ selectedNodeLinkCount }}
+              </span>
             </button>
           </div>
         </template>
@@ -3406,6 +3676,7 @@ onUnmounted(() => {
                     :wrap-text="isOutlineTextWrap"
                     @locate="locateNode"
                     @toggle="toggleOutlineItem"
+                    @open-bilink="openBiLinkModal"
                   />
                 </template>
                 <div v-else class="py-8 text-center text-xs text-gray-400">
@@ -3943,6 +4214,106 @@ onUnmounted(() => {
       @close="isMarkdownModalOpen = false"
       @apply="handleApplyMarkdown"
     />
+
+    <!-- Node Bidirectional Link Modal (双向链接) -->
+    <MindMapBiLinkModal
+      :is-open="isBiLinkModalOpen"
+      :current-node="biLinkTargetNode"
+      :root-node="minder ? minder.getRoot() : null"
+      @close="isBiLinkModalOpen = false"
+      @add-link="handleAddBidirectionalLink"
+      @remove-link="handleRemoveBidirectionalLink"
+      @locate-node="locateNode"
+      @create-and-link="handleCreateAndLinkNode"
+    />
+
+    <!-- Teleported Node Bidirectional Links Dropdown Menu -->
+    <Teleport to="body">
+      <div
+        v-if="activeLinkDropdownNode && activeLinkDropdownLinks.length > 0"
+        id="node-links-teleport-dropdown"
+        class="fixed z-[99999] min-w-56 max-w-80 bg-white rounded-xl shadow-2xl border border-gray-200 py-1.5 animate-in fade-in zoom-in-95 duration-100 select-none text-xs"
+        :style="{
+          top: `${linkDropdownPos.top}px`,
+          left: `${linkDropdownPos.left}px`
+        }"
+      >
+        <div class="px-3 py-1.5 text-[11px] font-semibold text-gray-500 border-b border-gray-100 flex items-center justify-between bg-cyan-50/60">
+          <span class="flex items-center gap-1.5 text-cyan-800 font-bold">
+            <ArrowLeftRight class="w-3.5 h-3.5 text-cyan-600" />
+            <span>关联的节点 ({{ activeLinkDropdownLinks.length }})</span>
+          </span>
+          <button @click="closeLinkDropdown" class="text-gray-400 hover:text-gray-600 p-0.5 rounded cursor-pointer">
+            <X class="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div class="py-1 max-h-60 overflow-y-auto">
+          <button
+            v-for="link in activeLinkDropdownLinks"
+            :key="link.id"
+            @click="handleJumpToLink(link.id); closeLinkDropdown()"
+            class="w-full px-3 py-1.5 text-left hover:bg-cyan-50/80 flex items-center justify-between gap-2 transition-colors cursor-pointer group"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="text-xs text-gray-800 font-medium group-hover:text-cyan-900 truncate">
+                {{ link.text || '未命名节点' }}
+              </div>
+              <div v-if="link.path && link.path.length > 0" class="text-[10px] text-gray-400 truncate">
+                {{ link.path.join(' > ') }}
+              </div>
+            </div>
+            <Navigation class="w-3 h-3 text-cyan-600 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+          </button>
+        </div>
+
+        <div class="px-2 pt-1 border-t border-gray-100">
+          <button
+            @click="openBiLinkModal(activeLinkDropdownNode); closeLinkDropdown()"
+            class="w-full py-1 text-[11px] text-center text-cyan-700 hover:bg-cyan-50 rounded-md transition-colors font-medium cursor-pointer"
+          >
+            管理全部双向链接...
+          </button>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Floating Return to Previous Node Toast/Banner -->
+    <Teleport to="body">
+      <Transition
+        enter-active-class="transition duration-200 ease-out"
+        enter-from-class="transform -translate-y-4 opacity-0"
+        enter-to-class="transform translate-y-0 opacity-100"
+        leave-active-class="transition duration-150 ease-in"
+        leave-from-class="transform translate-y-0 opacity-100"
+        leave-to-class="transform -translate-y-4 opacity-0"
+      >
+        <div
+          v-if="jumpBackInfo"
+          class="fixed top-18 left-1/2 -translate-x-1/2 z-50 bg-slate-900/90 backdrop-blur-md text-white px-4 py-2 rounded-full shadow-2xl border border-white/20 flex items-center gap-3 text-xs"
+        >
+          <div class="flex items-center gap-1.5 text-cyan-300 font-medium truncate max-w-xs">
+            <ArrowLeftRight class="w-3.5 h-3.5 shrink-0" />
+            <span class="truncate">已跳转至: <strong>{{ jumpBackInfo.toText }}</strong></span>
+          </div>
+          <span class="text-gray-400 shrink-0">·</span>
+          <button
+            @click="handleJumpBack"
+            class="bg-cyan-600 hover:bg-cyan-500 text-white font-medium px-2.5 py-0.5 rounded-full cursor-pointer flex items-center gap-1 transition-colors text-xs shrink-0 shadow-xs"
+          >
+            <ArrowLeft class="w-3 h-3" />
+            <span class="truncate max-w-28">返回 {{ jumpBackInfo.fromText }}</span>
+          </button>
+          <button
+            @click="jumpBackInfo = null"
+            class="text-gray-400 hover:text-white p-0.5 rounded cursor-pointer shrink-0"
+            title="关闭提示"
+          >
+            <X class="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- Teleported Breadcrumb Sibling Dropdown Menu -->
     <Teleport to="body">

@@ -7,6 +7,7 @@ export interface MindMapNodeData {
   progress?: number;
   expandState?: 'expand' | 'collapse';
   id?: string;
+  links?: Array<{ id: string; text?: string }>;
 }
 
 export interface MindMapTreeNode {
