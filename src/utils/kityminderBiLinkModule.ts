@@ -31,7 +31,7 @@ export function registerKityMinderBiLinkModule(): boolean {
     group.height = 16;
 
     // 节点内部微章半透明背景色块 (圆角胶囊状)
-    const rect = new kity.Rect(18, 16, 0.5, -8, 3)
+    const rect = new kity.Rect(18, 16, 0.5, -8, 3.5)
       .fill('rgba(6, 182, 212, 0.16)')
       .stroke('rgba(8, 145, 178, 0.65)', 1);
 
@@ -40,17 +40,28 @@ export function registerKityMinderBiLinkModule(): boolean {
       .setPathData(arrowPathData)
       .stroke('#0891b2', 1.3)
       .fill('none')
-      .setTranslate(2.5, -4.5);
+      .setTranslate(4.5, -4.5);
 
-    // 关联多节点数量提示文本
+    // 关联多节点数量提示文本 (居中对齐)
     const countText = new kity.Text()
-      .setX(16)
+      .setX(17.5)
       .setY(0)
+      .setTextAnchor('middle')
       .setVerticalAlign('middle')
       .setFontSize(9)
       .setFontBold(true)
       .fill('#0891b2')
       .setVisible(false);
+
+    if (countText.node) {
+      countText.node.setAttribute('text-anchor', 'middle');
+      countText.node.setAttribute('dominant-baseline', 'central');
+      countText.node.setAttribute('alignment-baseline', 'central');
+      countText.node.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+      countText.node.style.fontWeight = '700';
+      countText.node.style.fontSize = '9px';
+      countText.node.style.userSelect = 'none';
+    }
 
     group.addShapes([rect, path, countText]);
 
@@ -75,14 +86,31 @@ export function registerKityMinderBiLinkModule(): boolean {
       }
 
       if (count > 1) {
-        group.width = count >= 10 ? 29 : 25;
+        const isDoubleDigits = count >= 10;
+        group.width = isDoubleDigits ? 30 : 24;
+        const centerX = isDoubleDigits ? 20.5 : 17.5;
+
         rect.setWidth(group.width);
-        path.setTranslate(2, -4.5);
-        countText.setX(group.width - 8).setContent(String(count)).setVisible(true);
+        path.setTranslate(2.5, -4.5);
+        countText
+          .setX(centerX)
+          .setY(0)
+          .setTextAnchor('middle')
+          .setVerticalAlign('middle')
+          .setContent(String(count))
+          .setVisible(true);
+
+        if (countText.node) {
+          countText.node.setAttribute('x', String(centerX));
+          countText.node.setAttribute('y', '0');
+          countText.node.setAttribute('text-anchor', 'middle');
+          countText.node.setAttribute('dominant-baseline', 'central');
+          countText.node.setAttribute('alignment-baseline', 'central');
+        }
       } else {
         group.width = 18;
         rect.setWidth(18);
-        path.setTranslate(3.5, -4.5);
+        path.setTranslate(4.5, -4.5);
         countText.setVisible(false);
       }
 
