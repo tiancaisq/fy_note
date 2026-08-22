@@ -3916,29 +3916,6 @@ onUnmounted(() => {
             <LayoutGrid class="w-4 h-4 text-emerald-600 group-hover:scale-110 transition-transform" />
             <span class="text-[9.5px] font-medium mt-0.5">整理排版</span>
           </button>
-
-          <div class="w-6 h-px bg-gray-200/80 my-0.5"></div>
-
-          <!-- 画布缩放组 (Zoom Controls: In, Percent, Out) -->
-          <div class="flex flex-col items-center gap-0.5">
-            <button
-              @click="zoomIn"
-              class="flex items-center justify-center w-8 h-7 rounded-lg text-gray-600 hover:text-emerald-700 hover:bg-emerald-50/80 transition-colors cursor-pointer"
-              title="放大画布 (Ctrl + +)"
-            >
-              <ZoomIn class="w-4 h-4" />
-            </button>
-            <span class="text-[10px] font-mono text-gray-600 font-semibold text-center select-none leading-none py-0.5">
-              {{ zoomPercent }}%
-            </span>
-            <button
-              @click="zoomOut"
-              class="flex items-center justify-center w-8 h-7 rounded-lg text-gray-600 hover:text-emerald-700 hover:bg-emerald-50/80 transition-colors cursor-pointer"
-              title="缩小画布 (Ctrl + -)"
-            >
-              <ZoomOut class="w-4 h-4" />
-            </button>
-          </div>
         </div>
 
         <!-- Floating Minimap (小地图/鹰眼导航器) Widget - 放置在左下角 -->
@@ -3953,12 +3930,12 @@ onUnmounted(() => {
       </div>
       </div>
 
-      <!-- Editor Footer: Tags & Breadcrumb & Status -->
+      <!-- Editor Footer: Tags & Breadcrumb & Zoom & Status -->
       <div class="h-10 px-4 sm:px-6 bg-white border-t border-gray-100 flex items-center justify-between text-xs text-gray-400 shrink-0 select-none z-20 gap-3">
-        <!-- Left Group: Tags + Breadcrumb Bar -->
+        <!-- Left Group: Tags + Breadcrumb Bar + Zoom Controls -->
         <div class="flex items-center gap-3 overflow-hidden flex-1 min-w-0">
           <!-- Tag List -->
-          <div class="flex items-center gap-1.5 overflow-x-auto py-1 shrink-0 max-w-[45%] scrollbar-none">
+          <div class="flex items-center gap-1.5 overflow-x-auto py-1 shrink-0 max-w-[35%] sm:max-w-[40%] scrollbar-none">
             <span
               v-for="tag in localTags"
               :key="tag"
@@ -4038,6 +4015,34 @@ onUnmounted(() => {
             <template v-else>
               <span class="text-xs text-gray-400 italic">点击画布节点查看层级路径</span>
             </template>
+          </div>
+
+          <!-- Divider before Zoom Controls -->
+          <div class="h-4 w-px bg-gray-200 shrink-0"></div>
+
+          <!-- Zoom Controls (放在底部面包屑导航右侧) -->
+          <div class="flex items-center gap-0.5 shrink-0 bg-gray-50 hover:bg-gray-100/80 rounded-md px-1 py-0.5 border border-gray-200/80 transition-colors">
+            <button
+              @click="zoomOut"
+              class="p-1 rounded hover:bg-white text-gray-500 hover:text-emerald-700 transition-colors cursor-pointer shadow-2xs"
+              title="缩小画布 (Ctrl + -)"
+            >
+              <ZoomOut class="w-3.5 h-3.5" />
+            </button>
+            <button
+              @click="centerView"
+              class="px-1.5 py-0.5 text-[11px] font-mono font-semibold text-gray-700 hover:text-emerald-700 cursor-pointer min-w-10 text-center"
+              title="点击重置缩放/居中"
+            >
+              {{ zoomPercent }}%
+            </button>
+            <button
+              @click="zoomIn"
+              class="p-1 rounded hover:bg-white text-gray-500 hover:text-emerald-700 transition-colors cursor-pointer shadow-2xs"
+              title="放大画布 (Ctrl + +)"
+            >
+              <ZoomIn class="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
