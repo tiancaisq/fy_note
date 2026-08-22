@@ -1,13 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
-import {
-  Map as MapIcon,
-  Maximize2,
-  Minimize2,
-  X,
-  Compass,
-  RotateCcw
-} from 'lucide-vue-next';
+import { Map as MapIcon } from 'lucide-vue-next';
 
 const props = withDefaults(
   defineProps<{
@@ -26,7 +19,6 @@ const emit = defineEmits<{
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const containerRef = ref<HTMLDivElement | null>(null);
-const isMinimized = ref(false);
 
 // Minimap Dimensions
 const CANVAS_WIDTH = 230;
@@ -64,7 +56,7 @@ function miniToWorld(mx: number, my: number) {
 // Render the minimap content onto canvas
 function renderMinimap() {
   const canvas = canvasRef.value;
-  if (!canvas || !props.minder || isMinimized.value || !props.isOpen) return;
+  if (!canvas || !props.minder || !props.isOpen) return;
 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -609,35 +601,10 @@ defineExpose({
           <span>小地图</span>
           <span class="text-[10px] text-gray-400 font-mono font-normal">导航器</span>
         </div>
-        <div class="flex items-center gap-0.5">
-          <button
-            @click="resetToCenter"
-            class="p-1 rounded hover:bg-gray-200/60 text-gray-400 hover:text-emerald-600 transition-colors cursor-pointer"
-            title="视野回中 (定位根节点)"
-          >
-            <Compass class="w-3 h-3" />
-          </button>
-          <button
-            @click="isMinimized = !isMinimized"
-            class="p-1 rounded hover:bg-gray-200/60 text-gray-400 hover:text-gray-700 transition-colors cursor-pointer"
-            :title="isMinimized ? '展开小地图' : '收起小地图'"
-          >
-            <Maximize2 v-if="isMinimized" class="w-3 h-3" />
-            <Minimize2 v-else class="w-3 h-3" />
-          </button>
-          <button
-            @click="emit('close')"
-            class="p-1 rounded hover:bg-gray-200/60 text-gray-400 hover:text-gray-700 transition-colors cursor-pointer"
-            title="关闭小地图"
-          >
-            <X class="w-3 h-3" />
-          </button>
-        </div>
       </div>
 
       <!-- Minimap Canvas Body -->
       <div
-        v-show="!isMinimized"
         class="relative w-full bg-slate-50/50 flex items-center justify-center overflow-hidden"
         :style="{ height: `${CANVAS_HEIGHT}px` }"
       >

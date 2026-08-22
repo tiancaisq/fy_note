@@ -145,7 +145,12 @@ const hierarchicalFolders = computed(() => {
   return result;
 });
 const newTagInput = ref('');
-const activeTab = ref<'common' | 'idea' | 'appearance' | 'data' | 'view'>('common');
+const activeTab = ref<'common' | 'idea' | 'appearance' | 'data' | 'view' | null>(null);
+
+function toggleTab(tab: 'common' | 'idea' | 'appearance' | 'data' | 'view') {
+  activeTab.value = activeTab.value === tab ? null : tab;
+}
+
 const isFullscreen = ref(true);
 const saveStatus = ref('已自动同步');
 const searchKeyword = ref('');
@@ -211,15 +216,22 @@ function toggleBreadcrumbDropdown(itemId: string, event?: MouseEvent) {
     const pill = target.closest('.breadcrumb-node-pill') || target;
     const rect = pill.getBoundingClientRect();
     
-    // Position below the pill, ensuring it doesn't overflow viewport edges
+    // Position below or above the pill, ensuring it doesn't overflow viewport edges
     const dropdownWidth = 240;
+    const dropdownHeight = 260;
     let left = rect.left;
     if (left + dropdownWidth > window.innerWidth - 16) {
       left = Math.max(16, window.innerWidth - dropdownWidth - 16);
     }
 
+    let top = rect.bottom + 4;
+    if (top + dropdownHeight > window.innerHeight - 16) {
+      // If bottom of viewport doesn't have enough space, show above the pill
+      top = Math.max(16, rect.top - dropdownHeight - 4);
+    }
+
     breadcrumbDropdownPos.value = {
-      top: rect.bottom + 4,
+      top,
       left: Math.max(12, left),
       width: Math.max(200, rect.width)
     };
@@ -513,6 +525,18 @@ async function initKityMinder() {
       const node = (e && e.getTargetNode && e.getTargetNode()) || (e && e.originEvent && findNodeByDomElement(e.originEvent.target));
       if (isEditingNode.value && (!node || node !== editingNode)) {
         finishEditing(true);
+      }
+    });
+
+    minder.on('mousedown', () => {
+      if (activeTab.value) {
+        activeTab.value = null;
+      }
+      if (activeBreadcrumbDropdown.value) {
+        activeBreadcrumbDropdown.value = null;
+      }
+      if (activeLinkDropdownNode.value) {
+        closeLinkDropdown();
       }
     });
 
@@ -1489,6 +1513,16 @@ const selectedNodeLinkCount = computed(() => {
   const node = minder.getSelectedNode();
   if (!node) return 0;
   return getNodeLinks(node).length;
+});
+
+const selectedNodeHasNote = computed(() => {
+  const _v = outlineTreeVersion.value;
+  const _sel = activeSelectedNodeId.value;
+  if (!minder) return false;
+  const node = minder.getSelectedNode();
+  if (!node) return false;
+  const note = typeof node.getData === 'function' ? node.getData('note') : '';
+  return !!(note && typeof note === 'string' && note.trim().length > 0);
 });
 
 const activeLinkDropdownLinks = computed(() => {
@@ -2687,6 +2721,20 @@ function handleKeyDown(e: KeyboardEvent) {
 function handleDocumentClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
 
+  // Auto-collapse Ribbon Tab Panel if clicked outside tab header and ribbon panel
+  if (activeTab.value && target) {
+    const ribbonContainer = document.getElementById('mindmap-ribbon-container');
+    const triggerBtn = target.closest('.mindmap-tab-btn');
+    if (!triggerBtn && ribbonContainer && !ribbonContainer.contains(target)) {
+      const isInsideModal = target.closest(
+        '#km-inline-node-editor, .modal-backdrop, .modal-container, [role="dialog"], #mindmap-floating-quick-bar, #mindmap-search-panel, #breadcrumb-teleport-dropdown, #node-links-teleport-dropdown'
+      );
+      if (!isInsideModal) {
+        activeTab.value = null;
+      }
+    }
+  }
+
   // Close breadcrumb dropdown if clicked outside
   if (activeBreadcrumbDropdown.value) {
     const dropdownEl = document.getElementById('breadcrumb-teleport-dropdown');
@@ -2893,130 +2941,169 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- KityMinder Ribbon Navigation Tab Headers (Inspired by vue-kityminder) -->
-      <div class="h-10 px-4 bg-slate-50 border-b border-gray-200 flex items-center justify-between shrink-0 select-none z-20 text-xs">
-        <!-- Tabs -->
-        <div class="flex items-center gap-1">
-          <button
-            @click="activeTab = 'common'"
-            :class="[
-              'px-3.5 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
-              activeTab === 'common'
-                ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
-                : 'text-gray-600 hover:text-gray-900 border-transparent'
-            ]"
-          >
-            <Sliders class="w-3.5 h-3.5" />
-            <span>常用操作</span>
-          </button>
-
-          <button
-            @click="activeTab = 'idea'"
-            :class="[
-              'px-3.5 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
-              activeTab === 'idea'
-                ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
-                : 'text-gray-600 hover:text-gray-900 border-transparent'
-            ]"
-          >
-            <Sparkles class="w-3.5 h-3.5" />
-            <span>思路 (节点操作)</span>
-          </button>
-
-          <button
-            @click="activeTab = 'appearance'"
-            :class="[
-              'px-3.5 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
-              activeTab === 'appearance'
-                ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
-                : 'text-gray-600 hover:text-gray-900 border-transparent'
-            ]"
-          >
-            <Palette class="w-3.5 h-3.5" />
-            <span>外观 (主题与结构)</span>
-          </button>
-
-          <button
-            @click="activeTab = 'data'"
-            :class="[
-              'px-3.5 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
-              activeTab === 'data'
-                ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
-                : 'text-gray-600 hover:text-gray-900 border-transparent'
-            ]"
-          >
-            <FileDown class="w-3.5 h-3.5" />
-            <span>数据与导出</span>
-          </button>
-
-          <button
-            @click="activeTab = 'view'"
-            :class="[
-              'px-3.5 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
-              activeTab === 'view'
-                ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
-                : 'text-gray-600 hover:text-gray-900 border-transparent'
-            ]"
-          >
-            <Layers class="w-3.5 h-3.5" />
-            <span>视图控制</span>
-          </button>
-        </div>
-
-        <!-- Outline & Quick Search Controls -->
-        <div class="flex items-center gap-2">
-          <!-- Outline Toggle Button -->
-          <button
-            @click="toggleOutline"
-            :class="[
-              'flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition-all cursor-pointer shadow-2xs',
-              isOutlineOpen
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-300 ring-1 ring-emerald-400'
-                : 'bg-white text-gray-700 hover:text-emerald-600 hover:border-emerald-300 border-gray-200'
-            ]"
-            title="侧边栏大纲树状展示 (查看完整节点目录)"
-          >
-            <ListTree class="w-3.5 h-3.5" :class="isOutlineOpen ? 'text-emerald-600' : 'text-gray-500'" />
-            <span>大纲</span>
-          </button>
-
-          <!-- Markdown Mind Map Editor Button -->
-          <button
-            @click="openMarkdownEditor"
-            class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border bg-white hover:bg-emerald-50 text-gray-700 hover:text-emerald-700 hover:border-emerald-300 border-gray-200 text-xs font-medium transition-all cursor-pointer shadow-2xs"
-            title="以 Markdown 语法模式编辑思维导图"
-          >
-            <FileCode2 class="w-3.5 h-3.5 text-emerald-600" />
-            <span>Markdown</span>
-          </button>
-
-          <!-- Inline Quick Search & Navigation Trigger -->
-          <div
-            ref="searchNavTriggerRef"
-            @click="openSearchPanel"
-            class="flex items-center gap-1.5 bg-white border border-gray-200 hover:border-emerald-500 rounded-md px-2 py-0.5 shadow-2xs cursor-pointer transition-all group"
-            title="搜索导图节点与层级导航 (快捷键: Ctrl+F / ⌘F)"
-          >
-            <Search class="w-3.5 h-3.5 text-gray-400 group-hover:text-emerald-600 transition-colors" />
-            <input
-              v-model="searchKeyword"
-              @keydown.enter.stop="handleSearchNodes"
-              @click.stop="openSearchPanel"
-              placeholder="搜索节点... (Ctrl+F)"
-              class="bg-transparent border-none outline-none text-xs text-gray-700 w-28 sm:w-36 cursor-pointer"
-            />
+      <!-- KityMinder Ribbon Navigation Tab Container -->
+      <div id="mindmap-ribbon-container" class="relative z-30 shrink-0 select-none">
+        <!-- Tab Headers -->
+        <div class="h-10 px-4 bg-slate-50 border-b border-gray-200 flex items-center justify-between text-xs">
+          <!-- Tabs -->
+          <div class="flex items-center gap-1">
             <button
-              @click.stop="handleSearchNodes"
-              class="text-[10px] bg-emerald-50 text-emerald-600 hover:bg-emerald-100 px-1.5 py-0.5 rounded cursor-pointer font-medium"
+              @click="toggleTab('common')"
+              :class="[
+                'mindmap-tab-btn px-3 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
+                activeTab === 'common'
+                  ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 border-transparent hover:bg-gray-100/70'
+              ]"
+              title="常用操作面板 (点击展开/收起)"
             >
-              {{ searchKeyword ? '导航' : '查找' }}
+              <Sliders class="w-3.5 h-3.5" />
+              <span>常用操作</span>
+              <ChevronDown
+                class="w-3 h-3 text-gray-400 transition-transform duration-200"
+                :class="activeTab === 'common' ? 'rotate-180 text-emerald-600' : ''"
+              />
+            </button>
+
+            <button
+              @click="toggleTab('idea')"
+              :class="[
+                'mindmap-tab-btn px-3 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
+                activeTab === 'idea'
+                  ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 border-transparent hover:bg-gray-100/70'
+              ]"
+              title="思路与节点操作面板 (点击展开/收起)"
+            >
+              <Sparkles class="w-3.5 h-3.5" />
+              <span>思路 (节点操作)</span>
+              <ChevronDown
+                class="w-3 h-3 text-gray-400 transition-transform duration-200"
+                :class="activeTab === 'idea' ? 'rotate-180 text-emerald-600' : ''"
+              />
+            </button>
+
+            <button
+              @click="toggleTab('appearance')"
+              :class="[
+                'mindmap-tab-btn px-3 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
+                activeTab === 'appearance'
+                  ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 border-transparent hover:bg-gray-100/70'
+              ]"
+              title="外观与主题结构面板 (点击展开/收起)"
+            >
+              <Palette class="w-3.5 h-3.5" />
+              <span>外观 (主题与结构)</span>
+              <ChevronDown
+                class="w-3 h-3 text-gray-400 transition-transform duration-200"
+                :class="activeTab === 'appearance' ? 'rotate-180 text-emerald-600' : ''"
+              />
+            </button>
+
+            <button
+              @click="toggleTab('data')"
+              :class="[
+                'mindmap-tab-btn px-3 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
+                activeTab === 'data'
+                  ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 border-transparent hover:bg-gray-100/70'
+              ]"
+              title="数据与导入导出面板 (点击展开/收起)"
+            >
+              <FileDown class="w-3.5 h-3.5" />
+              <span>数据与导出</span>
+              <ChevronDown
+                class="w-3 h-3 text-gray-400 transition-transform duration-200"
+                :class="activeTab === 'data' ? 'rotate-180 text-emerald-600' : ''"
+              />
+            </button>
+
+            <button
+              @click="toggleTab('view')"
+              :class="[
+                'mindmap-tab-btn px-3 py-1.5 rounded-t-md font-medium transition-all flex items-center gap-1.5 cursor-pointer border-b-2',
+                activeTab === 'view'
+                  ? 'bg-white text-emerald-700 border-emerald-600 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 border-transparent hover:bg-gray-100/70'
+              ]"
+              title="视图控制面板 (点击展开/收起)"
+            >
+              <Layers class="w-3.5 h-3.5" />
+              <span>视图控制</span>
+              <ChevronDown
+                class="w-3 h-3 text-gray-400 transition-transform duration-200"
+                :class="activeTab === 'view' ? 'rotate-180 text-emerald-600' : ''"
+              />
             </button>
           </div>
-        </div>
-      </div>
 
-      <!-- Ribbon Toolbar Panels depending on Active Tab -->
-      <div class="h-12 px-4 bg-white border-b border-gray-100 flex items-center gap-3 overflow-x-auto text-xs text-gray-700 shrink-0 select-none z-10 shadow-2xs">
+          <!-- Outline & Quick Search Controls -->
+          <div class="flex items-center gap-2">
+            <!-- Outline Toggle Button -->
+            <button
+              @click="toggleOutline"
+              :class="[
+                'flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition-all cursor-pointer shadow-2xs',
+                isOutlineOpen
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-300 ring-1 ring-emerald-400'
+                  : 'bg-white text-gray-700 hover:text-emerald-600 hover:border-emerald-300 border-gray-200'
+              ]"
+              title="侧边栏大纲树状展示 (查看完整节点目录)"
+            >
+              <ListTree class="w-3.5 h-3.5" :class="isOutlineOpen ? 'text-emerald-600' : 'text-gray-500'" />
+              <span>大纲</span>
+            </button>
+
+            <!-- Markdown Mind Map Editor Button -->
+            <button
+              @click="openMarkdownEditor"
+              class="flex items-center gap-1.5 px-2.5 py-1 rounded-md border bg-white hover:bg-emerald-50 text-gray-700 hover:text-emerald-700 hover:border-emerald-300 border-gray-200 text-xs font-medium transition-all cursor-pointer shadow-2xs"
+              title="以 Markdown 语法模式编辑思维导图"
+            >
+              <FileCode2 class="w-3.5 h-3.5 text-emerald-600" />
+              <span>Markdown</span>
+            </button>
+
+            <!-- Inline Quick Search & Navigation Trigger -->
+            <div
+              ref="searchNavTriggerRef"
+              @click="openSearchPanel"
+              class="flex items-center gap-1.5 bg-white border border-gray-200 hover:border-emerald-500 rounded-md px-2 py-0.5 shadow-2xs cursor-pointer transition-all group"
+              title="搜索导图节点与层级导航 (快捷键: Ctrl+F / ⌘F)"
+            >
+              <Search class="w-3.5 h-3.5 text-gray-400 group-hover:text-emerald-600 transition-colors" />
+              <input
+                v-model="searchKeyword"
+                @keydown.enter.stop="handleSearchNodes"
+                @click.stop="openSearchPanel"
+                placeholder="搜索节点... (Ctrl+F)"
+                class="bg-transparent border-none outline-none text-xs text-gray-700 w-28 sm:w-36 cursor-pointer"
+              />
+              <button
+                @click.stop="handleSearchNodes"
+                class="text-[10px] bg-emerald-50 text-emerald-600 hover:bg-emerald-100 px-1.5 py-0.5 rounded cursor-pointer font-medium"
+              >
+                {{ searchKeyword ? '导航' : '查找' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ribbon Toolbar Panels depending on Active Tab (Collapsible Floating Dropdown) -->
+        <transition
+          enter-active-class="transition-all duration-150 ease-out"
+          enter-from-class="opacity-0 -translate-y-2"
+          enter-to-class="opacity-100 translate-y-0"
+          leave-active-class="transition-all duration-100 ease-in"
+          leave-from-class="opacity-100 translate-y-0"
+          leave-to-class="opacity-0 -translate-y-2"
+        >
+          <div
+            v-if="activeTab"
+            id="mindmap-ribbon-panel"
+            class="absolute top-10 left-0 right-0 h-12 px-4 bg-white/98 backdrop-blur-md border-b border-gray-200/90 flex items-center gap-3 overflow-x-auto text-xs text-gray-700 select-none z-30 shadow-lg"
+          >
         
         <!-- TAB 0: 常用操作 (Common Actions: Undo, Redo, Note, Outline, Markdown, Nodes) -->
         <template v-if="activeTab === 'common'">
@@ -3572,6 +3659,8 @@ onUnmounted(() => {
             </button>
           </div>
         </template>
+          </div>
+        </transition>
       </div>
 
       <!-- Main Workspace Area: Left Outline Drawer + Canvas -->
@@ -3703,69 +3792,6 @@ onUnmounted(() => {
 
         <!-- Mind Map Interactive Canvas Container -->
         <div id="mindmap-canvas-wrapper" class="flex-1 relative bg-slate-50/50 overflow-hidden w-full h-full flex flex-col">
-          
-          <!-- Top Floating Breadcrumb Bar (面包屑导航栏) -->
-          <div
-            id="mindmap-breadcrumb-bar"
-            class="h-8 px-3 bg-white/95 backdrop-blur-xs border-b border-gray-200/80 flex items-center gap-1 text-xs text-gray-600 shrink-0 z-20 shadow-2xs select-none overflow-x-auto scrollbar-none"
-          >
-            <div class="flex items-center gap-1 text-gray-400 shrink-0 mr-1 text-[11px] font-medium">
-              <Compass class="w-3.5 h-3.5 text-emerald-600" />
-              <span>当前路径:</span>
-            </div>
-
-            <template v-if="breadcrumbTrail.length > 0">
-              <div
-                v-for="(item, idx) in breadcrumbTrail"
-                :key="item.id"
-                class="flex items-center gap-1 shrink-0"
-              >
-                <!-- Separator Chevron -->
-                <ChevronRight v-if="idx > 0" class="w-3 h-3 text-gray-300 shrink-0" />
-
-                <!-- Breadcrumb Node Pill + Dropdown Container -->
-                <div class="breadcrumb-node-pill relative inline-flex items-center">
-                  <!-- Main Jump Button -->
-                  <button
-                    @click="locateNode(item.node)"
-                    :class="[
-                      'px-2 py-0.5 rounded-l text-xs font-medium transition-all max-w-44 truncate flex items-center gap-1 cursor-pointer',
-                      idx === breadcrumbTrail.length - 1
-                        ? 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-300/80 shadow-2xs'
-                        : 'text-gray-600 hover:text-emerald-700 hover:bg-gray-100'
-                    ]"
-                    :title="`定位至: ${item.text}`"
-                  >
-                    <span v-if="item.isRoot" class="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded">根</span>
-                    <span class="truncate">{{ item.text || '未命名主题' }}</span>
-                  </button>
-
-                  <!-- Sibling Dropdown Trigger (for switching among peer nodes) -->
-                  <button
-                    v-if="item.siblings && item.siblings.length > 0"
-                    @click.stop="toggleBreadcrumbDropdown(item.id, $event)"
-                    :class="[
-                      'breadcrumb-dropdown-trigger px-1 py-0.5 rounded-r text-xs transition-colors cursor-pointer border-l flex items-center justify-center',
-                      idx === breadcrumbTrail.length - 1
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
-                        : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 border-gray-200'
-                    ]"
-                    :title="`展开同级分支 (共 ${item.siblings.length} 个同级节点)`"
-                  >
-                    <ChevronDown
-                      class="w-3 h-3 transition-transform"
-                      :class="activeBreadcrumbDropdown === item.id ? 'rotate-180 text-emerald-600' : ''"
-                    />
-                  </button>
-                </div>
-              </div>
-            </template>
-
-            <template v-else>
-              <span class="text-xs text-gray-400 italic">点击画布节点查看层级路径</span>
-            </template>
-          </div>
-
           <div
             id="minder-view-container"
             ref="minderContainerRef"
@@ -3796,8 +3822,68 @@ onUnmounted(() => {
           />
         </div>
 
-        <!-- Floating Minimap (小地图/鹰眼导航器) Widget -->
-        <div class="absolute bottom-16 right-4 z-20 pointer-events-auto">
+        <!-- Floating Quick Navigation Bar (悬浮功能导航条: 备注、新增链接节点、大纲视图) -->
+        <div
+          id="mindmap-floating-quick-bar"
+          class="absolute top-4 right-4 z-20 flex flex-col items-center gap-1.5 p-1.5 bg-white/95 backdrop-blur-md rounded-2xl shadow-lg border border-gray-200/90 select-none pointer-events-auto"
+        >
+          <!-- 备注 (Note) -->
+          <button
+            @click="openNoteModal()"
+            class="relative flex flex-col items-center justify-center w-12 h-12 rounded-xl text-gray-700 hover:text-amber-800 hover:bg-amber-50/80 transition-all cursor-pointer group"
+            title="备注 (为当前节点添加或编辑备注，快捷键: F8)"
+          >
+            <FileText class="w-4 h-4 text-amber-600 group-hover:scale-110 transition-transform" />
+            <span class="text-[10px] font-medium mt-0.5">备注</span>
+            <span
+              v-if="selectedNodeHasNote"
+              class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-500 ring-2 ring-white"
+              title="当前节点已有备注"
+            ></span>
+          </button>
+
+          <div class="w-6 h-px bg-gray-200/80 my-0.5"></div>
+
+          <!-- 新增链接节点 (Add Link Node / Bi-directional Link) -->
+          <button
+            @click="openBiLinkModal()"
+            class="relative flex flex-col items-center justify-center w-12 h-12 rounded-xl text-gray-700 hover:text-cyan-800 hover:bg-cyan-50/80 transition-all cursor-pointer group"
+            title="新增链接节点 / 双向关联 (快捷键: Cmd/Ctrl+K)"
+          >
+            <ArrowLeftRight class="w-4 h-4 text-cyan-600 group-hover:scale-110 transition-transform" />
+            <span class="text-[10px] font-medium mt-0.5">链接节点</span>
+            <span
+              v-if="selectedNodeLinkCount > 0"
+              class="absolute top-1 right-1 min-w-4 h-4 px-1 rounded-full bg-cyan-600 text-white text-[9px] font-bold flex items-center justify-center ring-2 ring-white"
+              title="已有关联节点"
+            >
+              {{ selectedNodeLinkCount }}
+            </span>
+          </button>
+
+          <div class="w-6 h-px bg-gray-200/80 my-0.5"></div>
+
+          <!-- 大纲视图 (Outline View) -->
+          <button
+            @click="toggleOutline"
+            :class="[
+              'relative flex flex-col items-center justify-center w-12 h-12 rounded-xl transition-all cursor-pointer group',
+              isOutlineOpen
+                ? 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-300 shadow-2xs'
+                : 'text-gray-700 hover:text-emerald-700 hover:bg-emerald-50/80'
+            ]"
+            title="大纲视图 (侧边栏展开节点树状大纲)"
+          >
+            <ListTree
+              class="w-4 h-4"
+              :class="isOutlineOpen ? 'text-emerald-600 scale-105' : 'text-emerald-600 group-hover:scale-110 transition-transform'"
+            />
+            <span class="text-[10px] font-medium mt-0.5">大纲视图</span>
+          </button>
+        </div>
+
+        <!-- Floating Minimap (小地图/鹰眼导航器) Widget - 放置在左下角 -->
+        <div class="absolute bottom-4 left-4 z-20 pointer-events-auto">
           <MindMapMinimap
             :minder="minderInstance"
             :is-open="isMinimapOpen"
@@ -3856,29 +3942,97 @@ onUnmounted(() => {
       </div>
       </div>
 
-      <!-- Editor Footer: Tags & Status -->
-      <div class="h-10 px-6 bg-white border-t border-gray-100 flex items-center justify-between text-xs text-gray-400 shrink-0 select-none z-20">
-        <!-- Tag List -->
-        <div class="flex items-center gap-1.5 overflow-x-auto py-1 mr-4">
-          <span
-            v-for="tag in localTags"
-            :key="tag"
-            class="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded text-[11px] flex items-center gap-1 shrink-0"
+      <!-- Editor Footer: Tags & Breadcrumb & Status -->
+      <div class="h-10 px-4 sm:px-6 bg-white border-t border-gray-100 flex items-center justify-between text-xs text-gray-400 shrink-0 select-none z-20 gap-3">
+        <!-- Left Group: Tags + Breadcrumb Bar -->
+        <div class="flex items-center gap-3 overflow-hidden flex-1 min-w-0">
+          <!-- Tag List -->
+          <div class="flex items-center gap-1.5 overflow-x-auto py-1 shrink-0 max-w-[45%] scrollbar-none">
+            <span
+              v-for="tag in localTags"
+              :key="tag"
+              class="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded text-[11px] flex items-center gap-1 shrink-0"
+            >
+              #{{ tag }}
+              <button @click="removeTag(tag)" class="hover:text-emerald-900 text-xs cursor-pointer">×</button>
+            </span>
+            <input
+              v-model="newTagInput"
+              @keydown.enter.prevent="addTag"
+              placeholder="+ 添加导图标签 (回车)"
+              class="bg-transparent border-none outline-none text-[11px] text-gray-600 placeholder-gray-300 w-28 shrink-0"
+            />
+          </div>
+
+          <!-- Divider -->
+          <div class="h-4 w-px bg-gray-200 shrink-0"></div>
+
+          <!-- Breadcrumb Navigation Bar (放在底部添加脑图标签的右侧) -->
+          <div
+            id="mindmap-breadcrumb-bar"
+            class="flex items-center gap-1 text-xs text-gray-600 flex-1 min-w-0 overflow-x-auto scrollbar-none py-1"
           >
-            #{{ tag }}
-            <button @click="removeTag(tag)" class="hover:text-emerald-900 text-xs cursor-pointer">×</button>
-          </span>
-          <input
-            v-model="newTagInput"
-            @keydown.enter.prevent="addTag"
-            placeholder="+ 添加导图标签 (回车)"
-            class="bg-transparent border-none outline-none text-[11px] text-gray-600 placeholder-gray-300 w-28"
-          />
+            <div class="flex items-center gap-1 text-gray-400 shrink-0 text-[11px] font-medium mr-0.5">
+              <Compass class="w-3.5 h-3.5 text-emerald-600" />
+              <span>当前路径:</span>
+            </div>
+
+            <template v-if="breadcrumbTrail.length > 0">
+              <div
+                v-for="(item, idx) in breadcrumbTrail"
+                :key="item.id"
+                class="flex items-center gap-1 shrink-0"
+              >
+                <!-- Separator Chevron -->
+                <ChevronRight v-if="idx > 0" class="w-3 h-3 text-gray-300 shrink-0" />
+
+                <!-- Breadcrumb Node Pill + Dropdown Container -->
+                <div class="breadcrumb-node-pill relative inline-flex items-center">
+                  <!-- Main Jump Button -->
+                  <button
+                    @click="locateNode(item.node)"
+                    :class="[
+                      'px-2 py-0.5 rounded-l text-xs font-medium transition-all max-w-36 sm:max-w-48 truncate flex items-center gap-1 cursor-pointer',
+                      idx === breadcrumbTrail.length - 1
+                        ? 'bg-emerald-50 text-emerald-700 font-bold border border-emerald-300/80 shadow-2xs'
+                        : 'text-gray-600 hover:text-emerald-700 hover:bg-gray-100'
+                    ]"
+                    :title="`定位至: ${item.text}`"
+                  >
+                    <span v-if="item.isRoot" class="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded">根</span>
+                    <span class="truncate">{{ item.text || '未命名主题' }}</span>
+                  </button>
+
+                  <!-- Sibling Dropdown Trigger (for switching among peer nodes) -->
+                  <button
+                    v-if="item.siblings && item.siblings.length > 0"
+                    @click.stop="toggleBreadcrumbDropdown(item.id, $event)"
+                    :class="[
+                      'breadcrumb-dropdown-trigger px-1 py-0.5 rounded-r text-xs transition-colors cursor-pointer border-l flex items-center justify-center',
+                      idx === breadcrumbTrail.length - 1
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
+                        : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100 border-gray-200'
+                    ]"
+                    :title="`展开同级分支 (共 ${item.siblings.length} 个同级节点)`"
+                  >
+                    <ChevronDown
+                      class="w-3 h-3 transition-transform"
+                      :class="activeBreadcrumbDropdown === item.id ? 'rotate-180 text-emerald-600' : ''"
+                    />
+                  </button>
+                </div>
+              </div>
+            </template>
+
+            <template v-else>
+              <span class="text-xs text-gray-400 italic">点击画布节点查看层级路径</span>
+            </template>
+          </div>
         </div>
 
         <!-- Sync & Status -->
-        <div class="flex items-center gap-4 shrink-0 text-gray-400 text-[11px]">
-          <span v-if="selectedNodeText" class="text-gray-500 truncate max-w-48">
+        <div class="flex items-center gap-3 shrink-0 text-gray-400 text-[11px]">
+          <span v-if="selectedNodeText" class="text-gray-500 truncate max-w-36 sm:max-w-48 hidden md:inline">
             选中: <strong class="text-gray-800">{{ selectedNodeText }}</strong>
           </span>
           <span class="flex items-center gap-1 text-emerald-600 font-medium">

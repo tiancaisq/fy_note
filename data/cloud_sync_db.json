@@ -3,6 +3,23 @@
     "default_user": {
       "notes": [
         {
+          "id": "note-1787371324169",
+          "title": "无标题思维导图",
+          "content": "{\n  \"root\": {\n    \"data\": {\n      \"text\": \"无标题思维导图\",\n      \"expandState\": \"expand\",\n      \"id\": \"node_lc382fw_mt3uqkiz\"\n    },\n    \"children\": [\n      {\n        \"data\": {\n          \"text\": \"分支主题 1\",\n          \"priority\": 1,\n          \"id\": \"node_khxryd5_mt3uqmib\",\n          \"layout\": null\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"子主题 1.1\",\n              \"id\": \"node_w4mj8rn_mt3uqn3e\",\n              \"layout\": null\n            },\n            \"children\": []\n          },\n          {\n            \"data\": {\n              \"text\": \"子主题 1.2\",\n              \"id\": \"node_94az5jb_mt3uqn3e\",\n              \"layout\": null\n            },\n            \"children\": []\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"text\": \"分支主题 2\",\n          \"priority\": 2,\n          \"id\": \"node_b2wsn4m_mt3uqmib\",\n          \"layout\": null\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"子主题 2.1\",\n              \"id\": \"node_myik73d_mt3uqn3e\",\n              \"layout\": null\n            },\n            \"children\": []\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"text\": \"分支主题 3\",\n          \"priority\": 3,\n          \"id\": \"node_lxcf7y1_mt3uqmia\",\n          \"layout\": null\n        },\n        \"children\": [\n          {\n            \"data\": {\n              \"text\": \"子主题 3.1\",\n              \"id\": \"node_eefttk6_mt3uqn3e\",\n              \"layout\": null\n            },\n            \"children\": []\n          },\n          {\n            \"data\": {\n              \"id\": \"dkv698hxo6o0\",\n              \"created\": 1787371327843,\n              \"text\": \"分支主题\",\n              \"layout\": null\n            },\n            \"children\": [\n              {\n                \"data\": {\n                  \"id\": \"dkv698wbws00\",\n                  \"created\": 1787371328713,\n                  \"text\": \"分支主题\",\n                  \"layout\": null\n                },\n                \"children\": []\n              }\n            ]\n          }\n        ]\n      },\n      {\n        \"data\": {\n          \"id\": \"dkv699fkv4w0\",\n          \"created\": 1787371329877,\n          \"text\": \"同级主题\",\n          \"layout_mind_offset\": {\n            \"x\": 57.99999913573265,\n            \"y\": -66.9999990016222\n          },\n          \"layout\": null\n        },\n        \"children\": []\n      },\n      {\n        \"data\": {\n          \"id\": \"dkv69s3047s0\",\n          \"created\": 1787371370475,\n          \"text\": \"同级主题\",\n          \"layout\": null\n        },\n        \"children\": []\n      }\n    ]\n  },\n  \"template\": \"default\",\n  \"theme\": \"fresh-green\",\n  \"version\": \"1.4.43\"\n}",
+          "folderId": "folder-1787315922477",
+          "createdAt": "2026-08-22 12:02",
+          "updatedAt": "2026-08-22 12:07",
+          "isStarred": false,
+          "isFavorite": false,
+          "isShared": false,
+          "isDeleted": false,
+          "tags": [
+            "思维导图"
+          ],
+          "format": "mindmap",
+          "type": "mindmap"
+        },
+        {
           "id": "note-1787315922477",
           "title": "无标题笔记",
           "content": "# 无标题笔记\n\n在这里开始编写你的笔记内容...\n",
@@ -48,11 +65,8 @@
           "order": 4
         }
       ],
-      "updatedAt": 1787367573606,
-      "frequentFolderIds": [
-        "folder-1787367218549",
-        "folder-1787367222785"
-      ]
+      "updatedAt": 1787372162314,
+      "frequentFolderIds": []
     }
   }
 }
