@@ -47,7 +47,6 @@ export function registerKityMinderBiLinkModule(): boolean {
       .setX(17.5)
       .setY(0)
       .setTextAnchor('middle')
-      .setVerticalAlign('middle')
       .setFontSize(9)
       .setFontBold(true)
       .fill('#0891b2')
@@ -57,6 +56,7 @@ export function registerKityMinderBiLinkModule(): boolean {
       countText.node.setAttribute('text-anchor', 'middle');
       countText.node.setAttribute('dominant-baseline', 'central');
       countText.node.setAttribute('alignment-baseline', 'central');
+      countText.node.setAttribute('dy', '0.5'); // 光学垂直微调，消除 kity 默认 dy=5 导致的下沉
       countText.node.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
       countText.node.style.fontWeight = '700';
       countText.node.style.fontSize = '9px';
@@ -96,7 +96,6 @@ export function registerKityMinderBiLinkModule(): boolean {
           .setX(centerX)
           .setY(0)
           .setTextAnchor('middle')
-          .setVerticalAlign('middle')
           .setContent(String(count))
           .setVisible(true);
 
@@ -106,6 +105,7 @@ export function registerKityMinderBiLinkModule(): boolean {
           countText.node.setAttribute('text-anchor', 'middle');
           countText.node.setAttribute('dominant-baseline', 'central');
           countText.node.setAttribute('alignment-baseline', 'central');
+          countText.node.setAttribute('dy', '0.5');
         }
       } else {
         group.width = 18;
