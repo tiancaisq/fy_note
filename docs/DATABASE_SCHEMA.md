@@ -86,7 +86,24 @@
 
 ---
 
-### 2.3 同步审计日志表 (`sync_logs`)
+### 2.3 用户个人设置与常用目录配置表 (`user_settings`)
+
+用于存储当前用户自定义偏好与常用目录固定列表 (`frequent_folder_ids`)。
+
+| 字段名 | 类型 | 是否为空 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| `user_id` | `VARCHAR(64)` | NOT NULL | `'default_user'` | 所属用户账号 ID (联合主键) |
+| `setting_key` | `VARCHAR(64)` | NOT NULL | `''` | 配置键名 (联合主键，如 `frequent_folder_ids`) |
+| `setting_value` | `MEDIUMTEXT` | NULL | `NULL` | 配置值 (JSON 字符串，如 `["folder-1","folder-2"]`，保存有序常用目录) |
+| `updated_at` | `VARCHAR(32)` | NOT NULL | `''` | 最后更新时间字符串 |
+
+**索引设计**:
+- 联合主键: `PRIMARY KEY (user_id, setting_key)`
+- 时间索引: `KEY idx_user_updated (user_id, updated_at)`
+
+---
+
+### 2.4 同步审计日志表 (`sync_logs`)
 
 记录每一次客户端同步行为、变更数量与客户端信息，用于运维回溯与审计。
 

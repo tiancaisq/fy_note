@@ -14,13 +14,17 @@
  * 3. 密钥认证: 请求头 `X-Api-Key` 或 `Authorization: Bearer <token>` (若开启认证)
  * 
  * 接口清单:
- * - GET    ?action=ping           服务健康检测与连通性验证
- * - GET    ?action=pull           全量获取云端笔记与文件夹数据
- * - POST   ?action=sync           全量/增量双向智能合并同步
- * - POST   ?action=upsert_note    新增或更新单篇笔记
- * - DELETE ?action=delete_note    删除单篇笔记
- * - POST   ?action=upsert_folder  新增或更新单个文件夹
- * - DELETE ?action=delete_folder  删除单个文件夹
+ * - GET    ?action=ping                    服务健康检测与连通性验证
+ * - GET    ?action=pull                    全量获取云端笔记、文件夹及常用目录数据
+ * - POST   ?action=sync                    全量/增量双向智能合并同步
+ * - POST   ?action=upsert_note             新增或更新单篇笔记
+ * - DELETE ?action=delete_note             删除单篇笔记
+ * - POST   ?action=upsert_folder           新增或更新单个文件夹
+ * - DELETE ?action=delete_folder           删除单个文件夹
+ * - GET    ?action=frequent_folders        获取常用目录列表
+ * - POST   ?action=upsert_frequent_folders 新增/排序/保存常用目录
+ * - DELETE ?action=delete_frequent_folder  移除常用目录固定
+ * - POST   ?action=empty_trash             清空回收站
  * ==============================================================================
  */
 
@@ -225,11 +229,25 @@ switch ($action) {
                 ];
             }, $noteStmt->fetchAll());
 
+            // 查询用户常用目录设置 (frequent_folder_ids)
+            $freqStmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = 'frequent_folder_ids'");
+            $freqStmt->execute([':userId' => $userId]);
+            $freqRow = $freqStmt->fetch();
+            $frequentFolderIds = [];
+            if ($freqRow && !empty($freqRow['setting_value'])) {
+                $decoded = json_decode($freqRow['setting_value'], true);
+                if (is_array($decoded)) {
+                    $frequentFolderIds = array_values(array_filter(array_map('strval', $decoded)));
+                }
+            }
+
             jsonResponse(200, true, '全量云端数据获取成功', [
-                'folders'      => $folders,
-                'notes'        => $notes,
-                'foldersCount' => count($folders),
-                'notesCount'   => count($notes),
+                'folders'              => $folders,
+                'notes'                => $notes,
+                'frequentFolderIds'    => $frequentFolderIds,
+                'foldersCount'         => count($folders),
+                'notesCount'           => count($notes),
+                'frequentFoldersCount' => count($frequentFolderIds),
             ]);
         } catch (Exception $e) {
             jsonResponse(500, false, '拉取云端数据失败: ' . $e->getMessage());
@@ -427,6 +445,31 @@ switch ($action) {
             $stmt = $pdo->prepare("DELETE FROM folders WHERE id = :id AND user_id = :userId");
             $stmt->execute([':id' => $folderId, ':userId' => $userId]);
 
+            // 若在常用目录中，也同步移除常用目录固定
+            $freqStmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = 'frequent_folder_ids'");
+            $freqStmt->execute([':userId' => $userId]);
+            $freqRow = $freqStmt->fetch();
+            if ($freqRow && !empty($freqRow['setting_value'])) {
+                $currentFreqIds = json_decode($freqRow['setting_value'], true);
+                if (is_array($currentFreqIds) && in_array($folderId, $currentFreqIds, true)) {
+                    $newFreqIds = array_values(array_filter($currentFreqIds, function($id) use ($folderId) {
+                        return $id !== $folderId;
+                    }));
+                    $upsertFreq = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
+                        VALUES (:userId, 'frequent_folder_ids', :val, :updatedAt)
+                        ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
+                    $nowStr = date('Y-m-d H:i:s');
+                    $jsonVal = json_encode($newFreqIds, JSON_UNESCAPED_UNICODE);
+                    $upsertFreq->execute([
+                        ':userId'    => $userId,
+                        ':val'       => $jsonVal,
+                        ':updatedAt' => $nowStr,
+                        ':uVal'      => $jsonVal,
+                        ':uUpdatedAt'=> $nowStr,
+                    ]);
+                }
+            }
+
             jsonResponse(200, true, '云端文件夹已删除', [
                 'id'      => $folderId,
                 'deleted' => true
@@ -482,6 +525,9 @@ switch ($action) {
         requireMethod('POST');
         $clientNotes = is_array($body['notes'] ?? null) ? $body['notes'] : [];
         $clientFolders = is_array($body['folders'] ?? null) ? $body['folders'] : [];
+        $clientFrequentFolderIds = is_array($body['frequentFolderIds'] ?? null) 
+            ? $body['frequentFolderIds'] 
+            : (is_array($body['frequentFolders'] ?? null) ? $body['frequentFolders'] : null);
         $deletedNoteIds = is_array($body['deletedNoteIds'] ?? null) ? $body['deletedNoteIds'] : [];
         $deletedFolderIds = is_array($body['deletedFolderIds'] ?? null) ? $body['deletedFolderIds'] : [];
 
@@ -498,6 +544,23 @@ switch ($action) {
                 $placeholders = implode(',', array_fill(0, count($deletedFolderIds), '?'));
                 $delStmt = $pdo->prepare("DELETE FROM folders WHERE user_id = ? AND id IN ($placeholders)");
                 $delStmt->execute(array_merge([$userId], $deletedFolderIds));
+            }
+
+            // 0.1 同步常用目录设置 (frequentFolderIds)
+            if ($clientFrequentFolderIds !== null) {
+                $cleanFreqIds = array_values(array_filter(array_map('strval', $clientFrequentFolderIds)));
+                $upsertFreq = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
+                    VALUES (:userId, 'frequent_folder_ids', :val, :updatedAt)
+                    ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
+                $nowStr = date('Y-m-d H:i:s');
+                $jsonVal = json_encode($cleanFreqIds, JSON_UNESCAPED_UNICODE);
+                $upsertFreq->execute([
+                    ':userId'    => $userId,
+                    ':val'       => $jsonVal,
+                    ':updatedAt' => $nowStr,
+                    ':uVal'      => $jsonVal,
+                    ':uUpdatedAt'=> $nowStr,
+                ]);
             }
 
             // 1. 查询云端现有文件夹索引
@@ -668,13 +731,27 @@ switch ($action) {
                 ];
             }, $finalN->fetchAll());
 
+            // 查询合并后的最新常用目录设置
+            $freqStmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = 'frequent_folder_ids'");
+            $freqStmt->execute([':userId' => $userId]);
+            $freqRow = $freqStmt->fetch();
+            $mergedFreqIds = [];
+            if ($freqRow && !empty($freqRow['setting_value'])) {
+                $decoded = json_decode($freqRow['setting_value'], true);
+                if (is_array($decoded)) {
+                    $mergedFreqIds = array_values(array_filter(array_map('strval', $decoded)));
+                }
+            }
+
             $pdo->commit();
 
             jsonResponse(200, true, '数据同步成功', [
-                'folders'      => $mergedFolders,
-                'notes'        => $mergedNotes,
-                'foldersCount' => count($mergedFolders),
-                'notesCount'   => count($mergedNotes),
+                'folders'              => $mergedFolders,
+                'notes'                => $mergedNotes,
+                'frequentFolderIds'    => $mergedFreqIds,
+                'foldersCount'         => count($mergedFolders),
+                'notesCount'           => count($mergedNotes),
+                'frequentFoldersCount' => count($mergedFreqIds),
             ]);
         } catch (Exception $e) {
             $pdo->rollBack();
@@ -683,9 +760,162 @@ switch ($action) {
         break;
 
     // --------------------------------------------------------------------------
+    // 接口 9: 获取常用目录列表 (Get Frequent Folders)
+    // --------------------------------------------------------------------------
+    // 请求方式: GET
+    // 说明: 获取当前用户置顶固定的常用目录 ID 列表
+    // --------------------------------------------------------------------------
+    case 'frequent_folders':
+    case 'get_frequent_folders':
+        requireMethod('GET');
+        try {
+            $freqStmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = 'frequent_folder_ids'");
+            $freqStmt->execute([':userId' => $userId]);
+            $freqRow = $freqStmt->fetch();
+            $frequentFolderIds = [];
+            if ($freqRow && !empty($freqRow['setting_value'])) {
+                $decoded = json_decode($freqRow['setting_value'], true);
+                if (is_array($decoded)) {
+                    $frequentFolderIds = array_values(array_filter(array_map('strval', $decoded)));
+                }
+            }
+
+            jsonResponse(200, true, '常用目录获取成功', [
+                'frequentFolderIds'    => $frequentFolderIds,
+                'frequentFoldersCount' => count($frequentFolderIds),
+                'count'                => count($frequentFolderIds),
+            ]);
+        } catch (Exception $e) {
+            jsonResponse(500, false, '获取常用目录失败: ' . $e->getMessage());
+        }
+        break;
+
+    // --------------------------------------------------------------------------
+    // 接口 10: 保存/更新/排序常用目录 (Upsert / Reorder Frequent Folders)
+    // --------------------------------------------------------------------------
+    // 请求方式: POST
+    // 请求体: { "frequentFolderIds": [...] } 或 { "folderId": "xxx", "action": "add" }
+    // 说明: 支持全量拖拽排序更新或单个添加常用目录
+    // --------------------------------------------------------------------------
+    case 'upsert_frequent_folders':
+    case 'save_frequent_folders':
+    case 'update_frequent_folders':
+        requireMethod('POST');
+        try {
+            $rawIds = $body['frequentFolderIds'] ?? $body['ids'] ?? $body['folderIds'] ?? null;
+            $singleFolderId = (string)($body['folderId'] ?? $body['id'] ?? '');
+            $subAction = strtolower((string)($body['action'] ?? ''));
+
+            // 先查现有常用目录
+            $freqStmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = 'frequent_folder_ids'");
+            $freqStmt->execute([':userId' => $userId]);
+            $freqRow = $freqStmt->fetch();
+            $currentFreqIds = [];
+            if ($freqRow && !empty($freqRow['setting_value'])) {
+                $decoded = json_decode($freqRow['setting_value'], true);
+                if (is_array($decoded)) {
+                    $currentFreqIds = array_values(array_filter(array_map('strval', $decoded)));
+                }
+            }
+
+            if (is_array($rawIds)) {
+                $newFreqIds = array_values(array_filter(array_map('strval', $rawIds)));
+            } elseif (!empty($singleFolderId)) {
+                if ($subAction === 'remove') {
+                    $newFreqIds = array_values(array_filter($currentFreqIds, function($id) use ($singleFolderId) {
+                        return $id !== $singleFolderId;
+                    }));
+                } else {
+                    $newFreqIds = $currentFreqIds;
+                    if (!in_array($singleFolderId, $newFreqIds, true)) {
+                        $newFreqIds[] = $singleFolderId;
+                    }
+                }
+            } else {
+                jsonResponse(400, false, '参数缺失: 缺少 frequentFolderIds 数组或 folderId 标识');
+            }
+
+            // 保存入库
+            $upsertFreq = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
+                VALUES (:userId, 'frequent_folder_ids', :val, :updatedAt)
+                ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
+            $nowStr = date('Y-m-d H:i:s');
+            $jsonVal = json_encode($newFreqIds, JSON_UNESCAPED_UNICODE);
+            $upsertFreq->execute([
+                ':userId'    => $userId,
+                ':val'       => $jsonVal,
+                ':updatedAt' => $nowStr,
+                ':uVal'      => $jsonVal,
+                ':uUpdatedAt'=> $nowStr,
+            ]);
+
+            jsonResponse(200, true, '常用目录已同步更新至云端', [
+                'frequentFolderIds'    => $newFreqIds,
+                'frequentFoldersCount' => count($newFreqIds),
+                'count'                => count($newFreqIds),
+            ]);
+        } catch (Exception $e) {
+            jsonResponse(500, false, '更新常用目录失败: ' . $e->getMessage());
+        }
+        break;
+
+    // --------------------------------------------------------------------------
+    // 接口 11: 移除常用目录 (Delete / Unpin Frequent Folder)
+    // --------------------------------------------------------------------------
+    // 请求方式: POST 或 DELETE 或 GET
+    // 参数: id (Query 或 Body)
+    // 说明: 将指定目录从常用固定中解绑
+    // --------------------------------------------------------------------------
+    case 'delete_frequent_folder':
+    case 'remove_frequent_folder':
+        $folderId = (string)($_GET['id'] ?? $body['id'] ?? $body['folderId'] ?? '');
+        if (empty($folderId)) {
+            jsonResponse(400, false, '参数缺失: 缺少待移除的常用目录 ID');
+        }
+
+        try {
+            $freqStmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = 'frequent_folder_ids'");
+            $freqStmt->execute([':userId' => $userId]);
+            $freqRow = $freqStmt->fetch();
+            $currentFreqIds = [];
+            if ($freqRow && !empty($freqRow['setting_value'])) {
+                $decoded = json_decode($freqRow['setting_value'], true);
+                if (is_array($decoded)) {
+                    $currentFreqIds = array_values(array_filter(array_map('strval', $decoded)));
+                }
+            }
+
+            $newFreqIds = array_values(array_filter($currentFreqIds, function($id) use ($folderId) {
+                return $id !== $folderId;
+            }));
+
+            $upsertFreq = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
+                VALUES (:userId, 'frequent_folder_ids', :val, :updatedAt)
+                ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
+            $nowStr = date('Y-m-d H:i:s');
+            $jsonVal = json_encode($newFreqIds, JSON_UNESCAPED_UNICODE);
+            $upsertFreq->execute([
+                ':userId'    => $userId,
+                ':val'       => $jsonVal,
+                ':updatedAt' => $nowStr,
+                ':uVal'      => $jsonVal,
+                ':uUpdatedAt'=> $nowStr,
+            ]);
+
+            jsonResponse(200, true, '常用目录已从云端移除', [
+                'id'                   => $folderId,
+                'frequentFolderIds'    => $newFreqIds,
+                'frequentFoldersCount' => count($newFreqIds),
+            ]);
+        } catch (Exception $e) {
+            jsonResponse(500, false, '移除常用目录失败: ' . $e->getMessage());
+        }
+        break;
+
+    // --------------------------------------------------------------------------
     // 默认兜底: 未匹配到已知 Action
     // --------------------------------------------------------------------------
     default:
-        jsonResponse(400, false, sprintf('无效的 action 参数: [%s]。请参考 API 文档传入正确的操作指令 (ping / pull / sync / upsert_note / delete_note / empty_trash / upsert_folder / delete_folder)', htmlspecialchars($action, ENT_QUOTES, 'UTF-8')));
+        jsonResponse(400, false, sprintf('无效的 action 参数: [%s]。请参考 API 文档传入正确的操作指令 (ping / pull / sync / upsert_note / delete_note / empty_trash / upsert_folder / delete_folder / frequent_folders / upsert_frequent_folders / delete_frequent_folder)', htmlspecialchars($action, ENT_QUOTES, 'UTF-8')));
         break;
 }

@@ -8,11 +8,13 @@ const STORE_NAME = 'app_state';
 
 const KEY_NOTES = 'notes';
 const KEY_FOLDERS = 'folders';
+const KEY_FREQUENT_FOLDERS = 'frequent_folders';
 const KEY_CLOUD_CONFIG = 'cloud_config';
 
 // Old LocalStorage Keys for automatic seamless migration
 const LEGACY_STORAGE_KEY_NOTES = 'fengye_cloud_notes_data_v2';
 const LEGACY_STORAGE_KEY_FOLDERS = 'fengye_cloud_folders_data_v2';
+const LEGACY_STORAGE_KEY_FREQUENT_FOLDERS = 'fengye_cloud_frequent_folders_v2';
 const LEGACY_STORAGE_KEY_CLOUD_CONFIG = 'fengye_cloud_sync_config_v2';
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
@@ -36,6 +38,7 @@ function getDB(): Promise<IDBPDatabase> {
 export async function initStorageAndMigrate(): Promise<{
   notes: Note[];
   folders: Folder[];
+  frequentFolderIds: string[];
   cloudConfig: CloudConfig;
 }> {
   const db = await getDB();
@@ -43,6 +46,7 @@ export async function initStorageAndMigrate(): Promise<{
   // Try loading from IndexedDB first
   let storedNotes = await db.get(STORE_NAME, KEY_NOTES);
   let storedFolders = await db.get(STORE_NAME, KEY_FOLDERS);
+  let storedFrequentFolders = await db.get(STORE_NAME, KEY_FREQUENT_FOLDERS);
   let storedConfig = await db.get(STORE_NAME, KEY_CLOUD_CONFIG);
 
   // If IndexedDB is empty, check if there's legacy localStorage data to migrate
@@ -70,6 +74,18 @@ export async function initStorageAndMigrate(): Promise<{
     }
   }
 
+  if (!storedFrequentFolders) {
+    try {
+      const legacyFreq = localStorage.getItem(LEGACY_STORAGE_KEY_FREQUENT_FOLDERS);
+      if (legacyFreq) {
+        storedFrequentFolders = JSON.parse(legacyFreq);
+        await db.put(STORE_NAME, storedFrequentFolders, KEY_FREQUENT_FOLDERS);
+      }
+    } catch (e) {
+      console.warn('Failed to parse legacy frequent folders from localStorage', e);
+    }
+  }
+
   if (!storedConfig) {
     try {
       const legacyConfig = localStorage.getItem(LEGACY_STORAGE_KEY_CLOUD_CONFIG);
@@ -84,6 +100,7 @@ export async function initStorageAndMigrate(): Promise<{
 
   const finalNotes = storedNotes || INITIAL_NOTES;
   const finalFolders = storedFolders || INITIAL_FOLDERS;
+  const finalFrequentFolders = storedFrequentFolders || [];
   const finalConfig = storedConfig || {
     enabled: true,
     apiUrl: '/api',
@@ -96,11 +113,13 @@ export async function initStorageAndMigrate(): Promise<{
   // Ensure IndexedDB has values
   if (!storedNotes) await db.put(STORE_NAME, finalNotes, KEY_NOTES);
   if (!storedFolders) await db.put(STORE_NAME, finalFolders, KEY_FOLDERS);
+  if (!storedFrequentFolders) await db.put(STORE_NAME, finalFrequentFolders, KEY_FREQUENT_FOLDERS);
   if (!storedConfig) await db.put(STORE_NAME, finalConfig, KEY_CLOUD_CONFIG);
 
   return {
     notes: finalNotes,
     folders: finalFolders,
+    frequentFolderIds: finalFrequentFolders,
     cloudConfig: finalConfig,
   };
 }
@@ -120,6 +139,15 @@ export async function saveFoldersToIDB(folders: Folder[]): Promise<void> {
     await db.put(STORE_NAME, JSON.parse(JSON.stringify(folders)), KEY_FOLDERS);
   } catch (e) {
     console.error('Failed to save folders to IndexedDB', e);
+  }
+}
+
+export async function saveFrequentFoldersToIDB(frequentFolderIds: string[]): Promise<void> {
+  try {
+    const db = await getDB();
+    await db.put(STORE_NAME, JSON.parse(JSON.stringify(frequentFolderIds)), KEY_FREQUENT_FOLDERS);
+  } catch (e) {
+    console.error('Failed to save frequent folders to IndexedDB', e);
   }
 }
 

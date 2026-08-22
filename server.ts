@@ -16,6 +16,7 @@ const DB_FILE = path.join(DATA_DIR, 'cloud_sync_db.json');
 interface UserDataStore {
   notes: Note[];
   folders: Folder[];
+  frequentFolderIds?: string[];
   updatedAt: number;
 }
 
@@ -45,6 +46,7 @@ function loadDatabase(): ServerDatabase {
           default_user: {
             notes: JSON.parse(JSON.stringify(INITIAL_NOTES)),
             folders: JSON.parse(JSON.stringify(INITIAL_FOLDERS)),
+            frequentFolderIds: [],
             updatedAt: Date.now(),
           },
         },
@@ -73,9 +75,13 @@ function getUserStore(userId = 'default_user'): UserDataStore {
     dbCache.users[normalizedId] = {
       notes: JSON.parse(JSON.stringify(INITIAL_NOTES)),
       folders: JSON.parse(JSON.stringify(INITIAL_FOLDERS)),
+      frequentFolderIds: [],
       updatedAt: Date.now(),
     };
     saveDatabase();
+  }
+  if (!Array.isArray(dbCache.users[normalizedId].frequentFolderIds)) {
+    dbCache.users[normalizedId].frequentFolderIds = [];
   }
   return dbCache.users[normalizedId];
 }
@@ -129,13 +135,20 @@ function handlePing(req: express.Request, res: express.Response) {
     message: '枫叶云笔记服务端连接正常，同步通道畅通',
     data: {
       service: 'fengye-cloud-notes-fullstack-service',
-      version: '2.0.0',
+      version: '2.1.0',
       status: 'ready',
       userId,
       noteCount: userStore.notes.length,
       folderCount: userStore.folders.length,
+      frequentFoldersCount: (userStore.frequentFolderIds || []).length,
       serverTime: Date.now(),
-      supportedFeatures: ['incremental_note_sync', 'incremental_folder_sync', 'batch_merge_sync', 'indexeddb_sync'],
+      supportedFeatures: [
+        'incremental_note_sync',
+        'incremental_folder_sync',
+        'frequent_folders_sync',
+        'batch_merge_sync',
+        'indexeddb_sync'
+      ],
     },
     serverTime: Date.now(),
   });
@@ -158,12 +171,15 @@ function handleGetAllData(req: express.Request, res: express.Response) {
     data: {
       notes: userStore.notes,
       folders: userStore.folders,
+      frequentFolderIds: userStore.frequentFolderIds || [],
       notesCount: userStore.notes.length,
       foldersCount: userStore.folders.length,
+      frequentFoldersCount: (userStore.frequentFolderIds || []).length,
       serverTime: Date.now(),
     },
     notes: userStore.notes,
     folders: userStore.folders,
+    frequentFolderIds: userStore.frequentFolderIds || [],
     serverTime: Date.now(),
   });
 }
@@ -182,6 +198,11 @@ function handleSync(req: express.Request, res: express.Response) {
 
   const clientNotes: Note[] = Array.isArray(body.notes) ? body.notes : [];
   const clientFolders: Folder[] = Array.isArray(body.folders) ? body.folders : [];
+  const clientFrequentFolderIds: string[] = Array.isArray(body.frequentFolderIds)
+    ? body.frequentFolderIds
+    : Array.isArray(body.frequentFolders)
+    ? body.frequentFolders
+    : [];
 
   const now = Date.now();
 
@@ -189,6 +210,9 @@ function handleSync(req: express.Request, res: express.Response) {
   if (mode === 'push_all') {
     userStore.notes = clientNotes;
     userStore.folders = clientFolders;
+    if (Array.isArray(body.frequentFolderIds) || Array.isArray(body.frequentFolders)) {
+      userStore.frequentFolderIds = clientFrequentFolderIds;
+    }
     userStore.updatedAt = now;
     saveDatabase();
 
@@ -199,10 +223,12 @@ function handleSync(req: express.Request, res: express.Response) {
       data: {
         notes: userStore.notes,
         folders: userStore.folders,
+        frequentFolderIds: userStore.frequentFolderIds || [],
         serverTime: now,
       },
       notes: userStore.notes,
       folders: userStore.folders,
+      frequentFolderIds: userStore.frequentFolderIds || [],
       serverTime: now,
     });
   }
@@ -216,10 +242,12 @@ function handleSync(req: express.Request, res: express.Response) {
       data: {
         notes: userStore.notes,
         folders: userStore.folders,
+        frequentFolderIds: userStore.frequentFolderIds || [],
         serverTime: now,
       },
       notes: userStore.notes,
       folders: userStore.folders,
+      frequentFolderIds: userStore.frequentFolderIds || [],
       serverTime: now,
     });
   }
@@ -276,9 +304,22 @@ function handleSync(req: express.Request, res: express.Response) {
   const finalMergedNotes = Array.from(mergedNotesMap.values());
   const finalMergedFolders = Array.from(mergedFoldersMap.values());
 
+  // 3. Process frequentFolderIds
+  let finalFrequentFolderIds = userStore.frequentFolderIds || [];
+  if (Array.isArray(body.frequentFolderIds)) {
+    finalFrequentFolderIds = body.frequentFolderIds.map(String);
+  } else if (Array.isArray(body.frequentFolders)) {
+    finalFrequentFolderIds = body.frequentFolders.map(String);
+  }
+
+  // Ensure frequent folder IDs reference existing folders
+  const validFolderIdSet = new Set(finalMergedFolders.map((f) => String(f.id)));
+  finalFrequentFolderIds = finalFrequentFolderIds.filter((fid) => validFolderIdSet.has(fid));
+
   // Save to server database
   userStore.notes = finalMergedNotes;
   userStore.folders = finalMergedFolders;
+  userStore.frequentFolderIds = finalFrequentFolderIds;
   userStore.updatedAt = now;
   saveDatabase();
 
@@ -289,12 +330,15 @@ function handleSync(req: express.Request, res: express.Response) {
     data: {
       notes: finalMergedNotes,
       folders: finalMergedFolders,
+      frequentFolderIds: finalFrequentFolderIds,
       notesCount: finalMergedNotes.length,
       foldersCount: finalMergedFolders.length,
+      frequentFoldersCount: finalFrequentFolderIds.length,
       serverTime: now,
     },
     notes: finalMergedNotes,
     folders: finalMergedFolders,
+    frequentFolderIds: finalFrequentFolderIds,
     serverTime: now,
   });
 }
@@ -465,6 +509,99 @@ app.delete('/api/folders', handleDeleteFolder);
 app.post('/api/trash/empty', handleEmptyTrash);
 
 // ==========================================
+// 5.2 Frequent / Pinned Folders Operations
+// ==========================================
+function handleGetFrequentFolders(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  return res.json({
+    code: 200,
+    success: true,
+    message: '常用目录获取成功',
+    data: {
+      frequentFolderIds: userStore.frequentFolderIds || [],
+      count: (userStore.frequentFolderIds || []).length,
+      serverTime: Date.now(),
+    },
+    frequentFolderIds: userStore.frequentFolderIds || [],
+    serverTime: Date.now(),
+  });
+}
+
+function handleUpsertFrequentFolders(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  const rawIds = req.body?.frequentFolderIds || req.body?.ids || req.body?.folderIds;
+  const singleFolderId = req.body?.folderId || req.body?.id;
+  const action = req.body?.action; // 'add' | 'remove' | 'reorder' | undefined
+
+  if (Array.isArray(rawIds)) {
+    userStore.frequentFolderIds = rawIds.map(String);
+  } else if (singleFolderId) {
+    const fid = String(singleFolderId);
+    userStore.frequentFolderIds = userStore.frequentFolderIds || [];
+    if (action === 'remove') {
+      userStore.frequentFolderIds = userStore.frequentFolderIds.filter((id) => id !== fid);
+    } else {
+      if (!userStore.frequentFolderIds.includes(fid)) {
+        userStore.frequentFolderIds.push(fid);
+      }
+    }
+  }
+
+  // Filter valid folders
+  const validFolderIds = new Set(userStore.folders.map((f) => String(f.id)));
+  userStore.frequentFolderIds = (userStore.frequentFolderIds || []).filter((id) => validFolderIds.has(String(id)));
+  userStore.updatedAt = Date.now();
+  saveDatabase();
+
+  return res.json({
+    code: 200,
+    success: true,
+    message: '常用目录已同步更新至云端',
+    data: {
+      frequentFolderIds: userStore.frequentFolderIds,
+      count: userStore.frequentFolderIds.length,
+      serverTime: Date.now(),
+    },
+    frequentFolderIds: userStore.frequentFolderIds,
+    serverTime: Date.now(),
+  });
+}
+
+function handleDeleteFrequentFolder(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  const folderId = req.params.id || (req.query.id as string) || req.body?.id || req.body?.folderId;
+  if (!folderId) {
+    return res.status(400).json({ code: 400, success: false, message: '缺少文件夹 ID' });
+  }
+
+  userStore.frequentFolderIds = (userStore.frequentFolderIds || []).filter((id) => String(id) !== String(folderId));
+  userStore.updatedAt = Date.now();
+  saveDatabase();
+
+  return res.json({
+    code: 200,
+    success: true,
+    message: '常用目录已从云端移除',
+    data: {
+      id: folderId,
+      frequentFolderIds: userStore.frequentFolderIds,
+      serverTime: Date.now(),
+    },
+    frequentFolderIds: userStore.frequentFolderIds,
+    serverTime: Date.now(),
+  });
+}
+
+app.get('/api/frequent-folders', handleGetFrequentFolders);
+app.post('/api/frequent-folders', handleUpsertFrequentFolders);
+app.put('/api/frequent-folders', handleUpsertFrequentFolders);
+app.delete('/api/frequent-folders/:id', handleDeleteFrequentFolder);
+app.delete('/api/frequent-folders', handleDeleteFrequentFolder);
+
+// ==========================================
 // 6. Unified Query Dispatcher for /api.php & /api
 // ==========================================
 app.all(['/api.php', '/api'], (req, res) => {
@@ -490,6 +627,15 @@ app.all(['/api.php', '/api'], (req, res) => {
   }
   if (action === 'delete_folder') {
     return handleDeleteFolder(req, res);
+  }
+  if (action === 'frequent_folders' || action === 'get_frequent_folders') {
+    return handleGetFrequentFolders(req, res);
+  }
+  if (action === 'upsert_frequent_folders' || action === 'save_frequent_folders' || action === 'update_frequent_folders') {
+    return handleUpsertFrequentFolders(req, res);
+  }
+  if (action === 'delete_frequent_folder' || action === 'remove_frequent_folder') {
+    return handleDeleteFrequentFolder(req, res);
   }
   if (action === 'empty_trash') {
     return handleEmptyTrash(req, res);

@@ -41,6 +41,7 @@ const {
   sharingNote,
   isMoveModalOpen,
   noteToMove,
+  notesToMove,
   isRenameNoteModalOpen,
   noteToRename,
   toastMessage,
@@ -63,6 +64,7 @@ const {
   toggleFrequentFolder,
   addFrequentFolder,
   removeFrequentFolder,
+  reorderFrequentFolders,
   getFolderFullPath,
   getFolderAncestors,
   getSubFolders,
@@ -97,7 +99,15 @@ const {
   toggleFolderCollapse,
   openShareModal,
   openMoveModal,
+  openBatchMoveModal,
   moveNoteToFolder,
+  batchMoveNotesToFolder,
+  batchToggleStar,
+  batchToggleFavorite,
+  batchMoveToTrash,
+  batchRestoreFromTrash,
+  batchPermanentlyDelete,
+  batchExportNotes,
   duplicateNote,
   exportNoteAsMarkdown,
   importMarkdownFile,
@@ -166,6 +176,44 @@ function handlePromptPermanentlyDelete(noteId: string) {
     itemFormat: note.format || note.type || 'markdown',
     onConfirm: () => {
       permanentlyDeleteNote(noteId);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+function handlePromptBatchMoveToTrash(noteIds: string[]) {
+  if (!noteIds.length) return;
+  confirmDialog.value = {
+    isOpen: true,
+    title: '批量移入回收站',
+    message: `确定要将选中的 ${noteIds.length} 篇笔记移入回收站吗？`,
+    subMessage: '移入回收站后，文件将不再出现在当前列表中，但您可以随时在“我的回收站”中查看或还原。',
+    confirmText: '移入回收站',
+    cancelText: '取消',
+    dangerLevel: 'warning',
+    itemType: 'note',
+    noteCount: noteIds.length,
+    onConfirm: () => {
+      batchMoveToTrash(noteIds);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+function handlePromptBatchPermanentlyDelete(noteIds: string[]) {
+  if (!noteIds.length) return;
+  confirmDialog.value = {
+    isOpen: true,
+    title: '批量彻底删除',
+    message: `确定要彻底删除选中的 ${noteIds.length} 篇笔记吗？`,
+    subMessage: '⚠️ 此操作不可撤销，选中的所有笔记及其内容将被永久清除且无法找回。',
+    confirmText: '彻底删除',
+    cancelText: '取消',
+    dangerLevel: 'danger',
+    itemType: 'note',
+    noteCount: noteIds.length,
+    onConfirm: () => {
+      batchPermanentlyDelete(noteIds);
       confirmDialog.value.isOpen = false;
     },
   };
@@ -458,6 +506,7 @@ onUnmounted(() => {
         @toggle-frequent-folder="toggleFrequentFolder"
         @add-frequent-folder="addFrequentFolder"
         @remove-frequent-folder="removeFrequentFolder"
+        @reorder-frequent-folders="reorderFrequentFolders"
         @move-folder="moveFolder"
         @move-note="moveNoteToFolder"
       />
@@ -485,6 +534,8 @@ onUnmounted(() => {
         v-model:filter-options="filterOptions"
         @breadcrumb-click="handleBreadcrumbClick"
         @open-note="(n) => openNoteInNewTab(n)"
+        @open-note-in-current-window="(n) => openNoteEditor(n, 'split')"
+        @open-note-in-new-tab="(n) => openNoteInNewTab(n)"
         @create-new-note="createNewNote()"
         @create-new-mind-map="createNewMindMap()"
         @toggle-star="toggleStar"
@@ -499,6 +550,13 @@ onUnmounted(() => {
         @export-note="exportNoteAsMarkdown"
         @rename-note="handleRenameNote"
         @switch-to-timeline="selectView('timeline')"
+        @batch-move="(selectedNotes) => openBatchMoveModal(selectedNotes)"
+        @batch-toggle-star="(ids) => batchToggleStar(ids)"
+        @batch-toggle-favorite="(ids) => batchToggleFavorite(ids)"
+        @batch-move-to-trash="handlePromptBatchMoveToTrash"
+        @batch-restore-from-trash="batchRestoreFromTrash"
+        @batch-permanently-delete="handlePromptBatchPermanentlyDelete"
+        @batch-export="batchExportNotes"
       />
     </div>
 
@@ -544,13 +602,15 @@ onUnmounted(() => {
       @close="isShareModalOpen = false"
     />
 
-    <!-- Move Note Modal -->
+    <!-- Move Note Modal (Supports both single note and batch move) -->
     <MoveModal
-      v-if="isMoveModalOpen && noteToMove"
+      v-if="isMoveModalOpen && (noteToMove || (notesToMove && notesToMove.length > 0))"
       :note="noteToMove"
+      :notes="notesToMove"
       :folders="folders"
       @close="isMoveModalOpen = false"
       @move="moveNoteToFolder"
+      @batch-move="batchMoveNotesToFolder"
       @create-folder="createFolder"
     />
 

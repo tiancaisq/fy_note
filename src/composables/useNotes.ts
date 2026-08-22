@@ -19,6 +19,7 @@ import {
   initStorageAndMigrate,
   saveNotesToIDB,
   saveFoldersToIDB,
+  saveFrequentFoldersToIDB,
   saveCloudConfigToIDB,
   getStorageEstimate,
 } from '../utils/idbStorage';
@@ -33,6 +34,8 @@ import {
   saveSingleFolderToCloud,
   saveFoldersToCloud,
   deleteSingleFolderFromCloud,
+  saveFrequentFoldersToCloud,
+  deleteFrequentFolderFromCloud,
   clearApiEndpointCache,
 } from '../utils/cloudApi';
 
@@ -68,6 +71,7 @@ export function useNotes() {
     (newIds) => {
       try {
         localStorage.setItem(STORAGE_KEY_FREQUENT_FOLDERS, JSON.stringify(newIds));
+        saveFrequentFoldersToIDB(newIds).catch(console.error);
       } catch (err) {
         console.warn('Failed to save frequent folders', err);
       }
@@ -120,10 +124,13 @@ export function useNotes() {
   onMounted(async () => {
     try {
       isApplyingRemoteSync.value = true;
-      const { notes: idbNotes, folders: idbFolders, cloudConfig: idbConfig } = await initStorageAndMigrate();
+      const { notes: idbNotes, folders: idbFolders, frequentFolderIds: idbFrequentFolders, cloudConfig: idbConfig } = await initStorageAndMigrate();
       if (Array.isArray(idbNotes)) notes.value = idbNotes;
       if (Array.isArray(idbFolders)) {
         folders.value = normalizeFolderOrders(idbFolders);
+      }
+      if (Array.isArray(idbFrequentFolders) && idbFrequentFolders.length > 0) {
+        frequentFolderIds.value = idbFrequentFolders;
       }
       if (idbConfig) cloudConfig.value = idbConfig;
       isStorageReady.value = true;
@@ -217,6 +224,7 @@ export function useNotes() {
   const sharingNote = ref<Note | null>(null);
   const isMoveModalOpen = ref<boolean>(false);
   const noteToMove = ref<Note | null>(null);
+  const notesToMove = ref<Note[]>([]);
   const isRenameNoteModalOpen = ref<boolean>(false);
   const noteToRename = ref<Note | null>(null);
 
@@ -575,24 +583,52 @@ export function useNotes() {
     return frequentFolderIds.value.includes(folderId);
   }
 
+  // Trigger sync of frequent folders to cloud and IDB
+  function syncFrequentFoldersToCloud() {
+    saveFrequentFoldersToIDB(frequentFolderIds.value).catch(console.error);
+    try {
+      localStorage.setItem(STORAGE_KEY_FREQUENT_FOLDERS, JSON.stringify(frequentFolderIds.value));
+    } catch {}
+
+    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+      saveFrequentFoldersToCloud(cloudConfig.value, frequentFolderIds.value).catch((err) => {
+        console.warn('Frequent folder cloud sync warning:', err);
+      });
+    }
+  }
+
   function toggleFrequentFolder(folderId: string) {
     const idx = frequentFolderIds.value.indexOf(folderId);
     const targetFolder = folders.value.find((f) => f.id === folderId);
     if (idx !== -1) {
       frequentFolderIds.value.splice(idx, 1);
       showToast(`已从常用目录移除 "${targetFolder?.name || '文件夹'}"`);
+      if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+        deleteFrequentFolderFromCloud(cloudConfig.value, folderId).catch(() => {});
+      }
     } else {
       frequentFolderIds.value.push(folderId);
       showToast(`已将 "${targetFolder?.name || '文件夹'}" 添加至常用目录`);
     }
+    syncFrequentFoldersToCloud();
   }
 
-  function addFrequentFolder(folderId: string) {
-    if (!frequentFolderIds.value.includes(folderId)) {
-      frequentFolderIds.value.push(folderId);
-      const targetFolder = folders.value.find((f) => f.id === folderId);
-      showToast(`已将 "${targetFolder?.name || '文件夹'}" 添加至常用目录`);
+  function addFrequentFolder(folderId: string, atIndex?: number) {
+    const existingIdx = frequentFolderIds.value.indexOf(folderId);
+    const targetFolder = folders.value.find((f) => f.id === folderId);
+    if (existingIdx !== -1) {
+      if (typeof atIndex === 'number' && atIndex !== existingIdx) {
+        reorderFrequentFolders(existingIdx, atIndex);
+      }
+      return;
     }
+    if (typeof atIndex === 'number' && atIndex >= 0 && atIndex <= frequentFolderIds.value.length) {
+      frequentFolderIds.value.splice(atIndex, 0, folderId);
+    } else {
+      frequentFolderIds.value.push(folderId);
+    }
+    showToast(`已将 "${targetFolder?.name || '文件夹'}" 添加至常用目录`);
+    syncFrequentFoldersToCloud();
   }
 
   function removeFrequentFolder(folderId: string) {
@@ -601,7 +637,26 @@ export function useNotes() {
       frequentFolderIds.value.splice(idx, 1);
       const targetFolder = folders.value.find((f) => f.id === folderId);
       showToast(`已从常用目录移除 "${targetFolder?.name || '文件夹'}"`);
+      if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+        deleteFrequentFolderFromCloud(cloudConfig.value, folderId).catch(() => {});
+      }
+      syncFrequentFoldersToCloud();
     }
+  }
+
+  function reorderFrequentFolders(fromIndex: number, toIndex: number) {
+    if (fromIndex < 0 || fromIndex >= frequentFolderIds.value.length) return;
+    const clampedTo = Math.max(0, Math.min(toIndex, frequentFolderIds.value.length - 1));
+    if (fromIndex === clampedTo) return;
+    const item = frequentFolderIds.value.splice(fromIndex, 1)[0];
+    frequentFolderIds.value.splice(clampedTo, 0, item);
+    showToast('常用目录排序已更新并同步');
+    syncFrequentFoldersToCloud();
+  }
+
+  function setFrequentFolderIds(newIds: string[]) {
+    frequentFolderIds.value = [...newIds];
+    syncFrequentFoldersToCloud();
   }
 
   // Clickable Breadcrumbs items
@@ -1153,6 +1208,7 @@ export function useNotes() {
     folders.value = folders.value.filter((f) => !allFolderIds.includes(f.id));
     normalizeFolderOrders(folders.value);
     frequentFolderIds.value = frequentFolderIds.value.filter((id) => !allFolderIds.includes(id));
+    syncFrequentFoldersToCloud();
     if (allFolderIds.includes(activeFolderId.value)) {
       activeFolderId.value = folders.value[0]?.id || '';
     }
@@ -1259,6 +1315,14 @@ export function useNotes() {
 
   function openMoveModal(note: Note) {
     noteToMove.value = note;
+    notesToMove.value = [note];
+    isMoveModalOpen.value = true;
+  }
+
+  function openBatchMoveModal(selectedNotes: Note[]) {
+    if (!selectedNotes.length) return;
+    noteToMove.value = selectedNotes[0] || null;
+    notesToMove.value = selectedNotes;
     isMoveModalOpen.value = true;
   }
 
@@ -1266,10 +1330,116 @@ export function useNotes() {
     const note = notes.value.find((n) => n.id === noteId);
     if (note) {
       note.folderId = targetFolderId;
+      note.updatedAt = formatDateTime();
+      pendingModifiedNoteIds.add(note.id);
       isMoveModalOpen.value = false;
       const targetF = folders.value.find((f) => f.id === targetFolderId);
       showToast(`已将笔记移动到 "${targetF?.name || '文件夹'}"`);
+      triggerAutoSyncDebounced({ noteId: note.id });
     }
+  }
+
+  function batchMoveNotesToFolder(noteIds: string[], targetFolderId: string) {
+    if (!noteIds.length) return;
+    const now = formatDateTime();
+    let movedCount = 0;
+    notes.value.forEach((note) => {
+      if (noteIds.includes(note.id)) {
+        note.folderId = targetFolderId;
+        note.updatedAt = now;
+        pendingModifiedNoteIds.add(note.id);
+        movedCount++;
+      }
+    });
+    isMoveModalOpen.value = false;
+    const targetF = folders.value.find((f) => f.id === targetFolderId);
+    showToast(`已将 ${movedCount} 篇笔记移动到 "${targetF?.name || '文件夹'}"`);
+    triggerAutoSyncDebounced();
+  }
+
+  function batchToggleStar(noteIds: string[], forceState?: boolean) {
+    if (!noteIds.length) return;
+    const targetNotes = notes.value.filter((n) => noteIds.includes(n.id));
+    if (!targetNotes.length) return;
+    const shouldStar = forceState !== undefined ? forceState : targetNotes.some((n) => !n.isStarred);
+    targetNotes.forEach((n) => {
+      n.isStarred = shouldStar;
+      pendingModifiedNoteIds.add(n.id);
+    });
+    showToast(shouldStar ? `已为 ${targetNotes.length} 篇笔记添加标星` : `已取消 ${targetNotes.length} 篇笔记的标星`);
+    triggerAutoSyncDebounced();
+  }
+
+  function batchToggleFavorite(noteIds: string[], forceState?: boolean) {
+    if (!noteIds.length) return;
+    const targetNotes = notes.value.filter((n) => noteIds.includes(n.id));
+    if (!targetNotes.length) return;
+    const shouldFav = forceState !== undefined ? forceState : targetNotes.some((n) => !n.isFavorite);
+    targetNotes.forEach((n) => {
+      n.isFavorite = shouldFav;
+      pendingModifiedNoteIds.add(n.id);
+    });
+    showToast(shouldFav ? `已将 ${targetNotes.length} 篇笔记加入收藏` : `已将 ${targetNotes.length} 篇笔记移出收藏`);
+    triggerAutoSyncDebounced();
+  }
+
+  function batchMoveToTrash(noteIds: string[]) {
+    if (!noteIds.length) return;
+    const now = formatDateTime();
+    let count = 0;
+    notes.value.forEach((note) => {
+      if (noteIds.includes(note.id)) {
+        note.isDeleted = true;
+        note.deletedAt = now;
+        pendingModifiedNoteIds.add(note.id);
+        if (activeNoteId.value === note.id) {
+          isEditorOpen.value = false;
+        }
+        count++;
+      }
+    });
+    showToast(`已将 ${count} 篇笔记移入回收站`);
+    triggerAutoSyncDebounced();
+  }
+
+  function batchRestoreFromTrash(noteIds: string[]) {
+    if (!noteIds.length) return;
+    let count = 0;
+    notes.value.forEach((note) => {
+      if (noteIds.includes(note.id)) {
+        note.isDeleted = false;
+        note.deletedAt = undefined;
+        pendingModifiedNoteIds.add(note.id);
+        count++;
+      }
+    });
+    showToast(`已成功还原 ${count} 篇笔记`);
+    triggerAutoSyncDebounced();
+  }
+
+  async function batchPermanentlyDelete(noteIds: string[]) {
+    if (!noteIds.length) return;
+    const count = noteIds.length;
+    notes.value = notes.value.filter((n) => !noteIds.includes(n.id));
+    noteIds.forEach((id) => pendingDeletedNoteIds.add(id));
+    showToast(`已彻底删除 ${count} 篇笔记`);
+
+    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+      for (const id of noteIds) {
+        deleteSingleNoteFromCloud(cloudConfig.value, id).catch(() => {});
+      }
+    }
+    triggerAutoSyncDebounced();
+  }
+
+  async function batchExportNotes(notesToExport: Note[]) {
+    if (!notesToExport.length) return;
+    showToast(`正在导出 ${notesToExport.length} 篇笔记...`);
+    for (const note of notesToExport) {
+      await exportNoteAsMarkdown(note);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    showToast(`成功导出 ${notesToExport.length} 篇文件`);
   }
 
   function duplicateNote(note: Note) {
@@ -1422,6 +1592,7 @@ export function useNotes() {
       const res = await pushSyncToCloud(config, notes.value, folders.value, mode, {
         deletedNoteIds: deletedNotesToSync,
         deletedFolderIds: deletedFoldersToSync,
+        frequentFolderIds: frequentFolderIds.value,
       });
       if (res.success) {
         isApplyingRemoteSync.value = true;
@@ -1440,6 +1611,9 @@ export function useNotes() {
             const deletedFSet = new Set(deletedFoldersToSync);
             folders.value = normalizeFolderOrders(res.mergedFolders.filter((f) => !deletedFSet.has(f.id)));
           }
+        }
+        if (res.mergedFrequentFolderIds && Array.isArray(res.mergedFrequentFolderIds)) {
+          frequentFolderIds.value = res.mergedFrequentFolderIds;
         }
 
         // If current activeFolderId is not found in folders, fallback to first available folder or root
@@ -1537,6 +1711,7 @@ export function useNotes() {
     sharingNote,
     isMoveModalOpen,
     noteToMove,
+    notesToMove,
     isRenameNoteModalOpen,
     noteToRename,
     toastMessage,
@@ -1561,6 +1736,8 @@ export function useNotes() {
     toggleFrequentFolder,
     addFrequentFolder,
     removeFrequentFolder,
+    reorderFrequentFolders,
+    setFrequentFolderIds,
     getFolderFullPath,
     getFolderAncestors,
     getSubFolders,
@@ -1596,7 +1773,15 @@ export function useNotes() {
     toggleFolderCollapse,
     openShareModal,
     openMoveModal,
+    openBatchMoveModal,
     moveNoteToFolder,
+    batchMoveNotesToFolder,
+    batchToggleStar,
+    batchToggleFavorite,
+    batchMoveToTrash,
+    batchRestoreFromTrash,
+    batchPermanentlyDelete,
+    batchExportNotes,
     duplicateNote,
     exportNoteAsMarkdown,
     importMarkdownFile,

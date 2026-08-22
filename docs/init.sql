@@ -60,7 +60,20 @@ CREATE TABLE `notes` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='笔记及思维导图主表';
 
 -- ------------------------------------------------------------------------------
--- 4. 同步操作审计日志表 (sync_logs)
+-- 4. 用户设置与常用目录配置表 (user_settings)
+-- ------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `user_settings`;
+CREATE TABLE `user_settings` (
+  `user_id` VARCHAR(64) NOT NULL DEFAULT 'default_user' COMMENT '用户标识',
+  `setting_key` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '配置键名 (如 frequent_folder_ids)',
+  `setting_value` MEDIUMTEXT DEFAULT NULL COMMENT '配置值 (JSON 字符串或纯文本)',
+  `updated_at` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '最后修改时间',
+  PRIMARY KEY (`user_id`, `setting_key`),
+  KEY `idx_user_updated` (`user_id`, `updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户个人配置与偏好设置表';
+
+-- ------------------------------------------------------------------------------
+-- 5. 同步操作审计日志表 (sync_logs)
 -- ------------------------------------------------------------------------------
 DROP TABLE IF EXISTS `sync_logs`;
 CREATE TABLE `sync_logs` (
@@ -77,7 +90,7 @@ CREATE TABLE `sync_logs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='云端同步审计日志表';
 
 -- ------------------------------------------------------------------------------
--- 5. 初始化演示种子数据 (Seed Data)
+-- 6. 初始化演示种子数据 (Seed Data)
 -- ------------------------------------------------------------------------------
 
 -- 插入基础文件夹
@@ -96,6 +109,11 @@ INSERT INTO `notes` (`id`, `user_id`, `folder_id`, `title`, `content`, `format`,
 ('note-2', 'default_user', 'folder-redis', 'Redis 缓存雪崩、穿透、击穿三大难题终极解决方案', '# Redis 缓存雪崩、穿透、击穿终极解决方案\n\n## 1. 缓存穿透（Cache Penetration）\n查询一个根本不存在的数据，绕过缓存直接冲击数据库。\n- **方案一**: 布隆过滤器（BloomFilter）\n- **方案二**: 缓存空对象 + 设置较短过期时间（如 60s）', 'markdown', 'markdown', '["Redis", "缓存", "高性能"]', 1, 0, 0, 0, '2026-03-26 11:20:00', '2026-03-26 11:20:00'),
 
 ('note-3', 'default_user', 'folder-concurrency', '高并发系统全景架构脑图', '{"id":"root","text":"高并发系统架构","children":[{"id":"c1","text":"接入层","children":[{"id":"c11","text":"DNS 轮询与智能解析"},{"id":"c12","text":"Nginx / OpenResty 动静分离"}]},{"id":"c2","text":"服务层","children":[{"id":"c21","text":"微服务治理 (RPC / gRPC)"},{"id":"c22","text":"Sentinel 流量防卫与降级"}]},{"id":"c3","text":"存储层","children":[{"id":"c31","text":"Redis 分布式缓存集群"},{"id":"c32","text":"MySQL 读写分离与分库分表"}]}]}', 'mindmap', 'mindmap', '["思维导图", "架构全景"]', 1, 1, 0, 0, '2026-03-27 16:45:00', '2026-03-27 16:45:00');
+
+-- 插入默认用户配置（常用目录固定项及排序）
+INSERT INTO `user_settings` (`user_id`, `setting_key`, `setting_value`, `updated_at`) VALUES
+('default_user', 'frequent_folder_ids', '["folder-mysql","folder-redis"]', '2026-03-27 18:00:00')
+ON DUPLICATE KEY UPDATE `setting_value` = VALUES(`setting_value`), `updated_at` = VALUES(`updated_at`);
 
 SET FOREIGN_KEY_CHECKS = 1;
 

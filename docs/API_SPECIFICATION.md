@@ -73,12 +73,16 @@ X-User-Id: <USER_ID> (可选，支持多用户独立数据隔离，未传默认 
 | 操作指令 (`action`) | 请求方法 | 接口功能 | 核心用途 |
 | :--- | :---: | :--- | :--- |
 | **`ping`** / `health` | `GET` | 服务健康检测 | 连通性测试、探测服务端版本与数据库状态 |
-| **`pull`** / `data` | `GET` | 全量数据拉取 | 首次加载、换设备初始化、Diff 差异比对 |
-| **`sync`** | `POST` | 双向智能合并 / 全量覆盖 | 批量提交本地数据，按时间戳智能合并 |
+| **`pull`** / `data` | `GET` | 全量数据拉取 | 首次加载、换设备初始化、包含常用目录列表拉取 |
+| **`sync`** | `POST` | 双向智能合并 / 全量覆盖 | 批量提交本地数据与常用目录，按时间戳智能合并 |
 | **`upsert_note`** | `POST` | 单篇笔记保存 | 敲字编辑实时增量同步 |
 | **`delete_note`** | `POST`/`DELETE` | 单篇笔记删除 | 彻底移除指定 ID 笔记 |
 | **`upsert_folder`** | `POST` | 单个文件夹保存 | 文件夹新建、重命名、排序、折叠同步 |
-| **`delete_folder`** | `POST`/`DELETE` | 单个文件夹删除 | 彻底移除指定 ID 文件夹 |
+| **`delete_folder`** | `POST`/`DELETE` | 单个文件夹删除 | 彻底移除指定 ID 文件夹并自动解绑常用目录 |
+| **`frequent_folders`** | `GET` | 获取常用目录列表 | 拉取用户固定的常用目录 ID 有序列表 |
+| **`upsert_frequent_folders`** | `POST` | 更新/保存常用目录 | 新增固定、拖拽排序、全量或单项增删常用目录 |
+| **`delete_frequent_folder`** | `POST`/`DELETE` | 移除常用目录固定 | 从常用目录固定列表中解绑指定文件夹 |
+| **`empty_trash`** | `POST`/`DELETE` | 清空回收站 | 彻底从云端物理删除废弃笔记 |
 
 ---
 
@@ -131,6 +135,7 @@ X-User-Id: <USER_ID> (可选，支持多用户独立数据隔离，未传默认 
           "updatedAt": "2026-08-21 08:30:00"
         }
       ],
+      "frequentFolderIds": ["folder-work"],
       "notes": [
         {
           "id": "note-101",
@@ -149,7 +154,8 @@ X-User-Id: <USER_ID> (可选，支持多用户独立数据隔离，未传默认 
         }
       ],
       "foldersCount": 1,
-      "notesCount": 1
+      "notesCount": 1,
+      "frequentFoldersCount": 1
     },
     "serverTime": 1787291992000
   }
@@ -163,7 +169,7 @@ X-User-Id: <USER_ID> (可选，支持多用户独立数据隔离，未传默认 
 - **请求体 (JSON Body)**:
   ```json
   {
-    "mode": "merge", // "merge" (双向最新时间戳合并)
+    "mode": "merge", // "merge" (双向最新时间戳合并) / "push_all" (强制覆盖云端)
     "notes": [
       {
         "id": "note-101",
@@ -193,6 +199,7 @@ X-User-Id: <USER_ID> (可选，支持多用户独立数据隔离，未传默认 
         "updatedAt": "2026-08-21 08:30:00"
       }
     ],
+    "frequentFolderIds": ["folder-work"],
     "deletedNoteIds": ["note-deleted-1"],
     "deletedFolderIds": ["folder-deleted-1"]
   }
@@ -206,8 +213,10 @@ X-User-Id: <USER_ID> (可选，支持多用户独立数据隔离，未传默认 
     "data": {
       "folders": [ ... ],
       "notes": [ ... ],
+      "frequentFolderIds": [ ... ],
       "foldersCount": 1,
-      "notesCount": 1
+      "notesCount": 1,
+      "frequentFoldersCount": 1
     },
     "serverTime": 1787291992000
   }
@@ -345,6 +354,84 @@ X-User-Id: <USER_ID> (可选，支持多用户独立数据隔离，未传默认 
     "data": {
       "deletedCount": 2
     },
+    "serverTime": 1787291992000
+  }
+  ```
+
+---
+
+### 5.9 获取常用目录列表 (Get Frequent Folders)
+- **请求方式**: `GET`
+- **请求路径**: `?action=frequent_folders` 或 `/api/frequent-folders`
+- **功能描述**: 获取当前用户固定置顶在「常用目录」栏目中的文件夹 ID 有序数组。
+- **返回示例**:
+  ```json
+  {
+    "code": 200,
+    "success": true,
+    "message": "常用目录获取成功",
+    "data": {
+      "frequentFolderIds": ["folder-concurrency", "folder-mysql"],
+      "count": 2,
+      "serverTime": 1787291992000
+    },
+    "frequentFolderIds": ["folder-concurrency", "folder-mysql"],
+    "serverTime": 1787291992000
+  }
+  ```
+
+---
+
+### 5.10 新增/排序/保存常用目录 (Upsert / Reorder Frequent Folders)
+- **请求方式**: `POST` 或 `PUT`
+- **请求路径**: `?action=upsert_frequent_folders` 或 `/api/frequent-folders`
+- **请求体 (支持以下形式)**:
+  - **形式一（全量有序列表/拖拽重新排序）**:
+    ```json
+    {
+      "frequentFolderIds": ["folder-mysql", "folder-concurrency", "folder-k8s"]
+    }
+    ```
+  - **形式二（单个新增置顶常用目录）**:
+    ```json
+    {
+      "folderId": "folder-frontend",
+      "action": "add"
+    }
+    ```
+- **返回示例**:
+  ```json
+  {
+    "code": 200,
+    "success": true,
+    "message": "常用目录已同步更新至云端",
+    "data": {
+      "frequentFolderIds": ["folder-mysql", "folder-concurrency", "folder-k8s"],
+      "count": 3,
+      "serverTime": 1787291992000
+    },
+    "frequentFolderIds": ["folder-mysql", "folder-concurrency", "folder-k8s"],
+    "serverTime": 1787291992000
+  }
+  ```
+
+---
+
+### 5.11 移除常用目录固定 (Delete / Unpin Frequent Folder)
+- **请求方式**: `POST` 或 `DELETE`
+- **请求路径**: `?action=delete_frequent_folder&id=folder-mysql` 或 `/api/frequent-folders/folder-mysql`
+- **返回示例**:
+  ```json
+  {
+    "code": 200,
+    "success": true,
+    "message": "常用目录已从云端移除",
+    "data": {
+      "id": "folder-mysql",
+      "frequentFolderIds": ["folder-concurrency", "folder-k8s"],
+      "serverTime": 1787291992000
+    },
+    "frequentFolderIds": ["folder-concurrency", "folder-k8s"],
     "serverTime": 1787291992000
   }
   ```

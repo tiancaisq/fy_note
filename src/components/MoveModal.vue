@@ -16,18 +16,40 @@ import { Note, Folder as FolderType } from '../types';
 import { compareFolders } from '../utils/folderSort';
 import MoveFolderTreeItem from './MoveFolderTreeItem.vue';
 
-const props = defineProps<{
-  note: Note;
-  folders: FolderType[];
-}>();
+const props = withDefaults(
+  defineProps<{
+    note?: Note | null;
+    notes?: Note[];
+    folders: FolderType[];
+  }>(),
+  {
+    note: null,
+    notes: () => [],
+  }
+);
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'move', noteId: string, targetFolderId: string): void;
+  (e: 'batchMove', noteIds: string[], targetFolderId: string): void;
   (e: 'createFolder', name: string, parentId?: string | null): void;
 }>();
 
-const targetFolderId = ref(props.note.folderId || props.folders[0]?.id || '');
+const activeNotes = computed<Note[]>(() => {
+  if (props.notes && props.notes.length > 0) {
+    return props.notes;
+  }
+  if (props.note) {
+    return [props.note];
+  }
+  return [];
+});
+
+const isBatch = computed(() => activeNotes.value.length > 1);
+
+const targetFolderId = ref(
+  props.note?.folderId || props.notes?.[0]?.folderId || props.folders[0]?.id || ''
+);
 const searchKeyword = ref('');
 const expandedMap = ref<Record<string, boolean>>({});
 
@@ -126,11 +148,17 @@ const targetFolderPath = computed(() => {
 });
 
 const currentNoteFolderPath = computed(() => {
-  return getFolderPath(props.note.folderId);
+  if (isBatch.value) {
+    return ['多个目录'];
+  }
+  return getFolderPath(activeNotes.value[0]?.folderId || '');
 });
 
 const isMovingToSameFolder = computed(() => {
-  return targetFolderId.value === props.note.folderId;
+  if (!isBatch.value) {
+    return targetFolderId.value === activeNotes.value[0]?.folderId;
+  }
+  return activeNotes.value.length > 0 && activeNotes.value.every((n) => n.folderId === targetFolderId.value);
 });
 
 function handleSelect(folderId: string) {
@@ -162,8 +190,12 @@ function collapseAll() {
 }
 
 function submitMove() {
-  if (!targetFolderId.value) return;
-  emit('move', props.note.id, targetFolderId.value);
+  if (!targetFolderId.value || activeNotes.value.length === 0) return;
+  if (isBatch.value) {
+    emit('batchMove', activeNotes.value.map((n) => n.id), targetFolderId.value);
+  } else {
+    emit('move', activeNotes.value[0].id, targetFolderId.value);
+  }
   emit('close');
 }
 
@@ -209,7 +241,7 @@ function submitCreateFolder() {
       <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
         <h3 class="text-sm font-bold text-gray-900 flex items-center gap-2">
           <FolderInput class="w-4 h-4 text-blue-600" />
-          <span>移动笔记至文件夹</span>
+          <span>{{ isBatch ? `批量移动笔记至文件夹 (${activeNotes.length} 篇)` : '移动笔记至文件夹' }}</span>
         </h3>
         <button
           @click="emit('close')"
@@ -223,8 +255,13 @@ function submitCreateFolder() {
       <!-- Note Info & Current Location -->
       <div class="px-5 pt-3 pb-2.5 bg-slate-50/70 border-b border-gray-100 text-xs shrink-0 space-y-1">
         <div class="flex items-center gap-1.5 text-gray-600 truncate">
-          <span class="text-gray-400 shrink-0">正在移动：</span>
-          <span class="font-bold text-gray-800 truncate" :title="note.title">「{{ note.title }}」</span>
+          <span class="text-gray-400 shrink-0">{{ isBatch ? '批量移动：' : '正在移动：' }}</span>
+          <span v-if="isBatch" class="font-bold text-gray-800 truncate" :title="activeNotes.map((n) => n.title).join(', ')">
+            已选 {{ activeNotes.length }} 篇笔记（{{ activeNotes.slice(0, 3).map((n) => n.title).join('、') }}{{ activeNotes.length > 3 ? ' 等' : '' }}）
+          </span>
+          <span v-else class="font-bold text-gray-800 truncate" :title="activeNotes[0]?.title">
+            「{{ activeNotes[0]?.title || '未命名笔记' }}」
+          </span>
         </div>
         <div class="flex items-center gap-1.5 text-gray-500 text-[11px] truncate">
           <span class="text-gray-400 shrink-0">当前所在：</span>
@@ -356,7 +393,7 @@ function submitCreateFolder() {
             :folder="rootF"
             :all-folders="folders"
             :selected-folder-id="targetFolderId"
-            :current-note-folder-id="note.folderId"
+            :current-note-folder-id="isBatch ? '' : (activeNotes[0]?.folderId || '')"
             :level="0"
             :expanded-map="expandedMap"
             :search-keyword="searchKeyword"

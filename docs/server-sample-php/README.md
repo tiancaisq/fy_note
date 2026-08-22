@@ -11,7 +11,7 @@
 ```bash
 mysql -u root -p < ../init.sql
 ```
-*(该脚本会自动创建 `fengye_notes` 数据库及 `folders`、`notes`、`sync_logs` 三张数据表并填充初始数据)*
+*(该脚本会自动创建 `fengye_notes` 数据库及 `folders`、`notes`、`user_settings`、`sync_logs` 四张数据表并填充初始数据与常用目录配置)*
 
 ### 第二步：修改数据库连接配置
 编辑 `config.php` 文件，填入您的 MySQL 数据库账号密码：

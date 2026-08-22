@@ -9,9 +9,11 @@ export interface CloudSyncResponse {
     serverTime?: number;
     notes?: Note[];
     folders?: Folder[];
+    frequentFolderIds?: string[];
   };
   notes?: Note[];
   folders?: Folder[];
+  frequentFolderIds?: string[];
   serverTime?: number;
 }
 
@@ -278,6 +280,7 @@ function resolveActionUrl(baseUrl: string, action: string, restPath?: string): s
     if (action === 'ping' || action === 'health') return `${normalized}/ping`;
     if (action === 'upsert_note' || action === 'delete_note') return `${normalized}/notes`;
     if (action === 'upsert_folder' || action === 'delete_folder') return `${normalized}/folders`;
+    if (action === 'frequent_folders' || action === 'upsert_frequent_folders' || action === 'delete_frequent_folder') return `${normalized}/frequent-folders`;
     if (action === 'empty_trash') return `${normalized}/trash/empty`;
     return `${normalized}?action=${action}`;
   }
@@ -352,7 +355,7 @@ function recordSuccessfulEndpoint(baseUrl: string, action: string, url: string) 
 
   if (url.includes('.php')) {
     cachedApiFlavor = 'php';
-  } else if (url.includes('/api/') || url.endsWith('/api') || url.includes('/data') || url.includes('/sync') || url.includes('/ping') || url.includes('/notes') || url.includes('/folders') || url.includes('/trash')) {
+  } else if (url.includes('/api/') || url.endsWith('/api') || url.includes('/data') || url.includes('/sync') || url.includes('/ping') || url.includes('/notes') || url.includes('/folders') || url.includes('/frequent-folders') || url.includes('/trash')) {
     cachedApiFlavor = 'rest';
   }
 
@@ -510,7 +513,12 @@ export async function fetchRemoteData(
   config: CloudConfig
 ): Promise<{
   success: boolean;
-  data?: { notes: Note[]; folders: Folder[]; serverTime: number };
+  data?: {
+    notes: Note[];
+    folders: Folder[];
+    frequentFolderIds?: string[];
+    serverTime: number;
+  };
   message?: string;
 }> {
   const baseUrl = normalizeApiUrl(config.apiUrl);
@@ -574,6 +582,16 @@ export async function fetchRemoteData(
       ? json.mergedFolders
       : [];
 
+    const rawFrequentFolderIds: string[] | undefined = Array.isArray(resData.frequentFolderIds)
+      ? resData.frequentFolderIds
+      : Array.isArray(json.frequentFolderIds)
+      ? json.frequentFolderIds
+      : Array.isArray(resData.frequentFolders)
+      ? resData.frequentFolders
+      : Array.isArray(json.frequentFolders)
+      ? json.frequentFolders
+      : undefined;
+
     if (!isSuccess && rawNotesList.length === 0 && rawFoldersList.length === 0 && !json.data) {
       return { success: false, message: extractResponseMessage(json, '服务端返回错误') };
     }
@@ -588,6 +606,7 @@ export async function fetchRemoteData(
       data: {
         notes,
         folders,
+        frequentFolderIds: rawFrequentFolderIds ? rawFrequentFolderIds.map(String) : undefined,
         serverTime: resData.serverTime || json.serverTime || Date.now(),
       },
     };
@@ -721,12 +740,14 @@ export async function pushSyncToCloud(
   options?: {
     deletedNoteIds?: string[];
     deletedFolderIds?: string[];
+    frequentFolderIds?: string[];
   }
 ): Promise<{
   success: boolean;
   message: string;
   mergedNotes?: Note[];
   mergedFolders?: Folder[];
+  mergedFrequentFolderIds?: string[];
   serverTime?: number;
 }> {
   const baseUrl = normalizeApiUrl(config.apiUrl);
@@ -743,6 +764,7 @@ export async function pushSyncToCloud(
         message: '已成功从云端拉取全量最新数据，已覆盖本地！',
         mergedNotes: remoteRes.data.notes,
         mergedFolders: remoteRes.data.folders,
+        mergedFrequentFolderIds: remoteRes.data.frequentFolderIds,
         serverTime: remoteRes.data.serverTime,
       };
     }
@@ -757,6 +779,7 @@ export async function pushSyncToCloud(
       lastSyncedAt: config.lastSyncedAt || 0,
       notes: localNotes,
       folders: localFolders,
+      frequentFolderIds: options?.frequentFolderIds || [],
       deletedNoteIds: options?.deletedNoteIds || [],
       deletedFolderIds: options?.deletedFolderIds || [],
       timestamp: Date.now(),
@@ -826,10 +849,23 @@ export async function pushSyncToCloud(
       ? result.mergedFolders
       : null;
 
+    const rawFrequentFolderIds: string[] | undefined = Array.isArray(data.frequentFolderIds)
+      ? data.frequentFolderIds
+      : Array.isArray(result.frequentFolderIds)
+      ? result.frequentFolderIds
+      : Array.isArray(data.frequentFolders)
+      ? data.frequentFolders
+      : Array.isArray(result.frequentFolders)
+      ? result.frequentFolders
+      : undefined;
+
     const mergedNotes: Note[] = rawNotesList ? rawNotesList.map(normalizeRemoteNote) : localNotes;
     const mergedFolders: Folder[] = rawFoldersList
       ? rawFoldersList.map(normalizeRemoteFolder)
       : localFolders;
+    const mergedFrequentFolderIds: string[] | undefined = rawFrequentFolderIds
+      ? rawFrequentFolderIds.map(String)
+      : options?.frequentFolderIds;
 
     const successMessage =
       mode === 'push_all'
@@ -843,6 +879,7 @@ export async function pushSyncToCloud(
       message: successMessage,
       mergedNotes,
       mergedFolders,
+      mergedFrequentFolderIds,
       serverTime: data.serverTime || result.serverTime || Date.now(),
     };
   } catch (err: any) {
@@ -1088,3 +1125,96 @@ export async function deleteSingleFolderFromCloud(
     return { success: false, message: `删除文件夹同步失败: ${err.message}` };
   }
 }
+
+// 9. Incremental / Batch Sync: Save Frequent Folders Order & List to Cloud
+export async function saveFrequentFoldersToCloud(
+  config: CloudConfig,
+  frequentFolderIds: string[]
+): Promise<{ success: boolean; message?: string; frequentFolderIds?: string[] }> {
+  const baseUrl = normalizeApiUrl(config.apiUrl);
+  if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+
+  try {
+    const urls = getActionCandidateUrls(
+      baseUrl,
+      'upsert_frequent_folders',
+      '/frequent-folders'
+    );
+    const headers = getHeaders(config);
+    const payload = {
+      frequentFolderIds,
+      ids: frequentFolderIds,
+      action: 'update_frequent_folders',
+    };
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'upsert_frequent_folders', url);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '常用目录排序与列表已同步至云端'),
+            frequentFolderIds: data?.data?.frequentFolderIds || data?.frequentFolderIds,
+          };
+        }
+      } catch {}
+    }
+
+    return { success: false, message: '常用目录同步未成功' };
+  } catch (err: any) {
+    return { success: false, message: `常用目录同步失败: ${err.message}` };
+  }
+}
+
+// 9.1 Incremental: Remove a single frequent folder from Cloud
+export async function deleteFrequentFolderFromCloud(
+  config: CloudConfig,
+  folderId: string
+): Promise<{ success: boolean; message?: string }> {
+  const baseUrl = normalizeApiUrl(config.apiUrl);
+  if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+
+  try {
+    const urls = getActionCandidateUrls(
+      baseUrl,
+      'delete_frequent_folder',
+      `/frequent-folders/${encodeURIComponent(folderId)}`
+    );
+    const headers = getHeaders(config);
+
+    for (const url of urls) {
+      try {
+        const fullUrl = url.includes('?')
+          ? `${url}&id=${encodeURIComponent(folderId)}`
+          : `${url}?id=${encodeURIComponent(folderId)}`;
+
+        const res = await fetch(fullUrl, {
+          method: 'DELETE',
+          headers,
+          body: JSON.stringify({ id: folderId, folderId, action: 'delete_frequent_folder' }),
+        });
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'delete_frequent_folder', url);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '常用目录已从云端移除'),
+          };
+        }
+      } catch {}
+    }
+
+    return { success: false, message: '云端移除常用目录未成功' };
+  } catch (err: any) {
+    return { success: false, message: `移除常用目录同步失败: ${err.message}` };
+  }
+}
+

@@ -25,9 +25,34 @@
           "parentId": null,
           "isOpen": true,
           "order": 1
+        },
+        {
+          "id": "folder-1787367218549",
+          "name": "111",
+          "parentId": null,
+          "isOpen": true,
+          "order": 2
+        },
+        {
+          "id": "folder-1787367220762",
+          "name": "222",
+          "parentId": null,
+          "isOpen": true,
+          "order": 3
+        },
+        {
+          "id": "folder-1787367222785",
+          "name": "333",
+          "parentId": null,
+          "isOpen": true,
+          "order": 4
         }
       ],
-      "updatedAt": 1787323248956
+      "updatedAt": 1787367573606,
+      "frequentFolderIds": [
+        "folder-1787367218549",
+        "folder-1787367222785"
+      ]
     }
   }
 }

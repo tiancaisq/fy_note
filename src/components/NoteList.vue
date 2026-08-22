@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   Plus,
   ArrowUpDown,
@@ -16,9 +16,12 @@ import {
   Copy,
   ChevronRight,
   ChevronDown,
-  Folder as FolderIcon,
   Check,
-  Clock
+  Minus,
+  Clock,
+  ExternalLink,
+  AppWindow,
+  X
 } from 'lucide-vue-next';
 import { Note, SortField, SortOrder, FilterOptions, ViewType, BreadcrumbItem } from '../types';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
@@ -35,6 +38,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'openNote', note: Note): void;
+  (e: 'openNoteInCurrentWindow', note: Note): void;
+  (e: 'openNoteInNewTab', note: Note): void;
   (e: 'createNewNote'): void;
   (e: 'createNewMindMap'): void;
   (e: 'breadcrumbClick', item: BreadcrumbItem): void;
@@ -53,6 +58,14 @@ const emit = defineEmits<{
   (e: 'update:sortField', val: SortField): void;
   (e: 'update:sortOrder', val: SortOrder): void;
   (e: 'update:filterOptions', val: FilterOptions): void;
+  // Batch action events
+  (e: 'batchMove', notes: Note[]): void;
+  (e: 'batchToggleStar', noteIds: string[]): void;
+  (e: 'batchToggleFavorite', noteIds: string[]): void;
+  (e: 'batchMoveToTrash', noteIds: string[]): void;
+  (e: 'batchRestoreFromTrash', noteIds: string[]): void;
+  (e: 'batchPermanentlyDelete', noteIds: string[]): void;
+  (e: 'batchExport', notes: Note[]): void;
 }>();
 
 const activeDropdownNoteId = ref<string | null>(null);
@@ -64,6 +77,83 @@ const headerNewMenuRef = ref<HTMLElement | null>(null);
 const sortMenuRef = ref<HTMLElement | null>(null);
 const filterMenuRef = ref<HTMLElement | null>(null);
 
+// Multi-Selection State
+const selectedNoteIds = ref<string[]>([]);
+const lastSelectedIndex = ref<number | null>(null);
+
+// Clear selection when view changes
+watch(
+  () => props.currentView,
+  () => {
+    selectedNoteIds.value = [];
+    lastSelectedIndex.value = null;
+  }
+);
+
+// Keep only valid note IDs when notes list changes
+watch(
+  () => props.notes,
+  (newNotes) => {
+    const validIds = new Set(newNotes.map((n) => n.id));
+    selectedNoteIds.value = selectedNoteIds.value.filter((id) => validIds.has(id));
+  }
+);
+
+const isAllSelected = computed(() => {
+  if (props.notes.length === 0) return false;
+  return props.notes.every((n) => selectedNoteIds.value.includes(n.id));
+});
+
+const isIndeterminate = computed(() => {
+  return selectedNoteIds.value.length > 0 && !isAllSelected.value;
+});
+
+const selectedNotes = computed(() => {
+  const set = new Set(selectedNoteIds.value);
+  return props.notes.filter((n) => set.has(n.id));
+});
+
+function toggleSelectAll() {
+  if (isAllSelected.value) {
+    selectedNoteIds.value = [];
+  } else {
+    selectedNoteIds.value = props.notes.map((n) => n.id);
+  }
+}
+
+function clearSelection() {
+  selectedNoteIds.value = [];
+  lastSelectedIndex.value = null;
+}
+
+function toggleSelectNote(noteId: string, e?: MouseEvent) {
+  const currentIndex = props.notes.findIndex((n) => n.id === noteId);
+
+  // Range selection with Shift key
+  if (e?.shiftKey && lastSelectedIndex.value !== null && currentIndex !== -1) {
+    const start = Math.min(lastSelectedIndex.value, currentIndex);
+    const end = Math.max(lastSelectedIndex.value, currentIndex);
+    const rangeIds = props.notes.slice(start, end + 1).map((n) => n.id);
+    const combined = new Set([...selectedNoteIds.value, ...rangeIds]);
+    selectedNoteIds.value = Array.from(combined);
+  } else {
+    const index = selectedNoteIds.value.indexOf(noteId);
+    if (index > -1) {
+      selectedNoteIds.value = selectedNoteIds.value.filter((id) => id !== noteId);
+    } else {
+      selectedNoteIds.value = [...selectedNoteIds.value, noteId];
+    }
+  }
+
+  if (currentIndex !== -1) {
+    lastSelectedIndex.value = currentIndex;
+  }
+}
+
+function isNoteSelected(noteId: string): boolean {
+  return selectedNoteIds.value.includes(noteId);
+}
+
 function toggleRowMenu(e: MouseEvent, noteId: string) {
   e.stopPropagation();
   isSortMenuOpen.value = false;
@@ -72,7 +162,13 @@ function toggleRowMenu(e: MouseEvent, noteId: string) {
   activeDropdownNoteId.value = activeDropdownNoteId.value === noteId ? null : noteId;
 }
 
-function handleRowClick(note: Note) {
+function handleRowClick(note: Note, e: MouseEvent) {
+  // If Shift or Ctrl/Cmd is pressed, toggle selection instead of opening
+  if (e.shiftKey || e.ctrlKey || e.metaKey) {
+    toggleSelectNote(note.id, e);
+    return;
+  }
+
   if (props.currentView !== 'trash') {
     emit('openNote', note);
   }
@@ -81,7 +177,15 @@ function handleRowClick(note: Note) {
 function handleNoteDragStart(note: Note, e: DragEvent) {
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('application/json', JSON.stringify({ type: 'note', id: note.id }));
+    // If dragging a selected note while multiple are selected, include all selected IDs
+    if (selectedNoteIds.value.includes(note.id) && selectedNoteIds.value.length > 1) {
+      e.dataTransfer.setData(
+        'application/json',
+        JSON.stringify({ type: 'batchNotes', ids: selectedNoteIds.value })
+      );
+    } else {
+      e.dataTransfer.setData('application/json', JSON.stringify({ type: 'note', id: note.id }));
+    }
   }
 }
 
@@ -106,8 +210,10 @@ function handleDocumentClick(e: MouseEvent) {
     const dropdownEl = document.getElementById(`dropdown-menu-${activeDropdownNoteId.value}`);
     const triggerEl = document.getElementById(`btn-more-actions-${activeDropdownNoteId.value}`);
     if (
-      dropdownEl && !dropdownEl.contains(target) &&
-      triggerEl && !triggerEl.contains(target)
+      dropdownEl &&
+      !dropdownEl.contains(target) &&
+      triggerEl &&
+      !triggerEl.contains(target)
     ) {
       activeDropdownNoteId.value = null;
     }
@@ -131,7 +237,11 @@ function handleDocumentClick(e: MouseEvent) {
 
 function handleDocumentKeyDown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
-    activeDropdownNoteId.value = null;
+    if (activeDropdownNoteId.value) {
+      activeDropdownNoteId.value = null;
+    } else if (selectedNoteIds.value.length > 0) {
+      clearSelection();
+    }
     isSortMenuOpen.value = false;
     isFilterMenuOpen.value = false;
     isHeaderNewMenuOpen.value = false;
@@ -152,7 +262,7 @@ onUnmounted(() => {
 <template>
   <main id="notes-content-area" class="flex-1 flex flex-col bg-white overflow-hidden select-none">
     <!-- Top Breadcrumb & Action Toolbar -->
-    <div id="notes-header-toolbar" class="px-6 py-4 flex items-center justify-between border-b border-gray-100 shrink-0">
+    <div id="notes-header-toolbar" class="px-6 py-3.5 flex items-center justify-between border-b border-gray-100 shrink-0 bg-white">
       <!-- Clickable Breadcrumb Navigation -->
       <div id="breadcrumb-navigation" class="flex items-center gap-1.5 text-sm tracking-tight overflow-x-auto">
         <template v-for="(item, index) in breadcrumbItems" :key="item.id">
@@ -320,12 +430,144 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Notes Table / List (Matches exact columns & styling from screenshot) -->
+    <!-- Batch Operations Floating Banner Bar (Displays when items are selected) -->
+    <div
+      v-if="selectedNoteIds.length > 0"
+      id="batch-actions-bar"
+      class="bg-blue-50/95 border-b border-blue-200 px-6 py-2.5 flex items-center justify-between gap-3 text-xs text-blue-900 shrink-0 animate-in slide-in-from-top-1 duration-150 shadow-xs z-10"
+    >
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center justify-center bg-blue-600 text-white font-bold px-2 py-0.5 rounded-full text-[11px] shadow-2xs">
+          已选 {{ selectedNoteIds.length }} 项
+        </span>
+        <span class="text-blue-700 hidden sm:inline text-xs">
+          (共 {{ notes.length }} 篇)
+        </span>
+        <button
+          @click="toggleSelectAll"
+          class="ml-1 text-xs text-blue-700 hover:text-blue-900 hover:underline cursor-pointer font-medium"
+        >
+          {{ isAllSelected ? '取消全选' : '全选所有' }}
+        </button>
+      </div>
+
+      <!-- Action Buttons for Selected Notes -->
+      <div class="flex items-center gap-1.5 flex-wrap justify-end">
+        <!-- If non-trash view -->
+        <template v-if="currentView !== 'trash'">
+          <!-- Batch Move to Folder -->
+          <button
+            @click="emit('batchMove', selectedNotes)"
+            class="px-2.5 py-1.5 bg-white hover:bg-blue-100/80 border border-blue-200 text-blue-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量移动至指定文件夹"
+          >
+            <FolderInput class="w-3.5 h-3.5 text-blue-600" />
+            <span>移动至...</span>
+          </button>
+
+          <!-- Batch Star / Unstar -->
+          <button
+            @click="emit('batchToggleStar', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-white hover:bg-amber-50 border border-amber-200 text-amber-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量标星/取消标星"
+          >
+            <Star class="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+            <span class="hidden md:inline">标星/取消</span>
+          </button>
+
+          <!-- Batch Favorite / Unfavorite -->
+          <button
+            @click="emit('batchToggleFavorite', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量收藏/移出收藏"
+          >
+            <Box class="w-3.5 h-3.5 text-indigo-600" />
+            <span class="hidden md:inline">收藏/取消</span>
+          </button>
+
+          <!-- Batch Export -->
+          <button
+            @click="emit('batchExport', selectedNotes)"
+            class="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-gray-200 text-gray-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量导出文件"
+          >
+            <Download class="w-3.5 h-3.5 text-gray-600" />
+            <span>导出 ({{ selectedNoteIds.length }})</span>
+          </button>
+
+          <!-- Batch Move to Trash -->
+          <button
+            @click="emit('batchMoveToTrash', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量移入回收站"
+          >
+            <Trash2 class="w-3.5 h-3.5 text-red-600" />
+            <span>移入回收站</span>
+          </button>
+        </template>
+
+        <!-- If trash view -->
+        <template v-else>
+          <!-- Batch Restore -->
+          <button
+            @click="emit('batchRestoreFromTrash', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量还原选中的笔记"
+          >
+            <RotateCcw class="w-3.5 h-3.5 text-emerald-600" />
+            <span>批量还原</span>
+          </button>
+
+          <!-- Batch Permanent Delete -->
+          <button
+            @click="emit('batchPermanentlyDelete', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量彻底删除选中的笔记"
+          >
+            <Trash2 class="w-3.5 h-3.5 text-red-600" />
+            <span>彻底删除</span>
+          </button>
+        </template>
+
+        <!-- Clear Selection Button -->
+        <button
+          @click="clearSelection"
+          class="p-1 text-gray-400 hover:text-gray-700 hover:bg-white/80 rounded transition-colors cursor-pointer ml-1"
+          title="取消多选 (Esc)"
+        >
+          <X class="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+
+    <!-- Notes Table / List (Matches exact columns & styling) -->
     <div id="notes-table-container" class="flex-1 overflow-y-auto">
-      <!-- Table Header -->
-      <div id="notes-table-header" class="grid grid-cols-12 px-6 py-2.5 text-xs text-gray-500 font-medium border-b border-gray-100">
-        <div class="col-span-6 md:col-span-7">文件名</div>
-        <div class="col-span-4 md:col-span-3">创建时间</div>
+      <!-- Table Header with Checkbox -->
+      <div id="notes-table-header" class="grid grid-cols-12 px-6 py-2.5 text-xs text-gray-500 font-medium border-b border-gray-100 items-center bg-gray-50/50">
+        <!-- Checkbox + File Name Column -->
+        <div class="col-span-7 md:col-span-7 flex items-center gap-3">
+          <button
+            type="button"
+            @click.stop="toggleSelectAll"
+            class="w-4 h-4 rounded border flex items-center justify-center transition-colors cursor-pointer shrink-0"
+            :class="[
+              isAllSelected || isIndeterminate
+                ? 'bg-blue-600 border-blue-600 text-white'
+                : 'border-gray-300 bg-white hover:border-blue-400'
+            ]"
+            :title="isAllSelected ? '取消全选' : '全选所有'"
+          >
+            <Check v-if="isAllSelected" class="w-3 h-3 stroke-[3]" />
+            <Minus v-else-if="isIndeterminate" class="w-3 h-3 stroke-[3]" />
+          </button>
+
+          <span>文件名</span>
+        </div>
+
+        <!-- Created Time Column -->
+        <div class="col-span-3 md:col-span-3">创建时间</div>
+
+        <!-- More Operations Column -->
         <div class="col-span-2 text-right pr-2">更多操作</div>
       </div>
 
@@ -362,17 +604,39 @@ onUnmounted(() => {
           :id="'note-row-' + note.id"
           draggable="true"
           @dragstart="handleNoteDragStart(note, $event)"
-          @click="handleRowClick(note)"
-          :title="`在新网页中打开：${note.title}`"
-          class="grid grid-cols-12 px-6 py-3 items-center text-sm hover:bg-[#f8fafc] group transition-colors cursor-pointer relative"
+          @click="handleRowClick(note, $event)"
+          class="grid grid-cols-12 px-6 py-3 items-center text-sm group transition-colors cursor-pointer relative"
+          :class="[
+            isNoteSelected(note.id)
+              ? 'bg-blue-50/70 hover:bg-blue-50/90 border-l-2 border-l-blue-600 pl-[22px]'
+              : 'hover:bg-[#f8fafc]'
+          ]"
         >
-          <!-- Column 1: File Name with Badge Icon (Markdown orange or Mindmap green) -->
-          <div class="col-span-6 md:col-span-7 flex items-center gap-3 truncate pr-2">
+          <!-- Column 1: Checkbox + File Name with Badge Icon (Markdown orange or Mindmap green) -->
+          <div class="col-span-7 md:col-span-7 flex items-center gap-3 truncate pr-2">
+            <!-- Row Multi-Select Checkbox -->
+            <button
+              type="button"
+              @click.stop="toggleSelectNote(note.id, $event)"
+              class="w-4 h-4 rounded border flex items-center justify-center transition-colors cursor-pointer shrink-0"
+              :class="[
+                isNoteSelected(note.id)
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : 'border-gray-300 bg-white hover:border-blue-400 group-hover:border-gray-400'
+              ]"
+              :title="isNoteSelected(note.id) ? '取消选择' : '选择此项 (支持 Shift 连续多选)'"
+            >
+              <Check v-if="isNoteSelected(note.id)" class="w-3 h-3 stroke-[3]" />
+            </button>
+
             <FileFormatIcon :format="note.format || note.type" size="sm" />
 
             <!-- Title & Star/Favorite/Shared Indicators -->
             <div class="truncate flex items-center gap-2">
-              <span class="text-gray-800 font-medium truncate group-hover:text-blue-600 transition-colors">
+              <span
+                class="font-medium truncate transition-colors"
+                :class="isNoteSelected(note.id) ? 'text-blue-900' : 'text-gray-800 group-hover:text-blue-600'"
+              >
                 {{ note.title }}
               </span>
 
@@ -401,7 +665,7 @@ onUnmounted(() => {
           </div>
 
           <!-- Column 2: Created Time (Matches screenshot format e.g. 2025-12-30 10:06) -->
-          <div class="col-span-4 md:col-span-3 text-xs text-gray-500 truncate">
+          <div class="col-span-3 md:col-span-3 text-xs text-gray-500 truncate">
             {{ note.createdAt }}
           </div>
 
@@ -420,18 +684,31 @@ onUnmounted(() => {
             <div
               v-if="activeDropdownNoteId === note.id"
               :id="'dropdown-menu-' + note.id"
-              class="absolute right-0 top-8 w-44 bg-white rounded-xl shadow-xl border border-gray-100 py-1.5 z-40 text-xs animate-in fade-in zoom-in-95 duration-100"
+              class="absolute right-0 top-8 w-48 bg-white rounded-xl shadow-xl border border-gray-100 py-1.5 z-40 text-xs animate-in fade-in zoom-in-95 duration-100"
               @click.stop
             >
               <!-- If NOT in trash -->
               <template v-if="!note.isDeleted">
+                <!-- Open in Current Window (Requested by User) -->
                 <button
-                  @click="emit('openNote', note); activeDropdownNoteId = null;"
+                  @click="emit('openNoteInCurrentWindow', note); activeDropdownNoteId = null;"
+                  class="w-full px-3.5 py-1.5 text-left text-gray-800 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2 cursor-pointer font-medium"
+                >
+                  <AppWindow class="w-3.5 h-3.5 text-blue-600" />
+                  <span>当前窗口打开</span>
+                </button>
+
+                <!-- Open in New Tab (Requested by User) -->
+                <button
+                  @click="emit('openNoteInNewTab', note); activeDropdownNoteId = null;"
                   class="w-full px-3.5 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer"
                 >
-                  <Edit2 class="w-3.5 h-3.5 text-gray-400" />
+                  <ExternalLink class="w-3.5 h-3.5 text-gray-400" />
                   <span>新建网页打开</span>
                 </button>
+
+                <div class="h-px bg-gray-100 my-1"></div>
+
                 <button
                   @click="emit('toggleStar', note.id); activeDropdownNoteId = null;"
                   class="w-full px-3.5 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer"

@@ -17,7 +17,8 @@ import {
   Pin,
   PinOff,
   X,
-  Check
+  Check,
+  GripVertical
 } from 'lucide-vue-next';
 import { Folder, ViewType } from '../types';
 import { compareFolders } from '../utils/folderSort';
@@ -51,8 +52,9 @@ const emit = defineEmits<{
   (e: 'deleteFolder', folderId: string): void;
   (e: 'toggleCollapse', folderId: string): void;
   (e: 'toggleFrequentFolder', folderId: string): void;
-  (e: 'addFrequentFolder', folderId: string): void;
+  (e: 'addFrequentFolder', folderId: string, atIndex?: number): void;
   (e: 'removeFrequentFolder', folderId: string): void;
+  (e: 'reorderFrequentFolders', fromIndex: number, toIndex: number): void;
   (e: 'moveFolder', draggedFolderId: string, targetParentId: string | null, position?: 'inside' | 'before' | 'after', targetFolderId?: string): void;
   (e: 'moveNote', draggedNoteId: string, targetFolderId: string): void;
 }>();
@@ -67,6 +69,11 @@ const draggedOverFolderId = ref<string | null>(null);
 const draggedDropPosition = ref<'inside' | 'before' | 'after' | null>(null);
 const isRootDropOver = ref(false);
 const isFrequentDropOver = ref(false);
+
+// Frequent folders drag-and-drop states
+const draggedFrequentFolderId = ref<string | null>(null);
+const draggedOverFrequentFolderId = ref<string | null>(null);
+const draggedFrequentDropPosition = ref<'before' | 'after' | null>(null);
 
 function handleNewNoteClick() {
   isNewDropdownOpen.value = false;
@@ -219,7 +226,7 @@ function handleFolderDrop(targetFolderId: string, position: 'inside' | 'before' 
   }
 }
 
-// Drag over "常用目录" to pin folder as frequent
+// Drag over "常用目录" section header / empty space to pin folder as frequent
 function handleFrequentDragOver(e: DragEvent) {
   e.preventDefault();
   isFrequentDropOver.value = true;
@@ -238,10 +245,99 @@ function handleFrequentDrop(e: DragEvent) {
       const data = JSON.parse(rawData);
       if (data.type === 'folder' && data.id) {
         emit('addFrequentFolder', data.id);
+      } else if (data.type === 'frequent_folder' && data.id) {
+        const fromIndex = (props.frequentFolders || []).findIndex((f) => f.id === data.id);
+        const toIndex = Math.max(0, (props.frequentFolders || []).length - 1);
+        if (fromIndex !== -1 && fromIndex !== toIndex) {
+          emit('reorderFrequentFolders', fromIndex, toIndex);
+        }
       }
     } catch (err) {
       console.error(err);
     }
+  }
+}
+
+// Drag & Drop reordering for individual Frequent Folder items
+function handleFrequentItemDragStart(folder: Folder, index: number, e: DragEvent) {
+  draggedFrequentFolderId.value = folder.id;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData(
+      'application/json',
+      JSON.stringify({ type: 'frequent_folder', id: folder.id, index })
+    );
+  }
+}
+
+function handleFrequentItemDragEnd() {
+  draggedFrequentFolderId.value = null;
+  draggedOverFrequentFolderId.value = null;
+  draggedFrequentDropPosition.value = null;
+}
+
+function handleFrequentItemDragOver(folderId: string, e: DragEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  const target = e.currentTarget as HTMLElement;
+  if (!target) return;
+  const rect = target.getBoundingClientRect();
+  const offsetY = e.clientY - rect.top;
+  // If in upper half => 'before', lower half => 'after'
+  const position = offsetY < rect.height / 2 ? 'before' : 'after';
+
+  draggedOverFrequentFolderId.value = folderId;
+  draggedFrequentDropPosition.value = position;
+}
+
+function handleFrequentItemDragLeave(folderId: string) {
+  if (draggedOverFrequentFolderId.value === folderId) {
+    draggedOverFrequentFolderId.value = null;
+    draggedFrequentDropPosition.value = null;
+  }
+}
+
+function handleFrequentItemDrop(targetFolderId: string, targetIndex: number, e: DragEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  const position = draggedFrequentDropPosition.value || 'before';
+  draggedOverFrequentFolderId.value = null;
+  draggedFrequentDropPosition.value = null;
+  draggedFrequentFolderId.value = null;
+
+  const rawData = e.dataTransfer?.getData('application/json');
+  if (!rawData) return;
+
+  try {
+    const data = JSON.parse(rawData);
+    if (data.type === 'frequent_folder') {
+      const fromIndex = typeof data.index === 'number'
+        ? data.index
+        : (props.frequentFolders || []).findIndex((f) => f.id === data.id);
+
+      if (fromIndex !== -1) {
+        let toIndex = targetIndex;
+        if (position === 'after') {
+          toIndex = fromIndex < targetIndex ? targetIndex : targetIndex + 1;
+        } else {
+          toIndex = fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+        }
+        toIndex = Math.max(0, Math.min(toIndex, (props.frequentFolders || []).length - 1));
+        if (fromIndex !== toIndex) {
+          emit('reorderFrequentFolders', fromIndex, toIndex);
+        }
+      }
+    } else if (data.type === 'folder' && data.id) {
+      // Dragged a regular folder from the tree into a specific position in frequent folders
+      const insertIndex = position === 'after' ? targetIndex + 1 : targetIndex;
+      emit('addFrequentFolder', data.id, insertIndex);
+    } else if (data.type === 'note' && data.id) {
+      // Dragged a note onto a frequent folder
+      emit('moveNote', data.id, targetFolderId);
+    }
+  } catch (err) {
+    console.error('Failed to parse dropped frequent folder data', err);
   }
 }
 
@@ -456,53 +552,93 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Frequent Folders List (Flattened as Level 1 Items) -->
-        <div v-show="isFrequentFoldersExpanded" class="mt-0.5 space-y-0.5">
+        <!-- Frequent Folders List (Flattened as Level 1 Items with Drag & Drop Sorting) -->
+        <div
+          v-show="isFrequentFoldersExpanded"
+          class="mt-0.5 space-y-0.5"
+          @dragover="handleFrequentDragOver"
+          @dragleave="handleFrequentDragLeave"
+          @drop="handleFrequentDrop"
+        >
           <div
-            v-for="folder in (frequentFolders || [])"
+            v-for="(folder, idx) in (frequentFolders || [])"
             :key="'freq-' + folder.id"
-            :id="'frequent-folder-item-' + folder.id"
-            @click="emit('selectFolder', folder.id)"
-            :title="getFolderFullPath ? getFolderFullPath(folder.id) : folder.name"
-            :class="[
-              'group relative flex items-center justify-between pl-7 pr-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
-              currentView === 'folder' && activeFolderId === folder.id
-                ? 'bg-[#e8f1fd] text-blue-600 font-medium shadow-xs'
-                : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-            ]"
+            class="relative select-none"
           >
-            <!-- Left: Folder Icon & Name (Flat Level 1) -->
-            <div class="flex items-center gap-2.5 truncate flex-1 mr-1">
-              <component
-                :is="currentView === 'folder' && activeFolderId === folder.id ? FolderOpen : FolderIcon"
-                :class="[
-                  'w-4 h-4 shrink-0 transition-colors',
-                  currentView === 'folder' && activeFolderId === folder.id
-                    ? 'text-blue-600'
-                    : 'text-amber-500 fill-amber-500/20'
-                ]"
-              />
-
-              <span class="truncate text-[13px] tracking-tight">{{ folder.name }}</span>
+            <!-- Top Drop Indicator Line for 'before' reordering -->
+            <div
+              v-if="draggedOverFrequentFolderId === folder.id && draggedFrequentDropPosition === 'before'"
+              class="absolute left-1 right-1 -top-0.5 z-30 h-1 bg-amber-500 rounded-full pointer-events-none flex items-center shadow-xs"
+            >
+              <div class="w-2 h-2 rounded-full bg-amber-600 -ml-1 border-2 border-white shadow-xs"></div>
             </div>
 
-            <!-- Right: Note count & Quick Unpin -->
-            <div class="flex items-center gap-1 shrink-0">
-              <span
-                class="text-[11px] px-1.5 py-0.2 rounded text-gray-400 group-hover:text-gray-500"
-                :class="{ 'text-blue-600 font-normal': currentView === 'folder' && activeFolderId === folder.id }"
-              >
-                {{ getFolderNoteCount(folder.id) }}
-              </span>
+            <!-- Frequent Folder Item Row -->
+            <div
+              :id="'frequent-folder-item-' + folder.id"
+              draggable="true"
+              @dragstart="handleFrequentItemDragStart(folder, idx, $event)"
+              @dragend="handleFrequentItemDragEnd"
+              @dragover="handleFrequentItemDragOver(folder.id, $event)"
+              @dragleave="handleFrequentItemDragLeave(folder.id)"
+              @drop="handleFrequentItemDrop(folder.id, idx, $event)"
+              @click="emit('selectFolder', folder.id)"
+              :title="getFolderFullPath ? getFolderFullPath(folder.id) : folder.name"
+              :class="[
+                'group relative flex items-center justify-between pl-2 pr-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-all duration-150',
+                draggedFrequentFolderId === folder.id ? 'opacity-40 bg-amber-50/60 scale-[0.98]' : '',
+                currentView === 'folder' && activeFolderId === folder.id
+                  ? 'bg-[#e8f1fd] text-blue-600 font-medium shadow-xs'
+                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900',
+                draggedOverFrequentFolderId === folder.id && draggedFrequentDropPosition ? 'bg-amber-50/40' : ''
+              ]"
+            >
+              <!-- Left: Drag handle (visible on hover) + Folder Icon & Name -->
+              <div class="flex items-center gap-1.5 truncate flex-1 mr-1">
+                <GripVertical
+                  class="w-3.5 h-3.5 text-gray-300 group-hover:text-gray-500 shrink-0 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="拖拽调整排序"
+                />
 
-              <!-- Remove / Unpin from frequent -->
-              <button
-                @click.stop="emit('toggleFrequentFolder', folder.id)"
-                class="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded transition-all cursor-pointer"
-                title="移出常用目录"
-              >
-                <X class="w-3.5 h-3.5" />
-              </button>
+                <component
+                  :is="currentView === 'folder' && activeFolderId === folder.id ? FolderOpen : FolderIcon"
+                  :class="[
+                    'w-4 h-4 shrink-0 transition-colors',
+                    currentView === 'folder' && activeFolderId === folder.id
+                      ? 'text-blue-600'
+                      : 'text-amber-500 fill-amber-500/20'
+                  ]"
+                />
+
+                <span class="truncate text-[13px] tracking-tight">{{ folder.name }}</span>
+              </div>
+
+              <!-- Right: Note count & Quick Unpin -->
+              <div class="flex items-center gap-1 shrink-0">
+                <span
+                  class="text-[11px] px-1.5 py-0.2 rounded text-gray-400 group-hover:text-gray-500"
+                  :class="{ 'text-blue-600 font-normal': currentView === 'folder' && activeFolderId === folder.id }"
+                >
+                  {{ getFolderNoteCount(folder.id) }}
+                </span>
+
+                <!-- Remove / Unpin from frequent -->
+                <button
+                  @click.stop="emit('toggleFrequentFolder', folder.id)"
+                  class="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-red-50 text-gray-400 hover:text-red-500 rounded transition-all cursor-pointer"
+                  title="移出常用目录"
+                >
+                  <X class="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <!-- Bottom Drop Indicator Line for 'after' reordering -->
+            <div
+              v-if="draggedOverFrequentFolderId === folder.id && draggedFrequentDropPosition === 'after'"
+              class="absolute left-1 right-1 -bottom-0.5 z-30 h-1 bg-amber-500 rounded-full pointer-events-none flex items-center shadow-xs"
+            >
+              <div class="w-2 h-2 rounded-full bg-amber-600 -ml-1 border-2 border-white shadow-xs"></div>
             </div>
           </div>
 
