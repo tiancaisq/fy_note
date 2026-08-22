@@ -1426,12 +1426,20 @@ export function useNotes() {
       if (res.success) {
         isApplyingRemoteSync.value = true;
         if (res.mergedNotes) {
-          const deletedSet = new Set(deletedNotesToSync);
-          notes.value = res.mergedNotes.filter((n) => !deletedSet.has(n.id));
+          if (mode === 'pull_all') {
+            notes.value = res.mergedNotes;
+          } else {
+            const deletedSet = new Set(deletedNotesToSync);
+            notes.value = res.mergedNotes.filter((n) => !deletedSet.has(n.id));
+          }
         }
         if (res.mergedFolders) {
-          const deletedFSet = new Set(deletedFoldersToSync);
-          folders.value = normalizeFolderOrders(res.mergedFolders.filter((f) => !deletedFSet.has(f.id)));
+          if (mode === 'pull_all') {
+            folders.value = normalizeFolderOrders(res.mergedFolders);
+          } else {
+            const deletedFSet = new Set(deletedFoldersToSync);
+            folders.value = normalizeFolderOrders(res.mergedFolders.filter((f) => !deletedFSet.has(f.id)));
+          }
         }
 
         // If current activeFolderId is not found in folders, fallback to first available folder or root

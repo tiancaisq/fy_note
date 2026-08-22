@@ -600,6 +600,11 @@ function parseSafeTime(timeStr?: string | number | null): number {
   if (!timeStr) return 0;
   if (typeof timeStr === 'number') return timeStr;
   const str = String(timeStr).trim();
+  if (!str) return 0;
+  if (/^\d{10,13}$/.test(str)) {
+    const num = Number(str);
+    return num < 1e11 ? num * 1000 : num;
+  }
   const normalized = str.includes('T') ? str : str.replace(' ', 'T');
   const parsed = new Date(normalized).getTime();
   if (!isNaN(parsed) && parsed > 0) return parsed;
@@ -640,20 +645,22 @@ export function calculateSyncDiff(
       const localTime = parseSafeTime(local.updatedAt || local.createdAt);
       const remoteTime = parseSafeTime(remote.updatedAt || remote.createdAt);
 
-      if (localTime > remoteTime) {
+      const isContentDiff =
+        (local.title || '') !== (remote.title || '') ||
+        (local.content || '') !== (remote.content || '') ||
+        (local.folderId || '') !== (remote.folderId || '') ||
+        Boolean(local.isStarred) !== Boolean(remote.isStarred) ||
+        Boolean(local.isFavorite) !== Boolean(remote.isFavorite) ||
+        Boolean(local.isDeleted) !== Boolean(remote.isDeleted) ||
+        (local.format || 'markdown') !== (remote.format || 'markdown');
+
+      // More than 1 second difference
+      if (localTime - remoteTime > 1000) {
         localUpdatedNotes++;
-      } else if (localTime === remoteTime) {
-        const isContentDiff =
-          (local.title || '') !== (remote.title || '') ||
-          (local.content || '') !== (remote.content || '') ||
-          (local.folderId || '') !== (remote.folderId || '') ||
-          Boolean(local.isStarred) !== Boolean(remote.isStarred) ||
-          Boolean(local.isFavorite) !== Boolean(remote.isFavorite) ||
-          Boolean(local.isDeleted) !== Boolean(remote.isDeleted) ||
-          (local.format || 'markdown') !== (remote.format || 'markdown');
-        if (isContentDiff) {
-          localUpdatedNotes++;
-        }
+      } else if (remoteTime - localTime > 1000) {
+        // Will be counted in remote loop
+      } else if (isContentDiff) {
+        localUpdatedNotes++;
       }
     }
   }
@@ -666,27 +673,17 @@ export function calculateSyncDiff(
     } else {
       const localTime = parseSafeTime(local.updatedAt || local.createdAt);
       const remoteTime = parseSafeTime(remote.updatedAt || remote.createdAt);
-      if (remoteTime > localTime) {
+      if (remoteTime - localTime > 1000) {
         cloudUpdatedNotes++;
       }
     }
   }
 
-  // Compare folders (order, name, parentId)
+  // Compare folders (only true un-synced folders)
   for (const localF of localFolderList) {
     const remoteF = remoteFolderMap.get(String(localF.id));
     if (!remoteF) {
       localOnlyFolders++;
-    } else {
-      const localOrder = typeof localF.order === 'number' ? localF.order : 0;
-      const remoteOrder = typeof remoteF.order === 'number' ? remoteF.order : 0;
-      const isDiff =
-        (localF.name || '') !== (remoteF.name || '') ||
-        (localF.parentId || null) !== (remoteF.parentId || null) ||
-        localOrder !== remoteOrder;
-      if (isDiff) {
-        localOnlyFolders++;
-      }
     }
   }
 
