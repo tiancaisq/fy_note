@@ -75,6 +75,20 @@ const isSortMenuOpen = ref(false);
 const isFilterMenuOpen = ref(false);
 const isHeaderNewMenuOpen = ref(false);
 
+// Context Menu State
+const contextMenu = ref<{
+  visible: boolean;
+  x: number;
+  y: number;
+  note: Note | null;
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  note: null,
+});
+
+const contextMenuRef = ref<HTMLElement | null>(null);
 const headerNewMenuRef = ref<HTMLElement | null>(null);
 const sortMenuRef = ref<HTMLElement | null>(null);
 const filterMenuRef = ref<HTMLElement | null>(null);
@@ -211,8 +225,68 @@ function toggleFilter(key: 'starredOnly' | 'favoriteOnly') {
   });
 }
 
+function getExportLabel(note?: Note | null): string {
+  if (!note) return '导出文件';
+  if (note.format === 'drawio' || note.type === 'drawio') {
+    return '导出为 Draw.io (.drawio)';
+  }
+  if (note.format === 'mindmap' || note.type === 'mindmap') {
+    return '导出为 XMind (.xmind)';
+  }
+  return '导出为 Markdown (.md)';
+}
+
+function closeContextMenu() {
+  contextMenu.value.visible = false;
+  contextMenu.value.note = null;
+}
+
+function handleRowContextMenu(note: Note, e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+
+  // If this note isn't already in the selected list, select it
+  if (!selectedNoteIds.value.includes(note.id)) {
+    selectedNoteIds.value = [note.id];
+    lastSelectedIndex.value = props.notes.findIndex((n) => n.id === note.id);
+  }
+
+  // Close other popovers
+  activeDropdownNoteId.value = null;
+  isSortMenuOpen.value = false;
+  isFilterMenuOpen.value = false;
+  isHeaderNewMenuOpen.value = false;
+
+  // Viewport bounds calculation
+  const menuWidth = 208;
+  const menuHeight = note.isDeleted ? 120 : 420;
+  let posX = e.clientX;
+  let posY = e.clientY;
+
+  if (posX + menuWidth > window.innerWidth) {
+    posX = Math.max(10, window.innerWidth - menuWidth - 12);
+  }
+  if (posY + menuHeight > window.innerHeight) {
+    posY = Math.max(10, window.innerHeight - menuHeight - 12);
+  }
+
+  contextMenu.value = {
+    visible: true,
+    x: posX,
+    y: posY,
+    note,
+  };
+}
+
 function handleDocumentClick(e: MouseEvent) {
   const target = e.target as Node;
+
+  // Auto close context menu
+  if (contextMenu.value.visible) {
+    if (contextMenuRef.value && !contextMenuRef.value.contains(target)) {
+      closeContextMenu();
+    }
+  }
 
   // Auto close note row more-actions dropdown if clicking outside
   if (activeDropdownNoteId.value) {
@@ -246,6 +320,9 @@ function handleDocumentClick(e: MouseEvent) {
 
 function handleDocumentKeyDown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
+    if (contextMenu.value.visible) {
+      closeContextMenu();
+    }
     if (activeDropdownNoteId.value) {
       activeDropdownNoteId.value = null;
     } else if (selectedNoteIds.value.length > 0) {
@@ -257,14 +334,22 @@ function handleDocumentKeyDown(e: KeyboardEvent) {
   }
 }
 
+function handleWindowScroll() {
+  if (contextMenu.value.visible) {
+    closeContextMenu();
+  }
+}
+
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('keydown', handleDocumentKeyDown);
+  window.addEventListener('scroll', handleWindowScroll, true);
 });
 
 onUnmounted(() => {
   document.removeEventListener('click', handleDocumentClick);
   document.removeEventListener('keydown', handleDocumentKeyDown);
+  window.removeEventListener('scroll', handleWindowScroll, true);
 });
 </script>
 
@@ -658,6 +743,7 @@ onUnmounted(() => {
           draggable="true"
           @dragstart="handleNoteDragStart(note, $event)"
           @click="handleRowClick(note, $event)"
+          @contextmenu="handleRowContextMenu(note, $event)"
           class="grid grid-cols-12 px-6 py-3 items-center text-sm group transition-colors cursor-pointer relative"
           :class="[
             isNoteSelected(note.id)
@@ -811,7 +897,7 @@ onUnmounted(() => {
                   class="w-full px-3.5 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer"
                 >
                   <Download class="w-3.5 h-3.5 text-gray-400" />
-                  <span>{{ (note.format === 'mindmap' || note.type === 'mindmap') ? '导出为 XMind (.xmind)' : '导出为 Markdown' }}</span>
+                  <span>{{ getExportLabel(note) }}</span>
                 </button>
                 <button
                   @click="emit('renameNote', note); activeDropdownNoteId = null;"
@@ -852,6 +938,149 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Right-Click Context Menu (Floating at cursor coordinates) -->
+    <div
+      v-if="contextMenu.visible && contextMenu.note"
+      ref="contextMenuRef"
+      id="context-menu-popover"
+      class="fixed z-50 w-52 bg-white rounded-xl shadow-2xl border border-gray-200/80 py-1.5 text-xs animate-in fade-in zoom-in-95 duration-100 divide-y divide-gray-100 select-none backdrop-blur-xs"
+      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+      @click.stop
+      @contextmenu.prevent
+    >
+      <!-- Menu Header (File preview) -->
+      <div class="px-3 py-1.5 bg-gray-50/70 flex items-center gap-2 text-gray-500 -mt-1.5 mb-1 rounded-t-xl border-b border-gray-100">
+        <FileFormatIcon :format="contextMenu.note.format || contextMenu.note.type" size="xs" />
+        <span class="truncate font-medium text-gray-700 max-w-[130px]">{{ contextMenu.note.title }}</span>
+        <span v-if="selectedNoteIds.length > 1" class="ml-auto text-[10px] bg-blue-100 text-blue-700 px-1 py-0.2 rounded-full font-semibold shrink-0">
+          共 {{ selectedNoteIds.length }} 项
+        </span>
+      </div>
+
+      <!-- Normal State Menu Actions -->
+      <div v-if="!contextMenu.note.isDeleted" class="py-1">
+        <!-- Open in Current Window -->
+        <button
+          @click="emit('openNoteInCurrentWindow', contextMenu.note!); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-800 hover:bg-blue-50 hover:text-blue-600 flex items-center justify-between gap-2 cursor-pointer font-medium transition-colors"
+        >
+          <div class="flex items-center gap-2">
+            <AppWindow class="w-3.5 h-3.5 text-blue-600" />
+            <span>当前窗口打开</span>
+          </div>
+          <span class="text-[10px] text-gray-400">Enter</span>
+        </button>
+
+        <!-- Open in New Tab -->
+        <button
+          @click="emit('openNoteInNewTab', contextMenu.note!); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <ExternalLink class="w-3.5 h-3.5 text-gray-400" />
+          <span>新建网页打开</span>
+        </button>
+      </div>
+
+      <div v-if="!contextMenu.note.isDeleted" class="py-1">
+        <!-- Star Toggle -->
+        <button
+          @click="emit('toggleStar', contextMenu.note!.id); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <Star class="w-3.5 h-3.5" :class="contextMenu.note.isStarred ? 'text-amber-500 fill-amber-500' : 'text-gray-400'" />
+          <span>{{ contextMenu.note.isStarred ? '取消标星' : '标星文件' }}</span>
+        </button>
+
+        <!-- Favorite Toggle -->
+        <button
+          @click="emit('toggleFavorite', contextMenu.note!.id); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <Box class="w-3.5 h-3.5" :class="contextMenu.note.isFavorite ? 'text-indigo-600' : 'text-gray-400'" />
+          <span>{{ contextMenu.note.isFavorite ? '移出收藏' : '加入收藏' }}</span>
+        </button>
+
+        <!-- Share Link -->
+        <button
+          @click="emit('openShareModal', contextMenu.note!); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <Share2 class="w-3.5 h-3.5 text-gray-400" />
+          <span>分享链接</span>
+        </button>
+      </div>
+
+      <div v-if="!contextMenu.note.isDeleted" class="py-1">
+        <!-- Move to folder -->
+        <button
+          @click="emit('openMoveModal', contextMenu.note!); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <FolderInput class="w-3.5 h-3.5 text-gray-400" />
+          <span>移动至文件夹...</span>
+        </button>
+
+        <!-- Duplicate -->
+        <button
+          @click="emit('duplicateNote', contextMenu.note!); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <Copy class="w-3.5 h-3.5 text-gray-400" />
+          <span>创建副本</span>
+        </button>
+
+        <!-- Export -->
+        <button
+          @click="emit('exportNote', contextMenu.note!); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <Download class="w-3.5 h-3.5 text-gray-400" />
+          <span>{{ getExportLabel(contextMenu.note) }}</span>
+        </button>
+
+        <!-- Rename -->
+        <button
+          @click="emit('renameNote', contextMenu.note!); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <Edit2 class="w-3.5 h-3.5 text-gray-400" />
+          <span>重命名</span>
+        </button>
+      </div>
+
+      <!-- Delete / Move to Trash -->
+      <div v-if="!contextMenu.note.isDeleted" class="py-1">
+        <button
+          @click="emit('moveToTrash', contextMenu.note!.id); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center justify-between gap-2 cursor-pointer font-medium transition-colors"
+        >
+          <div class="flex items-center gap-2">
+            <Trash2 class="w-3.5 h-3.5 text-red-500" />
+            <span>移入回收站</span>
+          </div>
+          <span class="text-[10px] text-red-300">Del</span>
+        </button>
+      </div>
+
+      <!-- In Trash Context Actions -->
+      <div v-else class="py-1">
+        <button
+          @click="emit('restoreFromTrash', contextMenu.note!.id); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-emerald-600 hover:bg-emerald-50 flex items-center gap-2 cursor-pointer font-medium transition-colors"
+        >
+          <RotateCcw class="w-3.5 h-3.5 text-emerald-600" />
+          <span>还原笔记</span>
+        </button>
+        <button
+          @click="emit('permanentlyDelete', contextMenu.note!.id); closeContextMenu();"
+          class="w-full px-3 py-1.5 text-left text-red-600 hover:bg-red-50 flex items-center gap-2 cursor-pointer font-medium transition-colors"
+        >
+          <Trash2 class="w-3.5 h-3.5 text-red-500" />
+          <span>彻底删除</span>
+        </button>
       </div>
     </div>
   </main>

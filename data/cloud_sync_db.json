@@ -3,6 +3,49 @@
     "default_user": {
       "notes": [
         {
+          "id": "note-1787500498483",
+          "title": "无标题笔记",
+          "content": "# 无标题笔记\n\n在这里开始编写你的笔记内容...\n",
+          "folderId": "folder-1787367218549",
+          "createdAt": "2026-08-23 23:54",
+          "updatedAt": "2026-08-23 23:54",
+          "isStarred": false,
+          "isFavorite": false,
+          "isShared": false,
+          "isDeleted": false,
+          "tags": [],
+          "format": "markdown"
+        },
+        {
+          "id": "note-1787500493563",
+          "title": "无标题笔记",
+          "content": "# 无标题笔记\n\n在这里开始编写你的笔记内容...\n",
+          "folderId": "folder-1787367218549",
+          "createdAt": "2026-08-23 23:54",
+          "updatedAt": "2026-08-23 23:54",
+          "isStarred": false,
+          "isFavorite": false,
+          "isShared": false,
+          "isDeleted": false,
+          "tags": [],
+          "format": "markdown"
+        },
+        {
+          "id": "note-1787500378629",
+          "title": "无标题笔记",
+          "content": "# 无标题笔记\n\n在这里开始编写你的笔记内容...\n",
+          "folderId": "folder-1787367222785",
+          "createdAt": "2026-08-23 23:52",
+          "updatedAt": "2026-08-23 23:52",
+          "isStarred": false,
+          "isFavorite": false,
+          "isShared": false,
+          "isDeleted": false,
+          "tags": [],
+          "format": "markdown",
+          "type": "markdown"
+        },
+        {
           "id": "note-1787497945578",
           "title": "无标题笔记",
           "content": "# 无标题笔记\n\n在这里开始编写你的笔记内容...\n",
@@ -194,7 +237,7 @@
           "order": 7
         }
       ],
-      "updatedAt": 1787500253132,
+      "updatedAt": 1787500667328,
       "frequentFolderIds": [
         "folder-1787367220762"
       ]
