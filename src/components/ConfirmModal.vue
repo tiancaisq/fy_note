@@ -10,7 +10,6 @@ import {
   Info,
 } from 'lucide-vue-next';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
-import MindmapIcon from './icons/MindmapIcon.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -120,10 +119,7 @@ onUnmounted(() => {
           <div class="flex items-center gap-2.5 truncate flex-1 min-w-0">
             <!-- Format icon -->
             <template v-if="itemType === 'note'">
-              <div v-if="itemFormat === 'mindmap'" class="shrink-0">
-                <MindmapIcon size="xs" />
-              </div>
-              <div v-else class="shrink-0">
+              <div class="shrink-0">
                 <FileFormatIcon :format="itemFormat || 'markdown'" size="xs" />
               </div>
             </template>

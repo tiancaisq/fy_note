@@ -616,8 +616,8 @@ onUnmounted(() => {
           <Edit2 class="w-6 h-6" />
         </div>
         <p class="text-sm font-medium text-gray-700">当前没有内容</p>
-        <p class="text-xs text-gray-400 mt-1">创建第一篇 Markdown 笔记或思维导图</p>
-        <div v-if="currentView !== 'trash'" class="mt-4 flex items-center gap-3">
+        <p class="text-xs text-gray-400 mt-1">创建第一篇 Markdown 笔记、思维导图或 Draw.io 图表</p>
+        <div v-if="currentView !== 'trash'" class="mt-4 flex flex-wrap items-center justify-center gap-3">
           <button
             @click="emit('createNewNote')"
             class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg shadow-sm transition-colors cursor-pointer flex items-center gap-1.5"
@@ -631,6 +631,13 @@ onUnmounted(() => {
           >
             <MindmapIcon size="xs" />
             <span>新建思维导图</span>
+          </button>
+          <button
+            @click="emit('createNewDrawio')"
+            class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-lg shadow-sm transition-colors cursor-pointer flex items-center gap-1.5"
+          >
+            <DrawioIcon size="xs" />
+            <span>新建 Draw.io 图表</span>
           </button>
         </div>
       </div>

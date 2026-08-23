@@ -14,6 +14,7 @@ import {
 import { Note, Folder, ViewType, BreadcrumbItem } from '../types';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
 import MindmapIcon from './icons/MindmapIcon.vue';
+import DrawioIcon from './icons/DrawioIcon.vue';
 
 const props = defineProps<{
   notes: Note[];
@@ -32,8 +33,8 @@ const emit = defineEmits<{
 // Timeline sorting mode: 'updated' (最近修改) vs 'created' (最近创建)
 const timelineMode = ref<'updated' | 'created'>('updated');
 
-// Format Filter: 'all' | 'markdown' | 'mindmap'
-const selectedFormat = ref<'all' | 'markdown' | 'mindmap'>('all');
+// Format Filter: 'all' | 'markdown' | 'mindmap' | 'drawio'
+const selectedFormat = ref<'all' | 'markdown' | 'mindmap' | 'drawio'>('all');
 
 // Folder Filter
 const selectedFolderId = ref<string>('all');
@@ -243,6 +244,13 @@ function getFolderName(folderId: string): string {
               <MindmapIcon size="xs" />
               <span>导图</span>
             </button>
+            <button
+              @click="selectedFormat = 'drawio'"
+              :class="['px-2 py-1 rounded-md flex items-center gap-1 transition-colors cursor-pointer', selectedFormat === 'drawio' ? 'bg-white text-amber-600 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
+            >
+              <DrawioIcon size="xs" />
+              <span>图表</span>
+            </button>
           </div>
 
           <!-- Folder Filter Dropdown -->
@@ -335,12 +343,23 @@ function getFolderName(folderId: string): string {
             <div
               class="absolute -left-[25px] sm:-left-[29px] top-2.5 w-3.5 h-3.5 rounded-full bg-white border-2 flex items-center justify-center pointer-events-none"
               :class="[
-                note.format === 'mindmap'
+                note.format === 'drawio' || note.type === 'drawio'
+                  ? 'border-amber-500'
+                  : note.format === 'mindmap' || note.type === 'mindmap'
                   ? 'border-emerald-500'
                   : 'border-orange-500'
               ]"
             >
-              <span class="w-1 h-1 rounded-full" :class="note.format === 'mindmap' ? 'bg-emerald-500' : 'bg-orange-500'"></span>
+              <span
+                class="w-1 h-1 rounded-full"
+                :class="[
+                  note.format === 'drawio' || note.type === 'drawio'
+                    ? 'bg-amber-500'
+                    : note.format === 'mindmap' || note.type === 'mindmap'
+                    ? 'bg-emerald-500'
+                    : 'bg-orange-500'
+                ]"
+              ></span>
             </div>
 
             <!-- Compact Row with Click-to-Open Jump in New Tab -->
@@ -352,8 +371,7 @@ function getFolderName(folderId: string): string {
               <!-- Left: Format icon, Title, Folder, Tag -->
               <div class="flex items-center gap-2 min-w-0 flex-1">
                 <div class="shrink-0">
-                  <FileFormatIcon v-if="note.format === 'markdown'" format="markdown" size="xs" />
-                  <MindmapIcon v-else size="xs" />
+                  <FileFormatIcon :format="note.format || note.type" size="xs" />
                 </div>
 
                 <span class="font-medium text-gray-800 group-hover:text-blue-600 truncate transition-colors">
