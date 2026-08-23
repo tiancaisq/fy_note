@@ -570,6 +570,75 @@ onUnmounted(() => {
   border-bottom: 1px solid #f1f5f9 !important;
   background-color: #f8fafc !important;
   padding: 4px 12px !important;
+  position: relative !important;
+  z-index: 25 !important;
+}
+
+/* Tooltips: 强制将工具栏悬浮提示向下弹出，避免被顶部 Editor Top Bar 遮挡或被父容器 overflow 裁切 */
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped::after {
+  top: 100% !important;
+  bottom: auto !important;
+  margin-top: 6px !important;
+  margin-bottom: 0 !important;
+  right: 50% !important;
+  left: auto !important;
+  transform: translateX(50%) !important;
+  background-color: #1e293b !important;
+  color: #f8fafc !important;
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  line-height: 1.4 !important;
+  border-radius: 4px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  white-space: nowrap !important;
+  z-index: 99999 !important;
+}
+
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped::before {
+  top: auto !important;
+  bottom: -6px !important;
+  right: 50% !important;
+  left: auto !important;
+  margin-right: -5px !important;
+  margin-bottom: 0 !important;
+  border-top-color: transparent !important;
+  border-bottom-color: #1e293b !important;
+  border-left-color: transparent !important;
+  border-right-color: transparent !important;
+  z-index: 100000 !important;
+}
+
+/* 靠右侧的工具栏按钮提示框向左对齐，防止超出右侧屏幕边界 */
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__nw::after,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__sw::after,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__w::after {
+  right: 0 !important;
+  left: auto !important;
+  transform: none !important;
+}
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__nw::before,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__sw::before,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__w::before {
+  right: 12px !important;
+  left: auto !important;
+  margin-right: 0 !important;
+}
+
+/* 靠左侧的工具栏按钮提示框向右对齐 */
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__ne::after,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__se::after,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__e::after {
+  left: 0 !important;
+  right: auto !important;
+  transform: none !important;
+}
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__ne::before,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__se::before,
+#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__e::before {
+  left: 12px !important;
+  right: auto !important;
+  margin-right: 0 !important;
 }
 
 #vditor-editor-instance .vditor-content {
@@ -595,6 +664,12 @@ onUnmounted(() => {
 #vditor-editor-instance .vditor-toolbar__item--current {
   color: #059669 !important;
   background-color: #d1fae5 !important;
+}
+
+#vditor-editor-instance .vditor-panel {
+  z-index: 50 !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+  border: 1px solid #e2e8f0 !important;
 }
 
 #vditor-editor-instance .vditor-outline {
