@@ -1,27 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
-import { marked } from 'marked';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import Vditor from 'vditor';
+import 'vditor/dist/index.css';
 import {
   X,
   Save,
-  Eye,
-  Edit3,
-  Columns,
   Star,
   Box,
   Share2,
   Download,
-  Bold,
-  Italic,
-  Code,
-  List,
-  ListOrdered,
-  CheckSquare,
-  Heading1,
-  Heading2,
-  Quote,
-  Table as TableIcon,
-  Link as LinkIcon,
   Tag as TagIcon,
   Folder as FolderIcon,
   Copy,
@@ -29,8 +16,10 @@ import {
   CheckCheck,
   Maximize2,
   Minimize2,
-  RotateCcw,
-  RotateCw
+  Sparkles,
+  FileEdit,
+  LayoutTemplate,
+  Columns
 } from 'lucide-vue-next';
 import { Note, Folder } from '../types';
 import { compareFolders } from '../utils/folderSort';
@@ -38,7 +27,7 @@ import { compareFolders } from '../utils/folderSort';
 const props = defineProps<{
   note: Note;
   folders: Folder[];
-  mode: 'split' | 'edit' | 'preview';
+  mode?: 'split' | 'edit' | 'preview';
 }>();
 
 const emit = defineEmits<{
@@ -55,16 +44,19 @@ const isMac = computed(() => {
 });
 
 const localTitle = ref(props.note.title);
-const localContent = ref(props.note.content);
+const localContent = ref(props.note.content || '');
 const localFolderId = ref(props.note.folderId);
 const localTags = ref<string[]>([...props.note.tags]);
 const newTagInput = ref('');
-const currentMode = ref<'split' | 'edit' | 'preview'>(props.mode);
 const isFullscreen = ref(true);
 const isCopied = ref(false);
 const saveStatus = ref('已自动同步');
-const textareaRef = ref<HTMLTextAreaElement | null>(null);
-const previewContainerRef = ref<HTMLElement | null>(null);
+
+// Vditor instance and container
+const vditorContainerRef = ref<HTMLDivElement | null>(null);
+let vditorInstance: Vditor | null = null;
+const isVditorReady = ref(false);
+const currentVditorMode = ref<'ir' | 'wysiwyg' | 'sv'>('ir');
 
 // Hierarchical folders formatted with level indentation
 const hierarchicalFolders = computed(() => {
@@ -111,63 +103,6 @@ const hierarchicalFolders = computed(() => {
   return result;
 });
 
-// Synchronize when note changes
-watch(
-  () => props.note.id,
-  () => {
-    localTitle.value = props.note.title;
-    localContent.value = props.note.content;
-    localFolderId.value = props.note.folderId;
-    localTags.value = [...props.note.tags];
-    contentHistory.value = [props.note.content || ''];
-    contentHistoryIndex.value = 0;
-  }
-);
-
-// History management for Markdown Note (Undo / Redo)
-const contentHistory = ref<string[]>([props.note.content || '']);
-const contentHistoryIndex = ref(0);
-const isHistoryNavigating = ref(false);
-const MAX_NOTE_HISTORY = 60;
-
-const canUndo = computed(() => contentHistoryIndex.value > 0);
-const canRedo = computed(() => contentHistoryIndex.value < contentHistory.value.length - 1);
-
-function recordContentHistory(text: string) {
-  if (isHistoryNavigating.value) return;
-  if (contentHistory.value[contentHistoryIndex.value] === text) return;
-  
-  const next = contentHistory.value.slice(0, contentHistoryIndex.value + 1);
-  next.push(text);
-  if (next.length > MAX_NOTE_HISTORY) {
-    next.shift();
-  }
-  contentHistory.value = next;
-  contentHistoryIndex.value = next.length - 1;
-}
-
-function undo() {
-  if (!canUndo.value) return;
-  isHistoryNavigating.value = true;
-  contentHistoryIndex.value--;
-  localContent.value = contentHistory.value[contentHistoryIndex.value];
-  triggerAutoSave();
-  setTimeout(() => {
-    isHistoryNavigating.value = false;
-  }, 50);
-}
-
-function redo() {
-  if (!canRedo.value) return;
-  isHistoryNavigating.value = true;
-  contentHistoryIndex.value++;
-  localContent.value = contentHistory.value[contentHistoryIndex.value];
-  triggerAutoSave();
-  setTimeout(() => {
-    isHistoryNavigating.value = false;
-  }, 50);
-}
-
 // Auto-save debounce
 let saveTimeout: any = null;
 function triggerAutoSave() {
@@ -198,91 +133,8 @@ function handleManualSave() {
   }, 2000);
 }
 
-// Editor-specific keyboard shortcuts
-function handleEditorKeyDown(e: KeyboardEvent) {
-  const isMod = e.metaKey || e.ctrlKey;
-
-  // Undo / Redo
-  if (isMod && e.key.toLowerCase() === 'z') {
-    e.preventDefault();
-    if (e.shiftKey) {
-      redo();
-    } else {
-      undo();
-    }
-    return;
-  }
-
-  if (isMod && e.key.toLowerCase() === 'y') {
-    e.preventDefault();
-    redo();
-    return;
-  }
-
-  if (isMod && e.key.toLowerCase() === 's' && !e.shiftKey) {
-    e.preventDefault();
-    handleManualSave();
-    return;
-  }
-
-  if (isMod && e.key.toLowerCase() === 'b') {
-    e.preventDefault();
-    insertFormat('**', '**', '加粗文字');
-    return;
-  }
-
-  if (isMod && e.key.toLowerCase() === 'i') {
-    e.preventDefault();
-    insertFormat('*', '*', '斜体文字');
-    return;
-  }
-
-  if (isMod && e.key.toLowerCase() === 'k') {
-    e.preventDefault();
-    insertFormat('[', '](https://)', '链接标题');
-    return;
-  }
-
-  if (isMod && e.shiftKey && e.key.toLowerCase() === 'c') {
-    e.preventDefault();
-    insertFormat('```typescript\n', '\n```', '// 代码内容');
-    return;
-  }
-
-  if (isMod && e.key.toLowerCase() === 'p') {
-    e.preventDefault();
-    if (currentMode.value === 'split') currentMode.value = 'preview';
-    else if (currentMode.value === 'preview') currentMode.value = 'edit';
-    else currentMode.value = 'split';
-    return;
-  }
-
-  if (isMod && e.shiftKey && e.key.toLowerCase() === 's') {
-    e.preventDefault();
-    emit('toggleStar', props.note.id);
-    return;
-  }
-}
-
-onMounted(() => {
-  window.addEventListener('keydown', handleEditorKeyDown);
-});
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleEditorKeyDown);
-});
-
 function handleTitleChange() {
   triggerAutoSave();
-}
-
-let contentDebounceTimeout: any = null;
-function handleContentChange() {
-  triggerAutoSave();
-  if (contentDebounceTimeout) clearTimeout(contentDebounceTimeout);
-  contentDebounceTimeout = setTimeout(() => {
-    recordContentHistory(localContent.value);
-  }, 350);
 }
 
 function handleFolderChange(e: Event) {
@@ -305,57 +157,24 @@ function removeTag(tag: string) {
   triggerAutoSave();
 }
 
-// Markdown rendering with GFM
-const renderedHtml = computed(() => {
-  try {
-    return marked.parse(localContent.value || '', { gfm: true, breaks: true });
-  } catch (e) {
-    return '<p class="text-red-500">Markdown 解析出错</p>';
-  }
-});
-
 // Word count & stats
 const wordCount = computed(() => {
-  return localContent.value.replace(/\s+/g, '').length;
+  return (localContent.value || '').replace(/\s+/g, '').length;
 });
 
 const readingTime = computed(() => {
   return Math.max(1, Math.ceil(wordCount.value / 300));
 });
 
-// Markdown Toolbar Helpers
-function insertFormat(before: string, after = '', defaultText = '') {
-  const el = textareaRef.value;
-  if (!el) return;
-
-  const start = el.selectionStart;
-  const end = el.selectionEnd;
-  const selectedText = el.value.substring(start, end) || defaultText;
-
-  const replacement = before + selectedText + after;
-  localContent.value =
-    el.value.substring(0, start) + replacement + el.value.substring(end);
-
-  recordContentHistory(localContent.value);
-  triggerAutoSave();
-
-  setTimeout(() => {
-    el.focus();
-    el.setSelectionRange(
-      start + before.length,
-      start + before.length + selectedText.length
-    );
-  }, 0);
-}
-
 // Universal Copy function
 async function copyContent() {
   try {
+    const text = vditorInstance ? vditorInstance.getValue() : localContent.value;
     if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(localContent.value);
+      await navigator.clipboard.writeText(text);
     } else {
       const textArea = document.createElement('textarea');
-      textArea.value = localContent.value;
+      textArea.value = text;
       textArea.style.position = 'fixed';
       textArea.style.left = '-999999px';
       document.body.appendChild(textArea);
@@ -372,12 +191,170 @@ async function copyContent() {
     console.error('Copy failed', err);
   }
 }
+
+// Switch Vditor Mode (ir: 即时渲染 / wysiwyg: 所见即所得 / sv: 分屏源码)
+function switchMode(mode: 'ir' | 'wysiwyg' | 'sv') {
+  currentVditorMode.value = mode;
+  if (!vditorInstance) return;
+  
+  // Vditor provides internal mode switching by re-initializing or toolbar
+  // Or we can safely recreate/switch
+  initVditor(mode);
+}
+
+// Initialize Vditor instance
+function initVditor(initialMode: 'ir' | 'wysiwyg' | 'sv' = 'ir') {
+  if (!vditorContainerRef.value) return;
+
+  if (vditorInstance) {
+    try {
+      vditorInstance.destroy();
+    } catch (e) {
+      console.warn('Vditor destroy error:', e);
+    }
+    vditorInstance = null;
+    isVditorReady.value = false;
+  }
+
+  currentVditorMode.value = initialMode;
+
+  vditorInstance = new Vditor(vditorContainerRef.value, {
+    value: localContent.value,
+    height: '100%',
+    mode: initialMode,
+    placeholder: '开始使用 Markdown 记录想法、文档或整理知识...',
+    theme: 'classic',
+    icon: 'material',
+    cache: {
+      enable: false, // 禁用默认 localstorage 缓存，避免多笔记切换污染
+    },
+    counter: {
+      enable: false, // 使用我们自己的底部精致计数器
+    },
+    outline: {
+      enable: true,
+      position: 'left',
+    },
+    preview: {
+      delay: 150,
+      mode: 'both',
+      hljs: {
+        enable: true,
+        style: 'github',
+        lineNumber: true,
+      },
+      markdown: {
+        toc: true,
+        mark: true,
+        footnotes: true,
+        autoSpace: true,
+      },
+      math: {
+        engine: 'KaTeX',
+      },
+    },
+    toolbarConfig: {
+      pin: true,
+    },
+    toolbar: [
+      'emoji',
+      'headings',
+      'bold',
+      'italic',
+      'strike',
+      'link',
+      '|',
+      'list',
+      'ordered-list',
+      'check',
+      'outdent',
+      'indent',
+      '|',
+      'quote',
+      'line',
+      'code',
+      'inline-code',
+      'insert-before',
+      'insert-after',
+      '|',
+      'table',
+      'undo',
+      'redo',
+      '|',
+      'outline',
+      'content-theme',
+      'code-theme',
+      'fullscreen',
+    ],
+    input: (val: string) => {
+      localContent.value = val;
+      triggerAutoSave();
+    },
+    after: () => {
+      isVditorReady.value = true;
+      if (vditorInstance && localContent.value !== vditorInstance.getValue()) {
+        vditorInstance.setValue(localContent.value);
+      }
+    },
+  });
+}
+
+// Synchronize when note changes
+watch(
+  () => props.note.id,
+  () => {
+    localTitle.value = props.note.title;
+    localContent.value = props.note.content || '';
+    localFolderId.value = props.note.folderId;
+    localTags.value = [...props.note.tags];
+
+    if (vditorInstance && isVditorReady.value) {
+      vditorInstance.setValue(props.note.content || '', true);
+    }
+  }
+);
+
+// Keyboard shortcuts for save
+function handleEditorKeyDown(e: KeyboardEvent) {
+  const isMod = e.metaKey || e.ctrlKey;
+
+  if (isMod && e.key.toLowerCase() === 's' && !e.shiftKey) {
+    e.preventDefault();
+    handleManualSave();
+    return;
+  }
+
+  if (isMod && e.shiftKey && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    emit('toggleStar', props.note.id);
+    return;
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleEditorKeyDown);
+  nextTick(() => {
+    initVditor('ir');
+  });
+});
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleEditorKeyDown);
+  if (vditorInstance) {
+    try {
+      vditorInstance.destroy();
+    } catch (e) {
+      // ignore
+    }
+    vditorInstance = null;
+  }
+});
 </script>
 
 <template>
   <div
     id="note-editor-modal-container"
-    class="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center animate-in fade-in duration-150"
+    class="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center animate-in fade-in duration-150 select-none"
     :class="isFullscreen ? 'p-0' : 'p-2 sm:p-4'"
   >
     <div
@@ -434,28 +411,40 @@ async function copyContent() {
 
         <!-- Mode Switches & Actions -->
         <div class="flex items-center gap-2 shrink-0">
-          <!-- Mode Toggle: Edit / Split / Preview -->
+          <!-- Mode Toggle: WYSIWYG / Instant Rendering (IR) / Split View (SV) -->
           <div class="bg-gray-100 p-0.5 rounded-lg flex items-center text-xs text-gray-600">
             <button
-              @click="currentMode = 'edit'"
-              :class="['px-2.5 py-1 rounded-md transition-all font-medium cursor-pointer', currentMode === 'edit' ? 'bg-white shadow-xs text-blue-600' : 'hover:text-gray-900']"
-              title="仅编辑"
+              @click="switchMode('ir')"
+              :class="[
+                'px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1 cursor-pointer',
+                currentVditorMode === 'ir' ? 'bg-white shadow-xs text-emerald-700 font-semibold' : 'hover:text-gray-900'
+              ]"
+              title="即时渲染 (Typora 风格即时排版)"
             >
-              <Edit3 class="w-3.5 h-3.5" />
+              <Sparkles class="w-3.5 h-3.5" />
+              <span class="hidden md:inline">即时渲染</span>
             </button>
             <button
-              @click="currentMode = 'split'"
-              :class="['px-2.5 py-1 rounded-md transition-all font-medium hidden sm:block cursor-pointer', currentMode === 'split' ? 'bg-white shadow-xs text-blue-600' : 'hover:text-gray-900']"
-              title="分屏对照"
+              @click="switchMode('wysiwyg')"
+              :class="[
+                'px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1 cursor-pointer',
+                currentVditorMode === 'wysiwyg' ? 'bg-white shadow-xs text-emerald-700 font-semibold' : 'hover:text-gray-900'
+              ]"
+              title="所见即所得 (富文本排版编辑)"
+            >
+              <LayoutTemplate class="w-3.5 h-3.5" />
+              <span class="hidden md:inline">所见即所得</span>
+            </button>
+            <button
+              @click="switchMode('sv')"
+              :class="[
+                'px-2.5 py-1 rounded-md transition-all font-medium hidden sm:flex items-center gap-1 cursor-pointer',
+                currentVditorMode === 'sv' ? 'bg-white shadow-xs text-emerald-700 font-semibold' : 'hover:text-gray-900'
+              ]"
+              title="分屏对照 (源码与实时预览)"
             >
               <Columns class="w-3.5 h-3.5" />
-            </button>
-            <button
-              @click="currentMode = 'preview'"
-              :class="['px-2.5 py-1 rounded-md transition-all font-medium cursor-pointer', currentMode === 'preview' ? 'bg-white shadow-xs text-blue-600' : 'hover:text-gray-900']"
-              title="仅预览"
-            >
-              <Eye class="w-3.5 h-3.5" />
+              <span class="hidden md:inline">分屏对照</span>
             </button>
           </div>
 
@@ -512,11 +501,11 @@ async function copyContent() {
           <button
             @click="handleManualSave"
             :title="'即时保存 (' + (isMac ? '⌘S' : 'Ctrl+S') + ')'"
-            class="px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-md transition-colors flex items-center gap-1 border border-blue-200 cursor-pointer"
+            class="px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 rounded-md transition-colors flex items-center gap-1 border border-emerald-200 cursor-pointer"
           >
-            <Save class="w-3.5 h-3.5" />
+            <Save class="w-3.5 h-3.5 text-emerald-600" />
             <span class="hidden sm:inline">保存</span>
-            <kbd class="text-[9px] font-mono text-blue-400 hidden sm:inline">{{ isMac ? '⌘S' : 'Ctrl+S' }}</kbd>
+            <kbd class="text-[9px] font-mono text-emerald-500 hidden sm:inline">{{ isMac ? '⌘S' : 'Ctrl+S' }}</kbd>
           </button>
 
           <!-- Fullscreen Toggle Button -->
@@ -531,160 +520,9 @@ async function copyContent() {
         </div>
       </div>
 
-      <!-- Markdown Quick Toolbar (Only shown when not in preview-only mode) -->
-      <div
-        v-if="currentMode !== 'preview'"
-        id="markdown-toolbar"
-        class="h-10 px-4 bg-gray-50/80 border-b border-gray-100 flex items-center gap-1 overflow-x-auto text-gray-600 shrink-0 select-none"
-      >
-        <!-- Undo / Redo -->
-        <button
-          @click="undo"
-          :disabled="!canUndo"
-          :class="[
-            'p-1.5 rounded transition-all',
-            canUndo
-              ? 'hover:bg-white hover:shadow-xs text-gray-600 hover:text-gray-900 cursor-pointer'
-              : 'text-gray-300 cursor-not-allowed opacity-40'
-          ]"
-          :title="'撤销 (' + (isMac ? '⌘Z' : 'Ctrl+Z') + ')'"
-        >
-          <RotateCcw class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="redo"
-          :disabled="!canRedo"
-          :class="[
-            'p-1.5 rounded transition-all',
-            canRedo
-              ? 'hover:bg-white hover:shadow-xs text-gray-600 hover:text-gray-900 cursor-pointer'
-              : 'text-gray-300 cursor-not-allowed opacity-40'
-          ]"
-          :title="'重做 (' + (isMac ? '⌘⇧Z' : 'Ctrl+Y') + ')'"
-        >
-          <RotateCw class="w-3.5 h-3.5" />
-        </button>
-        <div class="h-3.5 w-px bg-gray-200 mx-1"></div>
-
-        <button
-          @click="insertFormat('**', '**', '加粗文字')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          :title="'粗体 (' + (isMac ? '⌘B' : 'Ctrl+B') + ')'"
-        >
-          <Bold class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('*', '*', '斜体文字')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          :title="'斜体 (' + (isMac ? '⌘I' : 'Ctrl+I') + ')'"
-        >
-          <Italic class="w-3.5 h-3.5" />
-        </button>
-        <div class="h-3.5 w-px bg-gray-200 mx-1"></div>
-
-        <button
-          @click="insertFormat('# ', '', '一级标题')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          title="一级标题"
-        >
-          <Heading1 class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('## ', '', '二级标题')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          title="二级标题"
-        >
-          <Heading2 class="w-3.5 h-3.5" />
-        </button>
-        <div class="h-3.5 w-px bg-gray-200 mx-1"></div>
-
-        <button
-          @click="insertFormat('```typescript\n', '\n```', '// 在此编写代码')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          :title="'代码块 (' + (isMac ? '⌘⇧C' : 'Ctrl+⇧+C') + ')'"
-        >
-          <Code class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('> ', '', '引用内容')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          title="引用"
-        >
-          <Quote class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('- ', '', '列表项')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          title="无序列表"
-        >
-          <List class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('1. ', '', '有序列表项')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          title="有序列表"
-        >
-          <ListOrdered class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('- [ ] ', '', '待办任务')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          title="任务清单"
-        >
-          <CheckSquare class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('| 列 1 | 列 2 |\n| :--- | :--- |\n| 单元格 1 | 单元格 2 |\n')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          title="插入表格"
-        >
-          <TableIcon class="w-3.5 h-3.5" />
-        </button>
-        <button
-          @click="insertFormat('[', '](https://)', '链接描述')"
-          class="p-1.5 hover:bg-white hover:shadow-xs rounded text-gray-600 hover:text-gray-900 transition-all cursor-pointer"
-          :title="'插入链接 (' + (isMac ? '⌘K' : 'Ctrl+K') + ')'"
-        >
-          <LinkIcon class="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      <!-- Main Editor / Preview Body -->
-      <div id="editor-split-body" class="flex-1 flex overflow-hidden">
-        <!-- Editor Input Panel -->
-        <div
-          v-show="currentMode === 'edit' || currentMode === 'split'"
-          :class="[
-            'h-full flex flex-col bg-white border-r border-gray-100',
-            currentMode === 'split' ? 'w-1/2' : 'w-full'
-          ]"
-        >
-          <textarea
-            id="markdown-source-textarea"
-            ref="textareaRef"
-            v-model="localContent"
-            @input="handleContentChange"
-            placeholder="使用 Markdown 语法书写你的笔记..."
-            class="w-full flex-1 p-6 text-sm sm:text-base font-mono text-gray-800 bg-transparent border-none outline-none resize-none leading-relaxed selection:bg-blue-100 selection:text-blue-900 select-text cursor-text"
-          ></textarea>
-        </div>
-
-        <!-- Markdown Rendered Preview Panel (Fully selectable & copyable) -->
-        <div
-          v-show="currentMode === 'preview' || currentMode === 'split'"
-          ref="previewContainerRef"
-          :class="[
-            'h-full overflow-y-auto bg-[#fafafa]/60 p-6 sm:p-8 select-text cursor-text relative',
-            currentMode === 'split' ? 'w-1/2' : 'w-full'
-          ]"
-        >
-          <!-- Styled Markdown Preview -->
-          <article
-            id="rendered-markdown-article"
-            class="prose prose-slate max-w-none text-gray-800 text-sm sm:text-base leading-relaxed space-y-4 select-text cursor-text selection:bg-blue-100 selection:text-blue-900"
-            v-html="renderedHtml"
-          ></article>
-        </div>
+      <!-- Main Vditor Container Body -->
+      <div id="vditor-wrapper" class="flex-1 w-full overflow-hidden relative flex flex-col bg-white">
+        <div ref="vditorContainerRef" id="vditor-editor-instance" class="w-full flex-1 overflow-hidden"></div>
       </div>
 
       <!-- Editor Footer: Tags & Status -->
@@ -695,10 +533,10 @@ async function copyContent() {
           <span
             v-for="tag in localTags"
             :key="tag"
-            class="bg-blue-50 text-blue-600 px-2 py-0.5 rounded text-[11px] flex items-center gap-1 shrink-0 select-text"
+            class="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded text-[11px] flex items-center gap-1 shrink-0 select-text"
           >
             #{{ tag }}
-            <button @click="removeTag(tag)" class="hover:text-blue-800 text-xs cursor-pointer">×</button>
+            <button @click="removeTag(tag)" class="hover:text-emerald-900 text-xs cursor-pointer">×</button>
           </span>
           <input
             v-model="newTagInput"
@@ -722,114 +560,51 @@ async function copyContent() {
 </template>
 
 <style>
-/* Ensure text inside preview article and all children can be selected and copied */
-#rendered-markdown-article,
-#rendered-markdown-article * {
-  user-select: text !important;
-  -webkit-user-select: text !important;
-  -moz-user-select: text !important;
-  -ms-user-select: text !important;
-  cursor: text;
+/* Vditor Container Custom Styling & Integration */
+#vditor-editor-instance {
+  border: none !important;
+  border-radius: 0 !important;
 }
 
-#rendered-markdown-article a,
-#rendered-markdown-article input[type="checkbox"] {
-  cursor: pointer;
+#vditor-editor-instance .vditor-toolbar {
+  border-bottom: 1px solid #f1f5f9 !important;
+  background-color: #f8fafc !important;
+  padding: 4px 12px !important;
 }
 
-#rendered-markdown-article ::selection {
-  background-color: #bfdbfe !important;
-  color: #1e3a8a !important;
+#vditor-editor-instance .vditor-content {
+  background-color: #ffffff !important;
 }
 
-/* Markdown Content Typography and styling */
-#rendered-markdown-article h1 {
-  font-size: 1.6rem;
-  font-weight: 700;
-  color: #0f172a;
-  border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 0.4rem;
-  margin-top: 1rem;
-  margin-bottom: 0.8rem;
+#vditor-editor-instance .vditor-reset {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-size: 15px !important;
+  line-height: 1.7 !important;
+  color: #1e293b !important;
 }
-#rendered-markdown-article h2 {
-  font-size: 1.3rem;
-  font-weight: 600;
-  color: #1e293b;
-  margin-top: 1.2rem;
-  margin-bottom: 0.6rem;
+
+#vditor-editor-instance .vditor-toolbar__item {
+  color: #475569 !important;
 }
-#rendered-markdown-article h3 {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #334155;
-  margin-top: 1rem;
-  margin-bottom: 0.4rem;
+
+#vditor-editor-instance .vditor-toolbar__item:hover {
+  color: #059669 !important;
+  background-color: #ecfdf5 !important;
 }
-#rendered-markdown-article p {
-  margin-bottom: 0.8rem;
-  line-height: 1.7;
+
+#vditor-editor-instance .vditor-toolbar__item--current {
+  color: #059669 !important;
+  background-color: #d1fae5 !important;
 }
-#rendered-markdown-article ul {
-  list-style-type: disc;
-  padding-left: 1.5rem;
-  margin-bottom: 0.8rem;
+
+#vditor-editor-instance .vditor-outline {
+  border-right: 1px solid #e2e8f0 !important;
+  background-color: #f8fafc !important;
 }
-#rendered-markdown-article ol {
-  list-style-type: decimal;
-  padding-left: 1.5rem;
-  margin-bottom: 0.8rem;
-}
-#rendered-markdown-article li {
-  margin-bottom: 0.3rem;
-}
-#rendered-markdown-article blockquote {
-  border-left: 4px solid #3b82f6;
-  background-color: #eff6ff;
-  padding: 0.6rem 1rem;
-  margin: 0.8rem 0;
-  color: #1e40af;
-  border-radius: 0 0.375rem 0.375rem 0;
-}
-#rendered-markdown-article code {
-  background-color: #f1f5f9;
-  color: #ea580c;
-  padding: 0.15rem 0.35rem;
-  border-radius: 0.25rem;
-  font-size: 0.88em;
-  font-family: monospace;
-}
-#rendered-markdown-article pre {
-  background-color: #1e293b;
-  color: #f8fafc;
-  padding: 1rem;
-  border-radius: 0.5rem;
-  overflow-x: auto;
-  margin: 1rem 0;
-  position: relative;
-}
-#rendered-markdown-article pre code {
-  background-color: transparent;
-  color: inherit;
-  padding: 0;
-}
-#rendered-markdown-article table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 1rem 0;
-  font-size: 0.9em;
-}
-#rendered-markdown-article th,
-#rendered-markdown-article td {
-  border: 1px solid #e2e8f0;
-  padding: 0.5rem 0.75rem;
-  text-align: left;
-}
-#rendered-markdown-article th {
-  background-color: #f8fafc;
-  font-weight: 600;
-}
-#rendered-markdown-article input[type="checkbox"] {
-  margin-right: 0.4rem;
+
+#vditor-editor-instance .vditor-outline__item--current {
+  background-color: #ecfdf5 !important;
+  color: #059669 !important;
+  font-weight: 600 !important;
 }
 </style>
