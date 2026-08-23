@@ -6,6 +6,7 @@ import Sidebar from './components/Sidebar.vue';
 import NoteList from './components/NoteList.vue';
 import NoteEditor from './components/NoteEditor.vue';
 import MindMapEditor from './components/MindMapEditor.vue';
+import DrawioEditor from './components/DrawioEditor.vue';
 import ImportModal from './components/ImportModal.vue';
 import ShareModal from './components/ShareModal.vue';
 import MoveModal from './components/MoveModal.vue';
@@ -82,6 +83,7 @@ const {
   handleBreadcrumbClick,
   createNewNote,
   createNewMindMap,
+  createNewDrawioDiagram,
   openNoteEditor,
   openNoteInNewTab,
   closeEditor,
@@ -112,6 +114,7 @@ const {
   exportNoteAsMarkdown,
   importMarkdownFile,
   importMindMapFile,
+  importDrawioFile,
   navigateToNoteFromSearch,
 } = useNotes();
 
@@ -308,7 +311,9 @@ function handleRenameNoteSubmit(noteId: string, newTitle: string) {
 
 function handleBatchImport(files: { name: string; content: string; folderId: string; format?: string }[]) {
   files.forEach((f) => {
-    if (f.format === 'mindmap' || f.name.match(/\.(xmind|km)$/i)) {
+    if (f.format === 'drawio' || f.name.match(/\.(drawio|drawio\.xml|drawio\.svg|drawio\.png)$/i)) {
+      importDrawioFile(f.name, f.content, f.folderId);
+    } else if (f.format === 'mindmap' || f.name.match(/\.(xmind|km)$/i)) {
       importMindMapFile(f.name, f.content, f.folderId);
     } else {
       importMarkdownFile(f.name, f.content, f.folderId);
@@ -353,6 +358,13 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
   if (isMod && e.key.toLowerCase() === 'm' && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     createNewMindMap();
+    return;
+  }
+
+  // 1.2 Ctrl/Cmd + D: Create New Drawio Diagram
+  if (isMod && e.key.toLowerCase() === 'd' && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    createNewDrawioDiagram();
     return;
   }
 
@@ -502,6 +514,7 @@ onUnmounted(() => {
         @select-view="selectView"
         @create-new-note="createNewNote()"
         @create-new-mind-map="createNewMindMap()"
+        @create-new-drawio="createNewDrawioDiagram()"
         @open-import="isImportModalOpen = true"
         @open-new-folder="handleOpenNewFolder"
         @rename-folder="handleOpenRenameFolder"
@@ -542,6 +555,7 @@ onUnmounted(() => {
         @open-note-in-new-tab="(n) => openNoteInNewTab(n)"
         @create-new-note="createNewNote()"
         @create-new-mind-map="createNewMindMap()"
+        @create-new-drawio="createNewDrawioDiagram()"
         @toggle-star="toggleStar"
         @toggle-favorite="toggleFavorite"
         @move-to-trash="handlePromptMoveToTrash"
@@ -564,9 +578,21 @@ onUnmounted(() => {
       />
     </div>
 
+    <!-- Draw.io Diagram Editor Modal (For Draw.io Notes) -->
+    <DrawioEditor
+      v-if="isEditorOpen && activeNote && (activeNote.format === 'drawio' || activeNote.type === 'drawio')"
+      :note="activeNote"
+      :folders="folders"
+      @close="closeEditor"
+      @update-note="updateNote"
+      @toggle-star="toggleStar"
+      @toggle-favorite="toggleFavorite"
+      @open-share="openShareModal"
+    />
+
     <!-- Mind Map Editor Modal (For Mindmap Notes) -->
     <MindMapEditor
-      v-if="isEditorOpen && activeNote && (activeNote.format === 'mindmap' || activeNote.type === 'mindmap')"
+      v-else-if="isEditorOpen && activeNote && (activeNote.format === 'mindmap' || activeNote.type === 'mindmap')"
       :note="activeNote"
       :folders="folders"
       @close="closeEditor"

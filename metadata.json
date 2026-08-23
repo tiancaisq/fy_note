@@ -1,6 +1,6 @@
 {
   "name": "Remix Remix Remix 枫叶云笔记",
-  "description": "基于 Vue 3 和 Tailwind CSS 构建的云端笔记与知识库管理系统，支持多级文件夹分类、Markdown 富文本编辑、KityMinder 思维导图编辑、笔记分享、标星收藏与文件导入导出。",
+  "description": "基于 Vue 3 和 Tailwind CSS 构建的云端笔记与知识库管理系统，支持多级文件夹分类、Markdown 富文本编辑、KityMinder 思维导图编辑、Draw.io 流程图/架构图表集成、笔记分享、标星收藏与文件导入导出。",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

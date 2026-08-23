@@ -14,6 +14,7 @@ import {
 } from '../types';
 import { INITIAL_FOLDERS, INITIAL_NOTES } from '../data/initialData';
 import { exportToXMind } from '../utils/xmind';
+import { createDefaultDrawioXml, extractDrawioTextNodes } from '../utils/drawioTemplates';
 import { compareFolders, normalizeFolderOrders, reorderFolder } from '../utils/folderSort';
 import {
   initStorageAndMigrate,
@@ -776,12 +777,16 @@ export function useNotes() {
     // Search filtering
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.trim().toLowerCase();
-      result = result.filter(
-        (n) =>
-          n.title.toLowerCase().includes(q) ||
-          n.content.toLowerCase().includes(q) ||
-          n.tags.some((t) => t.toLowerCase().includes(q))
-      );
+      result = result.filter((n) => {
+        const titleMatch = n.title.toLowerCase().includes(q);
+        const tagMatch = n.tags.some((t) => t.toLowerCase().includes(q));
+        if (titleMatch || tagMatch) return true;
+        if (n.format === 'drawio' || n.type === 'drawio') {
+          const textNodes = extractDrawioTextNodes(n.content);
+          return textNodes.some((t) => t.toLowerCase().includes(q));
+        }
+        return n.content.toLowerCase().includes(q);
+      });
     }
 
     // Secondary filters
@@ -829,7 +834,12 @@ export function useNotes() {
 
     availableNotes.forEach((note) => {
       const titleLower = note.title.toLowerCase();
-      const contentLower = note.content.toLowerCase();
+      let contentForSearch = note.content;
+      if (note.format === 'drawio' || note.type === 'drawio') {
+        const textNodes = extractDrawioTextNodes(note.content);
+        contentForSearch = textNodes.join(' ') || note.title;
+      }
+      const contentLower = contentForSearch.toLowerCase();
       const tagMatch = note.tags.some((t) => t.toLowerCase().includes(q));
 
       if (titleLower.includes(q) || contentLower.includes(q) || tagMatch) {
@@ -838,10 +848,10 @@ export function useNotes() {
         const idx = contentLower.indexOf(q);
         if (idx !== -1) {
           const start = Math.max(0, idx - 25);
-          const end = Math.min(note.content.length, idx + q.length + 35);
-          snippet = (start > 0 ? '...' : '') + note.content.substring(start, end).replace(/\n/g, ' ') + (end < note.content.length ? '...' : '');
+          const end = Math.min(contentForSearch.length, idx + q.length + 35);
+          snippet = (start > 0 ? '...' : '') + contentForSearch.substring(start, end).replace(/\n/g, ' ') + (end < contentForSearch.length ? '...' : '');
         } else {
-          snippet = note.content.slice(0, 50).replace(/\n/g, ' ') + '...';
+          snippet = contentForSearch.slice(0, 50).replace(/\n/g, ' ') + '...';
         }
 
         const validIds = new Set(folders.value.map((f) => f.id));
@@ -1014,6 +1024,35 @@ export function useNotes() {
     activeNoteId.value = newNote.id;
     isEditorOpen.value = true;
     showToast('新建思维导图成功');
+    triggerAutoSyncDebounced({ noteId: newNote.id });
+    return newNote;
+  }
+
+  function createNewDrawioDiagram(title = '无标题图表', folderId?: string, templateId = 'flowchart') {
+    const targetFolder = resolveTargetFolderId(folderId);
+    const now = formatDateTime();
+    const defaultXml = createDefaultDrawioXml(title, templateId);
+
+    const newNote: Note = {
+      id: 'note-' + Date.now(),
+      title: title,
+      content: defaultXml,
+      folderId: targetFolder,
+      createdAt: now,
+      updatedAt: now,
+      isStarred: false,
+      isFavorite: false,
+      isShared: false,
+      isDeleted: false,
+      tags: ['Draw.io', '流程图'],
+      format: 'drawio',
+      type: 'drawio',
+    };
+
+    notes.value.unshift(newNote);
+    activeNoteId.value = newNote.id;
+    isEditorOpen.value = true;
+    showToast('新建 Draw.io 图表成功');
     triggerAutoSyncDebounced({ noteId: newNote.id });
     return newNote;
   }
@@ -1476,6 +1515,17 @@ export function useNotes() {
         URL.revokeObjectURL(url);
         showToast('思维导图文件已导出');
       }
+    } else if (note.format === 'drawio' || note.type === 'drawio') {
+      const blob = new Blob([note.content], { type: 'application/xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${note.title || '图表'}.drawio`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast('Draw.io 图表文件已导出');
     } else {
       const blob = new Blob([note.content], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -1530,6 +1580,29 @@ export function useNotes() {
       tags: ['思维导图', '导入'],
       format: 'mindmap',
       type: 'mindmap',
+    };
+    notes.value.unshift(newNote);
+    return newNote;
+  }
+
+  function importDrawioFile(filename: string, content: string, targetFolderId?: string) {
+    const folder = resolveTargetFolderId(targetFolderId);
+    const now = formatDateTime();
+    const title = filename.replace(/\.(drawio|xml|drawio\.xml|drawio\.svg|drawio\.png)$/i, '') || '导入的图表';
+    const newNote: Note = {
+      id: 'note-' + Date.now() + Math.random().toString(36).substring(2, 5),
+      title,
+      content,
+      folderId: folder,
+      createdAt: now,
+      updatedAt: now,
+      isStarred: false,
+      isFavorite: false,
+      isShared: false,
+      isDeleted: false,
+      tags: ['Draw.io', '导入'],
+      format: 'drawio',
+      type: 'drawio',
     };
     notes.value.unshift(newNote);
     return newNote;
@@ -1755,6 +1828,7 @@ export function useNotes() {
     handleBreadcrumbClick,
     createNewNote,
     createNewMindMap,
+    createNewDrawioDiagram,
     openNoteEditor,
     openNoteInNewTab,
     getNoteShareUrl,
@@ -1786,6 +1860,7 @@ export function useNotes() {
     exportNoteAsMarkdown,
     importMarkdownFile,
     importMindMapFile,
+    importDrawioFile,
     navigateToNoteFromSearch,
     // IndexedDB storage info
     isStorageReady,

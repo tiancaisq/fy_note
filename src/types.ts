@@ -6,12 +6,12 @@ export interface Folder {
   order: number;
 }
 
-export type NoteFormat = 'markdown' | 'mindmap' | 'text';
+export type NoteFormat = 'markdown' | 'mindmap' | 'drawio' | 'text';
 
 export interface Note {
   id: string;
   title: string;
-  content: string; // Markdown text OR KityMinder JSON string
+  content: string; // Markdown text, KityMinder JSON string, OR Draw.io XML
   folderId: string;
   createdAt: string; // e.g. '2025-12-30 10:06'
   updatedAt: string;
@@ -23,7 +23,8 @@ export interface Note {
   deletedAt?: string;
   tags: string[];
   format: NoteFormat;
-  type?: 'markdown' | 'mindmap';
+  type?: 'markdown' | 'mindmap' | 'drawio';
+  previewSvg?: string; // Optional cached SVG preview for fast thumbnail display
 }
 
 export type ViewType = 'folder' | 'shared' | 'starred' | 'favorite' | 'trash' | 'search' | 'timeline';
@@ -34,7 +35,7 @@ export type SortOrder = 'desc' | 'asc';
 export interface FilterOptions {
   starredOnly: boolean;
   favoriteOnly: boolean;
-  format: 'all' | 'markdown' | 'mindmap' | 'text';
+  format: 'all' | 'markdown' | 'mindmap' | 'drawio' | 'text';
   tag?: string;
 }
 

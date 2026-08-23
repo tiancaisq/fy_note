@@ -25,6 +25,7 @@ import { compareFolders } from '../utils/folderSort';
 import FolderTreeItem from './FolderTreeItem.vue';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
 import MindmapIcon from './icons/MindmapIcon.vue';
+import DrawioIcon from './icons/DrawioIcon.vue';
 
 const props = defineProps<{
   folders: Folder[];
@@ -46,6 +47,7 @@ const emit = defineEmits<{
   (e: 'selectView', view: ViewType): void;
   (e: 'createNewNote'): void;
   (e: 'createNewMindMap'): void;
+  (e: 'createNewDrawio'): void;
   (e: 'openImport'): void;
   (e: 'openNewFolder', parentFolder?: Folder): void;
   (e: 'renameFolder', folder: Folder): void;
@@ -83,6 +85,11 @@ function handleNewNoteClick() {
 function handleNewMindMapClick() {
   isNewDropdownOpen.value = false;
   emit('createNewMindMap');
+}
+
+function handleNewDrawioClick() {
+  isNewDropdownOpen.value = false;
+  emit('createNewDrawio');
 }
 
 // Root folders (no parent)
@@ -460,6 +467,23 @@ onUnmounted(() => {
                   <kbd class="text-[10px] font-mono text-gray-400 group-hover:text-emerald-500">{{ isMac ? '⌘M' : 'Ctrl+M' }}</kbd>
                 </div>
                 <p class="text-[11px] text-gray-400 line-clamp-1">结构化发散、组织架构与鱼骨图</p>
+              </div>
+            </button>
+
+            <!-- Option 3: 新建 Draw.io 图表 (Diagrams / Flowcharts) with amber orange icon -->
+            <button
+              id="btn-new-drawio-note"
+              @click="handleNewDrawioClick"
+              class="w-full px-3 py-2 text-left hover:bg-amber-50/60 flex items-center gap-2.5 transition-colors cursor-pointer group border-t border-gray-50"
+            >
+              <!-- Draw.io Document Badge -->
+              <DrawioIcon size="xs" />
+              <div class="flex-1 truncate">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-gray-800 group-hover:text-amber-700">新建 Draw.io 图表</span>
+                  <kbd class="text-[10px] font-mono text-gray-400 group-hover:text-amber-600">{{ isMac ? '⌘D' : 'Ctrl+D' }}</kbd>
+                </div>
+                <p class="text-[11px] text-gray-400 line-clamp-1">流程图、架构图、ER图、网络拓扑与UML</p>
               </div>
             </button>
           </div>

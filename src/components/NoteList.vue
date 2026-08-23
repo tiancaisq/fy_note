@@ -26,6 +26,7 @@ import {
 import { Note, SortField, SortOrder, FilterOptions, ViewType, BreadcrumbItem } from '../types';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
 import MindmapIcon from './icons/MindmapIcon.vue';
+import DrawioIcon from './icons/DrawioIcon.vue';
 
 const props = defineProps<{
   notes: Note[];
@@ -42,6 +43,7 @@ const emit = defineEmits<{
   (e: 'openNoteInNewTab', note: Note): void;
   (e: 'createNewNote'): void;
   (e: 'createNewMindMap'): void;
+  (e: 'createNewDrawio'): void;
   (e: 'breadcrumbClick', item: BreadcrumbItem): void;
   (e: 'toggleStar', noteId: string): void;
   (e: 'toggleFavorite', noteId: string): void;
@@ -320,6 +322,13 @@ onUnmounted(() => {
               <MindmapIcon size="xs" />
               <span>新建思维导图</span>
             </button>
+            <button
+              @click="emit('createNewDrawio'); isHeaderNewMenuOpen = false;"
+              class="w-full px-3 py-2 text-left hover:bg-amber-50/60 flex items-center gap-2 text-gray-700 hover:text-amber-700 cursor-pointer"
+            >
+              <DrawioIcon size="xs" />
+              <span>新建 Draw.io 图表</span>
+            </button>
           </div>
         </div>
 
@@ -424,6 +433,36 @@ onUnmounted(() => {
             >
               <span>仅看收藏笔记</span>
               <Check v-if="filterOptions.favoriteOnly" class="w-3.5 h-3.5 text-blue-600" />
+            </button>
+            <div class="h-px bg-gray-100 my-1"></div>
+            <div class="px-3 py-0.5 font-semibold text-gray-400 text-[10px] uppercase">格式筛选</div>
+            <button
+              @click="emit('update:filterOptions', { ...filterOptions, format: 'all' })"
+              class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
+            >
+              <span>全部格式</span>
+              <Check v-if="filterOptions.format === 'all' || !filterOptions.format" class="w-3.5 h-3.5 text-blue-600" />
+            </button>
+            <button
+              @click="emit('update:filterOptions', { ...filterOptions, format: 'markdown' })"
+              class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
+            >
+              <span>仅 Markdown</span>
+              <Check v-if="filterOptions.format === 'markdown'" class="w-3.5 h-3.5 text-blue-600" />
+            </button>
+            <button
+              @click="emit('update:filterOptions', { ...filterOptions, format: 'mindmap' })"
+              class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
+            >
+              <span>仅思维导图</span>
+              <Check v-if="filterOptions.format === 'mindmap'" class="w-3.5 h-3.5 text-blue-600" />
+            </button>
+            <button
+              @click="emit('update:filterOptions', { ...filterOptions, format: 'drawio' })"
+              class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
+            >
+              <span>仅 Draw.io 图表</span>
+              <Check v-if="filterOptions.format === 'drawio'" class="w-3.5 h-3.5 text-blue-600" />
             </button>
           </div>
         </div>

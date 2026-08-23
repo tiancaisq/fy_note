@@ -20,6 +20,7 @@ const shortcutGroups = computed(() => [
     shortcuts: [
       { keys: [modKey.value, 'N'], desc: '新建 Markdown 笔记' },
       { keys: [modKey.value, 'M'], desc: '新建思维导图' },
+      { keys: [modKey.value, 'D'], desc: '新建 Draw.io 图表' },
       { keys: [modKey.value, 'F'], desc: '聚焦并打开全局搜索' },
       { keys: ['/'], desc: '快速搜索 (未在输入框时)' },
       { keys: [modKey.value, shiftKey.value, 'N'], desc: '新建文件夹' },
@@ -27,6 +28,19 @@ const shortcutGroups = computed(() => [
       { keys: [modKey.value, shiftKey.value, 'E'], desc: '导出全量备份' },
       { keys: [modKey.value, '/'], desc: '查看快捷键帮助' },
       { keys: ['Esc'], desc: '关闭弹窗 / 搜索下拉' },
+    ],
+  },
+  {
+    title: 'Draw.io 图表快捷键 (流程图/工程图)',
+    shortcuts: [
+      { keys: [modKey.value, 'S'], desc: '保存图表到本地与云端' },
+      { keys: [modKey.value, 'Z'], desc: '撤销上一步形状绘制' },
+      { keys: [modKey.value, 'Y'], desc: '重做下一步形状绘制' },
+      { keys: ['Space', '+拖拽'], desc: '平移平滑移动画布' },
+      { keys: [modKey.value, '+滚轮'], desc: '缩放放大与缩小画布' },
+      { keys: ['Delete'], desc: '删除选中图形/连接线' },
+      { keys: ['双击形状'], desc: '编辑节点文本' },
+      { keys: [modKey.value, 'E'], desc: '导出多种图表格式' },
     ],
   },
   {

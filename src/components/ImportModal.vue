@@ -4,6 +4,8 @@ import { X, UploadCloud, FileText, Check, AlertCircle } from 'lucide-vue-next';
 import { Folder } from '../types';
 import { importFromXMind } from '../utils/xmind';
 import { compareFolders } from '../utils/folderSort';
+import { extractDrawioXml } from '../utils/drawioTemplates';
+import DrawioIcon from './icons/DrawioIcon.vue';
 
 const props = defineProps<{
   folders: Folder[];
@@ -82,8 +84,13 @@ function handleDrop(e: DragEvent) {
 async function processFiles(files: FileList) {
   errorMessage.value = null;
   for (const file of Array.from(files)) {
-    if (!file.name.match(/\.(md|txt|markdown|json|km|xmind)$/i)) {
-      errorMessage.value = '请上传 .xmind, .km, .json, .md 或 .txt 格式的文件';
+    const isDrawio = file.name.match(/\.(drawio|xml|drawio\.xml|drawio\.svg|drawio\.png)$/i);
+    const isMindmap = file.name.match(/\.(xmind|km)$/i);
+    const isMarkdown = file.name.match(/\.(md|txt|markdown)$/i);
+    const isJson = file.name.match(/\.json$/i);
+
+    if (!isDrawio && !isMindmap && !isMarkdown && !isJson) {
+      errorMessage.value = '请上传 .drawio, .xml, .xmind, .km, .json, .md 或 .txt 格式的文件';
       continue;
     }
 
@@ -104,13 +111,24 @@ async function processFiles(files: FileList) {
     } else {
       const reader = new FileReader();
       reader.onload = (event) => {
-        const content = event.target?.result as string;
-        const isKmOrJson = file.name.endsWith('.km') || (file.name.endsWith('.json') && content.includes('"root"'));
+        const rawContent = (event.target?.result as string) || '';
+        let detectedFormat: 'drawio' | 'mindmap' | 'markdown' = 'markdown';
+
+        if (isDrawio || rawContent.includes('<mxGraphModel') || rawContent.includes('<mxfile') || rawContent.includes('diagrams.net')) {
+          detectedFormat = 'drawio';
+        } else if (file.name.endsWith('.km') || (file.name.endsWith('.json') && rawContent.includes('"root"'))) {
+          detectedFormat = 'mindmap';
+        } else {
+          detectedFormat = 'markdown';
+        }
+
+        const finalContent = detectedFormat === 'drawio' ? extractDrawioXml(rawContent) : rawContent;
+
         fileList.value.push({
           name: file.name,
-          content: content || '',
+          content: finalContent,
           size: sizeStr,
-          format: isKmOrJson ? 'mindmap' : 'markdown',
+          format: detectedFormat,
         });
       };
       reader.readAsText(file);
@@ -146,7 +164,7 @@ function submitImport() {
       <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <h3 class="text-base font-bold text-gray-900 flex items-center gap-2">
           <UploadCloud class="w-5 h-5 text-blue-600" />
-          <span>导入笔记 / 思维导图文件</span>
+          <span>导入笔记 / 思维导图 / Draw.io 图表</span>
         </h3>
         <button @click="emit('close')" class="text-gray-400 hover:text-gray-600 p-1 rounded-md">
           <X class="w-4 h-4" />
@@ -175,20 +193,20 @@ function submitImport() {
           @drop.prevent="handleDrop"
           :class="[
             'border-2 border-dashed rounded-xl p-6 text-center transition-colors cursor-pointer relative',
-            isDragging ? 'border-blue-500 bg-blue-50/50' : 'border-gray-200 hover:border-blue-400 bg-gray-50/50'
+            isDragging ? 'border-amber-500 bg-amber-50/40' : 'border-gray-200 hover:border-amber-400 bg-gray-50/50'
           ]"
         >
           <input
             type="file"
             multiple
-            accept=".xmind,.km,.json,.md,.txt,.markdown"
+            accept=".drawio,.xml,.drawio.xml,.drawio.svg,.drawio.png,.xmind,.km,.json,.md,.txt,.markdown"
             @change="handleFileSelect"
             class="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
           />
           <div class="flex flex-col items-center justify-center">
-            <UploadCloud class="w-10 h-10 text-blue-500 mb-2" />
+            <UploadCloud class="w-10 h-10 text-amber-500 mb-2" />
             <p class="text-sm font-semibold text-gray-800">拖拽文件到此处，或点击上传</p>
-            <p class="text-xs text-gray-400 mt-1">支持 XMind (.xmind)、脑图 (.km / .json)、Markdown (.md, .txt)</p>
+            <p class="text-xs text-gray-400 mt-1">支持 Draw.io (.drawio, .xml)、XMind (.xmind)、脑图 (.km)、Markdown (.md)</p>
           </div>
         </div>
 
@@ -206,10 +224,13 @@ function submitImport() {
             class="flex items-center justify-between p-2 bg-gray-50 rounded-lg text-xs text-gray-700 border border-gray-100"
           >
             <div class="flex items-center gap-2 truncate">
-              <FileText class="w-3.5 h-3.5 text-blue-500 shrink-0" />
+              <DrawioIcon v-if="f.format === 'drawio'" size="xs" />
+              <FileText v-else class="w-3.5 h-3.5 text-blue-500 shrink-0" />
               <span class="truncate">{{ f.name }}</span>
               <span class="text-[10px] text-gray-400">({{ f.size }})</span>
-              <span v-if="f.format === 'mindmap'" class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-medium">思维导图</span>
+              <span v-if="f.format === 'drawio'" class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-medium">Draw.io 图表</span>
+              <span v-else-if="f.format === 'mindmap'" class="text-[10px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-medium">思维导图</span>
+              <span v-else class="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">Markdown</span>
             </div>
             <button @click="removeFile(i)" class="text-gray-400 hover:text-red-500 text-xs px-1 cursor-pointer">×</button>
           </div>

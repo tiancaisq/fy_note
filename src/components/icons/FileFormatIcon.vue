@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import MindmapIcon from './MindmapIcon.vue';
+import DrawioIcon from './DrawioIcon.vue';
 import { NoteFormat } from '../../types';
 
 withDefaults(
@@ -21,6 +22,13 @@ withDefaults(
     <!-- Mindmap Format Icon -->
     <MindmapIcon
       v-if="format === 'mindmap'"
+      :size="size"
+      :show-label="showLabel"
+    />
+
+    <!-- Draw.io Diagram Format Icon -->
+    <DrawioIcon
+      v-else-if="format === 'drawio'"
       :size="size"
       :show-label="showLabel"
     />
