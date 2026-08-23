@@ -165,6 +165,11 @@ function toggleRowMenu(e: MouseEvent, noteId: string) {
 }
 
 function handleRowClick(note: Note, e: MouseEvent) {
+  // Clicking blank/empty area of the row toggles item selection
+  toggleSelectNote(note.id, e);
+}
+
+function handleTitleClick(note: Note, e: MouseEvent) {
   // If Shift or Ctrl/Cmd is pressed, toggle selection instead of opening
   if (e.shiftKey || e.ctrlKey || e.metaKey) {
     toggleSelectNote(note.id, e);
@@ -173,6 +178,8 @@ function handleRowClick(note: Note, e: MouseEvent) {
 
   if (props.currentView !== 'trash') {
     emit('openNote', note);
+  } else {
+    toggleSelectNote(note.id, e);
   }
 }
 
@@ -675,13 +682,22 @@ onUnmounted(() => {
               <Check v-if="isNoteSelected(note.id)" class="w-3 h-3 stroke-[3]" />
             </button>
 
-            <FileFormatIcon :format="note.format || note.type" size="sm" />
+            <!-- File format icon (Click to open note) -->
+            <div
+              @click.stop="handleTitleClick(note, $event)"
+              class="shrink-0 cursor-pointer transition-transform hover:scale-105"
+              title="点击打开文件"
+            >
+              <FileFormatIcon :format="note.format || note.type" size="sm" />
+            </div>
 
             <!-- Title & Star/Favorite/Shared Indicators -->
             <div class="truncate flex items-center gap-2">
               <span
-                class="font-medium truncate transition-colors"
-                :class="isNoteSelected(note.id) ? 'text-blue-900' : 'text-gray-800 group-hover:text-blue-600'"
+                @click.stop="handleTitleClick(note, $event)"
+                class="font-medium truncate transition-colors cursor-pointer hover:underline hover:text-blue-600"
+                :class="isNoteSelected(note.id) ? 'text-blue-900 font-semibold' : 'text-gray-800'"
+                title="点击打开文件 (Shift/Ctrl 加选)"
               >
                 {{ note.title }}
               </span>
