@@ -72,6 +72,7 @@ const searchQuery = ref('');
 const replaceQuery = ref('');
 const isCaseSensitive = ref(false);
 const currentMatchIndex = ref(0);
+const totalMatchesCount = ref(0);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 
 // Hierarchical folders formatted with level indentation
@@ -210,6 +211,7 @@ async function copyContent() {
 
 // Switch Vditor Mode (wysiwyg: 所见即所得 / ir: 即时渲染 / sv: 分屏源码)
 function switchMode(mode: 'wysiwyg' | 'ir' | 'sv') {
+  clearHighlights();
   currentVditorMode.value = mode;
   isPreviewActive.value = false;
   if (!vditorInstance) return;
@@ -223,32 +225,160 @@ function togglePreview() {
   if (previewBtn) {
     previewBtn.click();
     isPreviewActive.value = previewBtn.classList.contains('vditor-menu--current');
+    if (isSearchOpen.value) {
+      nextTick(() => performSearch());
+    }
   }
 }
 
-// Search matches computation
-const searchMatches = computed(() => {
-  const q = searchQuery.value;
-  if (!q) return [];
-  const text = localContent.value || '';
-  const flags = isCaseSensitive.value ? 'g' : 'gi';
-  // Escape regex special chars
-  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const regex = new RegExp(escaped, flags);
-  const matches: number[] = [];
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    matches.push(match.index);
+// Get active editable / rendered container element in Vditor
+function getActiveContentElement(): HTMLElement | null {
+  if (!vditorContainerRef.value) return null;
+  const resets = vditorContainerRef.value.querySelectorAll<HTMLElement>('.vditor-reset');
+  for (let i = 0; i < resets.length; i++) {
+    const el = resets[i];
+    if (el.offsetParent !== null || el.offsetWidth > 0 || el.offsetHeight > 0) {
+      return el;
+    }
   }
-  return matches;
-});
+  return vditorContainerRef.value.querySelector<HTMLElement>('.vditor-reset') || null;
+}
+
+// Clean up search highlight marks from DOM
+function clearHighlights() {
+  const container = vditorContainerRef.value;
+  if (!container) return;
+  const marks = container.querySelectorAll('.vditor-search-match');
+  marks.forEach((mark) => {
+    const parent = mark.parentNode;
+    if (parent) {
+      const textNode = document.createTextNode(mark.textContent || '');
+      parent.replaceChild(textNode, mark);
+      parent.normalize();
+    }
+  });
+}
+
+// Perform search and visually highlight all occurrences
+function performSearch() {
+  clearHighlights();
+  const q = searchQuery.value;
+  if (!q) {
+    totalMatchesCount.value = 0;
+    currentMatchIndex.value = 0;
+    return;
+  }
+
+  const container = getActiveContentElement();
+  if (!container) return;
+
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(
+    container,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        if (!node.textContent || (!node.textContent.trim() && !node.textContent.includes(' '))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const parentTag = node.parentElement?.tagName.toUpperCase();
+        if (parentTag === 'SCRIPT' || parentTag === 'STYLE') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (node.parentElement?.classList.contains('vditor-search-match')) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  let n: Text | null;
+  while ((n = walker.nextNode() as Text | null)) {
+    textNodes.push(n);
+  }
+
+  const lowerQ = isCaseSensitive.value ? q : q.toLowerCase();
+  const createdMarks: HTMLElement[] = [];
+
+  for (const node of textNodes) {
+    const text = node.textContent || '';
+    const compText = isCaseSensitive.value ? text : text.toLowerCase();
+    let index = compText.indexOf(lowerQ);
+    if (index === -1) continue;
+
+    let currentTextNode: Text = node;
+    while (index !== -1) {
+      const parent = currentTextNode.parentNode;
+      if (!parent) break;
+
+      try {
+        const matchNode = currentTextNode.splitText(index);
+        const remainderNode = matchNode.splitText(q.length);
+
+        const mark = document.createElement('mark');
+        mark.className = 'vditor-search-match';
+        mark.textContent = matchNode.textContent;
+        parent.replaceChild(mark, matchNode);
+        createdMarks.push(mark);
+
+        currentTextNode = remainderNode;
+        const remText = currentTextNode.textContent || '';
+        const remCompText = isCaseSensitive.value ? remText : remText.toLowerCase();
+        index = remCompText.indexOf(lowerQ);
+      } catch (err) {
+        break;
+      }
+    }
+  }
+
+  totalMatchesCount.value = createdMarks.length;
+  if (totalMatchesCount.value > 0) {
+    if (currentMatchIndex.value >= totalMatchesCount.value || currentMatchIndex.value < 0) {
+      currentMatchIndex.value = 0;
+    }
+    focusCurrentMatch();
+  } else {
+    currentMatchIndex.value = 0;
+  }
+}
+
+// Scroll and focus on the current match
+function focusCurrentMatch() {
+  const container = vditorContainerRef.value;
+  if (!container) return;
+  const marks = container.querySelectorAll<HTMLElement>('.vditor-search-match');
+  if (!marks.length) return;
+
+  marks.forEach((m, idx) => {
+    if (idx === currentMatchIndex.value) {
+      m.classList.add('vditor-search-match-active');
+      m.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+
+      // Highlight with range selection for clear focus
+      try {
+        const sel = window.getSelection();
+        if (sel) {
+          const range = document.createRange();
+          range.selectNodeContents(m);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      } catch (e) {
+        // ignore selection error
+      }
+    } else {
+      m.classList.remove('vditor-search-match-active');
+    }
+  });
+}
 
 function openSearch() {
   isSearchOpen.value = true;
   nextTick(() => {
     searchInputRef.value?.focus();
     searchInputRef.value?.select();
-    highlightAndScrollToMatch();
+    performSearch();
   });
 }
 
@@ -256,108 +386,90 @@ function closeSearch() {
   isSearchOpen.value = false;
   searchQuery.value = '';
   currentMatchIndex.value = 0;
-  clearDomHighlights();
+  totalMatchesCount.value = 0;
+  clearHighlights();
 }
 
 function nextMatch() {
-  if (!searchMatches.value.length) return;
-  currentMatchIndex.value = (currentMatchIndex.value + 1) % searchMatches.value.length;
-  highlightAndScrollToMatch();
+  if (!totalMatchesCount.value) return;
+  currentMatchIndex.value = (currentMatchIndex.value + 1) % totalMatchesCount.value;
+  focusCurrentMatch();
 }
 
 function prevMatch() {
-  if (!searchMatches.value.length) return;
-  currentMatchIndex.value = (currentMatchIndex.value - 1 + searchMatches.value.length) % searchMatches.value.length;
-  highlightAndScrollToMatch();
-}
-
-function clearDomHighlights() {
-  if (!vditorContainerRef.value) return;
-  const existingMarks = vditorContainerRef.value.querySelectorAll('.vditor-search-highlight');
-  existingMarks.forEach((el) => {
-    const parent = el.parentNode;
-    if (parent) {
-      parent.replaceChild(document.createTextNode(el.textContent || ''), el);
-      parent.normalize();
-    }
-  });
-}
-
-function highlightAndScrollToMatch() {
-  if (!vditorContainerRef.value || !searchQuery.value) return;
-
-  const contentArea = vditorContainerRef.value.querySelector('.vditor-reset');
-  if (!contentArea) return;
-
-  // Try window.find if available, or scroll match into view
-  const q = searchQuery.value;
-  const textNodes: Text[] = [];
-  const walk = document.createTreeWalker(contentArea, NodeFilter.SHOW_TEXT, null);
-  let n: Text | null;
-  while ((n = walk.nextNode() as Text | null)) {
-    textNodes.push(n);
-  }
-
-  let foundCount = 0;
-  const targetIndex = currentMatchIndex.value;
-  const lowerQ = isCaseSensitive.value ? q : q.toLowerCase();
-
-  for (const node of textNodes) {
-    const nodeText = isCaseSensitive.value ? node.textContent || '' : (node.textContent || '').toLowerCase();
-    let pos = 0;
-    while ((pos = nodeText.indexOf(lowerQ, pos)) !== -1) {
-      if (foundCount === targetIndex) {
-        // Scroll parent element into view
-        const parentElem = node.parentElement;
-        if (parentElem) {
-          parentElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-        return;
-      }
-      foundCount++;
-      pos += lowerQ.length;
-    }
-  }
+  if (!totalMatchesCount.value) return;
+  currentMatchIndex.value = (currentMatchIndex.value - 1 + totalMatchesCount.value) % totalMatchesCount.value;
+  focusCurrentMatch();
 }
 
 function handleReplaceOne() {
-  if (!searchMatches.value.length) return;
   const q = searchQuery.value;
-  const repl = replaceQuery.value;
-  const text = localContent.value || '';
-  const matchPos = searchMatches.value[currentMatchIndex.value];
-  if (matchPos === undefined) return;
+  if (!q || totalMatchesCount.value === 0) return;
 
-  const newText = text.slice(0, matchPos) + repl + text.slice(matchPos + q.length);
-  localContent.value = newText;
-  if (vditorInstance) {
-    vditorInstance.setValue(newText);
-  }
-  triggerAutoSave();
-  nextTick(() => {
-    if (currentMatchIndex.value >= searchMatches.value.length) {
-      currentMatchIndex.value = Math.max(0, searchMatches.value.length - 1);
-    }
-    highlightAndScrollToMatch();
-  });
-}
+  clearHighlights();
 
-function handleReplaceAll() {
-  if (!searchMatches.value.length) return;
-  const q = searchQuery.value;
-  const repl = replaceQuery.value;
-  const text = localContent.value || '';
+  const currentVal = vditorInstance ? vditorInstance.getValue() : localContent.value;
   const flags = isCaseSensitive.value ? 'g' : 'gi';
   const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const regex = new RegExp(escaped, flags);
-  const newText = text.replace(regex, repl);
 
-  localContent.value = newText;
+  let matchIndex = 0;
+  let replaced = false;
+  const targetIdx = currentMatchIndex.value;
+
+  const newVal = currentVal.replace(regex, (match) => {
+    if (!replaced && matchIndex === targetIdx) {
+      replaced = true;
+      return replaceQuery.value;
+    }
+    matchIndex++;
+    return match;
+  });
+
+  if (replaced) {
+    localContent.value = newVal;
+    if (vditorInstance) {
+      vditorInstance.setValue(newVal);
+    }
+    triggerAutoSave();
+    nextTick(() => {
+      performSearch();
+    });
+  } else {
+    // Fallback: replace first occurrence
+    const fallbackVal = currentVal.replace(regex, replaceQuery.value);
+    localContent.value = fallbackVal;
+    if (vditorInstance) {
+      vditorInstance.setValue(fallbackVal);
+    }
+    triggerAutoSave();
+    nextTick(() => {
+      performSearch();
+    });
+  }
+}
+
+function handleReplaceAll() {
+  const q = searchQuery.value;
+  if (!q || totalMatchesCount.value === 0) return;
+
+  clearHighlights();
+
+  const currentVal = vditorInstance ? vditorInstance.getValue() : localContent.value;
+  const flags = isCaseSensitive.value ? 'g' : 'gi';
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(escaped, flags);
+
+  const newVal = currentVal.replace(regex, replaceQuery.value);
+  localContent.value = newVal;
   if (vditorInstance) {
-    vditorInstance.setValue(newText);
+    vditorInstance.setValue(newVal);
   }
   triggerAutoSave();
   currentMatchIndex.value = 0;
+  nextTick(() => {
+    performSearch();
+  });
 }
 
 // Initialize Vditor instance
@@ -516,6 +628,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleEditorKeyDown, true);
+  clearHighlights();
   if (vditorInstance) {
     try {
       vditorInstance.destroy();
@@ -642,7 +755,7 @@ onUnmounted(() => {
             @click="isSearchOpen ? closeSearch() : openSearch()"
             :class="[
               'p-1.5 rounded-md transition-colors cursor-pointer text-xs flex items-center gap-1 font-medium',
-              isSearchOpen ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'
+              isSearchOpen ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-300' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'
             ]"
             :title="'页内查找 (' + (isMac ? '⌘F' : 'Ctrl+F') + ')'"
           >
@@ -727,7 +840,7 @@ onUnmounted(() => {
         <transition name="slide-fade">
           <div
             v-if="isSearchOpen"
-            class="absolute top-3 right-5 z-40 bg-white/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/90 p-2.5 flex flex-col gap-2 min-w-[320px] max-w-[420px] animate-in fade-in zoom-in-95 duration-150 select-none"
+            class="absolute top-3 right-5 z-40 bg-white/95 backdrop-blur-md rounded-xl shadow-2xl border border-gray-200 p-2.5 flex flex-col gap-2 min-w-[340px] max-w-[440px] animate-in fade-in zoom-in-95 duration-150 select-none"
           >
             <!-- Search Row -->
             <div class="flex items-center gap-1.5">
@@ -736,22 +849,22 @@ onUnmounted(() => {
                 <input
                   ref="searchInputRef"
                   v-model="searchQuery"
-                  @input="currentMatchIndex = 0; highlightAndScrollToMatch();"
+                  @input="performSearch"
                   @keydown.enter.exact.prevent="nextMatch"
                   @keydown.shift.enter.prevent="prevMatch"
                   @keydown.esc="closeSearch"
                   placeholder="在笔记中查找..."
-                  class="w-full pl-8 pr-16 py-1 text-xs text-gray-800 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-emerald-500 focus:bg-white select-text"
+                  class="w-full pl-8 pr-16 py-1 text-xs text-gray-800 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-emerald-500 focus:bg-white select-text font-normal"
                 />
                 <!-- Match count indicator -->
-                <span class="absolute right-2 text-[10px] text-gray-400 font-mono">
-                  {{ searchQuery ? (searchMatches.length ? `${currentMatchIndex + 1}/${searchMatches.length}` : '无匹配') : '' }}
+                <span class="absolute right-2 text-[10px] text-gray-400 font-mono font-medium">
+                  {{ searchQuery ? (totalMatchesCount > 0 ? `${currentMatchIndex + 1}/${totalMatchesCount}` : '无匹配') : '' }}
                 </span>
               </div>
 
               <!-- Case Sensitive Button -->
               <button
-                @click="isCaseSensitive = !isCaseSensitive; highlightAndScrollToMatch();"
+                @click="isCaseSensitive = !isCaseSensitive; performSearch();"
                 :class="[
                   'p-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer',
                   isCaseSensitive ? 'bg-emerald-100 text-emerald-800' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'
@@ -764,7 +877,7 @@ onUnmounted(() => {
               <!-- Prev / Next Match Buttons -->
               <button
                 @click="prevMatch"
-                :disabled="!searchMatches.length"
+                :disabled="totalMatchesCount === 0"
                 class="p-1 rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                 title="上一个匹配项 (Shift + Enter)"
               >
@@ -772,7 +885,7 @@ onUnmounted(() => {
               </button>
               <button
                 @click="nextMatch"
-                :disabled="!searchMatches.length"
+                :disabled="totalMatchesCount === 0"
                 class="p-1 rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
                 title="下一个匹配项 (Enter)"
               >
@@ -811,14 +924,14 @@ onUnmounted(() => {
               />
               <button
                 @click="handleReplaceOne"
-                :disabled="!searchMatches.length"
+                :disabled="totalMatchesCount === 0"
                 class="px-2 py-1 text-[11px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
               >
                 替换
               </button>
               <button
                 @click="handleReplaceAll"
-                :disabled="!searchMatches.length"
+                :disabled="totalMatchesCount === 0"
                 class="px-2 py-1 text-[11px] font-medium bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
               >
                 全部替换
@@ -986,6 +1099,32 @@ onUnmounted(() => {
   background-color: #ecfdf5 !important;
   color: #059669 !important;
   font-weight: 600 !important;
+}
+
+/* Search match visual highlights */
+mark.vditor-search-match {
+  background-color: #fef08a !important; /* bright soft yellow */
+  color: #713f12 !important;
+  border-radius: 2px !important;
+  padding: 1px 2px !important;
+  box-shadow: 0 0 0 1px #facc15 !important;
+  display: inline !important;
+  transition: all 0.12s ease-in-out !important;
+}
+
+mark.vditor-search-match-active {
+  background-color: #f97316 !important; /* energetic orange */
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  box-shadow: 0 0 0 2px #ea580c, 0 0 10px rgba(234, 88, 12, 0.6) !important;
+  border-radius: 3px !important;
+  outline: 1px solid #ffffff !important;
+  animation: pulse-search-match 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes pulse-search-match {
+  0% { transform: scale(1.2); }
+  100% { transform: scale(1); }
 }
 
 .slide-fade-enter-active {
