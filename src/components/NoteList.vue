@@ -561,116 +561,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Batch Operations Floating Banner Bar (Displays when items are selected) -->
-    <div
-      v-if="selectedNoteIds.length > 0"
-      id="batch-actions-bar"
-      class="bg-blue-50/95 border-b border-blue-200 px-6 py-2.5 flex items-center justify-between gap-3 text-xs text-blue-900 shrink-0 animate-in slide-in-from-top-1 duration-150 shadow-xs z-10"
-    >
-      <div class="flex items-center gap-2">
-        <span class="inline-flex items-center justify-center bg-blue-600 text-white font-bold px-2 py-0.5 rounded-full text-[11px] shadow-2xs">
-          已选 {{ selectedNoteIds.length }} 项
-        </span>
-        <span class="text-blue-700 hidden sm:inline text-xs">
-          (共 {{ notes.length }} 篇)
-        </span>
-        <button
-          @click="toggleSelectAll"
-          class="ml-1 text-xs text-blue-700 hover:text-blue-900 hover:underline cursor-pointer font-medium"
-        >
-          {{ isAllSelected ? '取消全选' : '全选所有' }}
-        </button>
-      </div>
-
-      <!-- Action Buttons for Selected Notes -->
-      <div class="flex items-center gap-1.5 flex-wrap justify-end">
-        <!-- If non-trash view -->
-        <template v-if="currentView !== 'trash'">
-          <!-- Batch Move to Folder -->
-          <button
-            @click="emit('batchMove', selectedNotes)"
-            class="px-2.5 py-1.5 bg-white hover:bg-blue-100/80 border border-blue-200 text-blue-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量移动至指定文件夹"
-          >
-            <FolderInput class="w-3.5 h-3.5 text-blue-600" />
-            <span>移动至...</span>
-          </button>
-
-          <!-- Batch Star / Unstar -->
-          <button
-            @click="emit('batchToggleStar', selectedNoteIds)"
-            class="px-2.5 py-1.5 bg-white hover:bg-amber-50 border border-amber-200 text-amber-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量标星/取消标星"
-          >
-            <Star class="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
-            <span class="hidden md:inline">标星/取消</span>
-          </button>
-
-          <!-- Batch Favorite / Unfavorite -->
-          <button
-            @click="emit('batchToggleFavorite', selectedNoteIds)"
-            class="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量收藏/移出收藏"
-          >
-            <Box class="w-3.5 h-3.5 text-indigo-600" />
-            <span class="hidden md:inline">收藏/取消</span>
-          </button>
-
-          <!-- Batch Export -->
-          <button
-            @click="emit('batchExport', selectedNotes)"
-            class="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-gray-200 text-gray-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量导出文件"
-          >
-            <Download class="w-3.5 h-3.5 text-gray-600" />
-            <span>导出 ({{ selectedNoteIds.length }})</span>
-          </button>
-
-          <!-- Batch Move to Trash -->
-          <button
-            @click="emit('batchMoveToTrash', selectedNoteIds)"
-            class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量移入回收站"
-          >
-            <Trash2 class="w-3.5 h-3.5 text-red-600" />
-            <span>移入回收站</span>
-          </button>
-        </template>
-
-        <!-- If trash view -->
-        <template v-else>
-          <!-- Batch Restore -->
-          <button
-            @click="emit('batchRestoreFromTrash', selectedNoteIds)"
-            class="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量还原选中的笔记"
-          >
-            <RotateCcw class="w-3.5 h-3.5 text-emerald-600" />
-            <span>批量还原</span>
-          </button>
-
-          <!-- Batch Permanent Delete -->
-          <button
-            @click="emit('batchPermanentlyDelete', selectedNoteIds)"
-            class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量彻底删除选中的笔记"
-          >
-            <Trash2 class="w-3.5 h-3.5 text-red-600" />
-            <span>彻底删除</span>
-          </button>
-        </template>
-
-        <!-- Clear Selection Button -->
-        <button
-          @click="clearSelection"
-          class="p-1 text-gray-400 hover:text-gray-700 hover:bg-white/80 rounded transition-colors cursor-pointer ml-1"
-          title="取消多选 (Esc)"
-        >
-          <X class="w-4 h-4" />
-        </button>
-      </div>
-    </div>
-
     <!-- Notes Table / List (Matches exact columns & styling) -->
     <div id="notes-table-container" class="flex-1 overflow-y-auto">
       <!-- Table Header with Checkbox -->
@@ -938,6 +828,116 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Batch Operations Floating Banner Bar (Displays at bottom when items are selected) -->
+    <div
+      v-if="selectedNoteIds.length > 0"
+      id="batch-actions-bar"
+      class="bg-blue-50/95 border-t border-blue-200 px-6 py-2.5 flex items-center justify-between gap-3 text-xs text-blue-900 shrink-0 animate-in slide-in-from-bottom-2 duration-150 shadow-md z-10"
+    >
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center justify-center bg-blue-600 text-white font-bold px-2 py-0.5 rounded-full text-[11px] shadow-2xs">
+          已选 {{ selectedNoteIds.length }} 项
+        </span>
+        <span class="text-blue-700 hidden sm:inline text-xs">
+          (共 {{ notes.length }} 篇)
+        </span>
+        <button
+          @click="toggleSelectAll"
+          class="ml-1 text-xs text-blue-700 hover:text-blue-900 hover:underline cursor-pointer font-medium"
+        >
+          {{ isAllSelected ? '取消全选' : '全选所有' }}
+        </button>
+      </div>
+
+      <!-- Action Buttons for Selected Notes -->
+      <div class="flex items-center gap-1.5 flex-wrap justify-end">
+        <!-- If non-trash view -->
+        <template v-if="currentView !== 'trash'">
+          <!-- Batch Move to Folder -->
+          <button
+            @click="emit('batchMove', selectedNotes)"
+            class="px-2.5 py-1.5 bg-white hover:bg-blue-100/80 border border-blue-200 text-blue-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量移动至指定文件夹"
+          >
+            <FolderInput class="w-3.5 h-3.5 text-blue-600" />
+            <span>移动至...</span>
+          </button>
+
+          <!-- Batch Star / Unstar -->
+          <button
+            @click="emit('batchToggleStar', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-white hover:bg-amber-50 border border-amber-200 text-amber-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量标星/取消标星"
+          >
+            <Star class="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+            <span class="hidden md:inline">标星/取消</span>
+          </button>
+
+          <!-- Batch Favorite / Unfavorite -->
+          <button
+            @click="emit('batchToggleFavorite', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量收藏/移出收藏"
+          >
+            <Box class="w-3.5 h-3.5 text-indigo-600" />
+            <span class="hidden md:inline">收藏/取消</span>
+          </button>
+
+          <!-- Batch Export -->
+          <button
+            @click="emit('batchExport', selectedNotes)"
+            class="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-gray-200 text-gray-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量导出文件"
+          >
+            <Download class="w-3.5 h-3.5 text-gray-600" />
+            <span>导出 ({{ selectedNoteIds.length }})</span>
+          </button>
+
+          <!-- Batch Move to Trash -->
+          <button
+            @click="emit('batchMoveToTrash', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量移入回收站"
+          >
+            <Trash2 class="w-3.5 h-3.5 text-red-600" />
+            <span>移入回收站</span>
+          </button>
+        </template>
+
+        <!-- If trash view -->
+        <template v-else>
+          <!-- Batch Restore -->
+          <button
+            @click="emit('batchRestoreFromTrash', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量还原选中的笔记"
+          >
+            <RotateCcw class="w-3.5 h-3.5 text-emerald-600" />
+            <span>批量还原</span>
+          </button>
+
+          <!-- Batch Permanent Delete -->
+          <button
+            @click="emit('batchPermanentlyDelete', selectedNoteIds)"
+            class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
+            title="批量彻底删除选中的笔记"
+          >
+            <Trash2 class="w-3.5 h-3.5 text-red-600" />
+            <span>彻底删除</span>
+          </button>
+        </template>
+
+        <!-- Clear Selection Button -->
+        <button
+          @click="clearSelection"
+          class="p-1 text-gray-400 hover:text-gray-700 hover:bg-white/80 rounded transition-colors cursor-pointer ml-1"
+          title="取消多选 (Esc)"
+        >
+          <X class="w-4 h-4" />
+        </button>
       </div>
     </div>
 

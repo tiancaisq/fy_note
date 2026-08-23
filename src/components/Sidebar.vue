@@ -12,7 +12,6 @@ import {
   Box,
   Trash2,
   FolderPlus,
-  Layers,
   Clock,
   Pin,
   PinOff,
@@ -839,20 +838,6 @@ onUnmounted(() => {
           <span v-if="trashCount > 0" class="text-xs text-gray-400">{{ trashCount }}</span>
         </div>
       </div>
-    </div>
-
-    <!-- Bottom Quick New Folder & tip -->
-    <div class="p-3 border-t border-gray-100 text-xs text-gray-400 flex items-center justify-between bg-gray-50/50">
-      <button
-        @click="emit('openNewFolder')"
-        class="flex items-center gap-1.5 text-gray-600 hover:text-blue-600 transition-colors font-medium cursor-pointer"
-      >
-        <FolderPlus class="w-3.5 h-3.5" />
-        <span>+ 新建文件夹</span>
-      </button>
-      <span class="text-[11px] text-gray-400 flex items-center gap-1" title="可拖拽文件夹或笔记进行组织">
-        <Layers class="w-3 h-3" /> 支持拖拽移动
-      </span>
     </div>
   </aside>
 </template>
