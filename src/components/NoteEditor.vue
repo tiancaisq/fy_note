@@ -643,7 +643,7 @@ onUnmounted(() => {
 <template>
   <div
     id="note-editor-modal-container"
-    class="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center animate-in fade-in duration-150 select-none"
+    class="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center animate-in fade-in duration-150"
     :class="isFullscreen ? 'p-0' : 'p-2 sm:p-4'"
   >
     <div
@@ -1063,11 +1063,37 @@ onUnmounted(() => {
   background-color: #ffffff !important;
 }
 
+/* Ensure preview mode and all editor text is fully selectable and copyable */
+#vditor-editor-instance .vditor,
+#vditor-editor-instance .vditor-reset,
+#vditor-editor-instance .vditor-preview,
+#vditor-editor-instance .vditor-preview__action,
+#vditor-editor-instance .vditor-sv,
+#vditor-editor-instance .vditor-ir,
+#vditor-editor-instance .vditor-wysiwyg,
+#vditor-editor-instance .vditor-reset * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
 #vditor-editor-instance .vditor-reset {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
   font-size: 15px !important;
   line-height: 1.7 !important;
   color: #1e293b !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+/* Code block copy icon enhancement */
+#vditor-editor-instance .vditor-copy {
+  cursor: pointer !important;
+  user-select: none !important;
+  opacity: 0.75;
+  transition: opacity 0.15s ease-in-out;
+}
+#vditor-editor-instance .vditor-copy:hover {
+  opacity: 1;
 }
 
 #vditor-editor-instance .vditor-toolbar__item {
