@@ -358,6 +358,10 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
 
   // 2. Ctrl/Cmd + F: Open & Focus Global Search
   if (isMod && e.key.toLowerCase() === 'f') {
+    // When editing note, do not intercept Ctrl+F so in-editor search functions properly
+    if (editingNote.value) {
+      return;
+    }
     e.preventDefault();
     headerRef.value?.focusSearch();
     return;

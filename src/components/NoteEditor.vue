@@ -17,9 +17,15 @@ import {
   Maximize2,
   Minimize2,
   Sparkles,
-  FileEdit,
   LayoutTemplate,
-  Columns
+  Columns,
+  Eye,
+  EyeOff,
+  Search,
+  ChevronDown,
+  ChevronUp,
+  Replace,
+  CaseSensitive
 } from 'lucide-vue-next';
 import { Note, Folder } from '../types';
 import { compareFolders } from '../utils/folderSort';
@@ -56,7 +62,17 @@ const saveStatus = ref('已自动同步');
 const vditorContainerRef = ref<HTMLDivElement | null>(null);
 let vditorInstance: Vditor | null = null;
 const isVditorReady = ref(false);
-const currentVditorMode = ref<'ir' | 'wysiwyg' | 'sv'>('ir');
+const currentVditorMode = ref<'wysiwyg' | 'ir' | 'sv'>('wysiwyg');
+const isPreviewActive = ref(false);
+
+// Search & Replace within editor
+const isSearchOpen = ref(false);
+const showReplace = ref(false);
+const searchQuery = ref('');
+const replaceQuery = ref('');
+const isCaseSensitive = ref(false);
+const currentMatchIndex = ref(0);
+const searchInputRef = ref<HTMLInputElement | null>(null);
 
 // Hierarchical folders formatted with level indentation
 const hierarchicalFolders = computed(() => {
@@ -192,18 +208,160 @@ async function copyContent() {
   }
 }
 
-// Switch Vditor Mode (ir: 即时渲染 / wysiwyg: 所见即所得 / sv: 分屏源码)
-function switchMode(mode: 'ir' | 'wysiwyg' | 'sv') {
+// Switch Vditor Mode (wysiwyg: 所见即所得 / ir: 即时渲染 / sv: 分屏源码)
+function switchMode(mode: 'wysiwyg' | 'ir' | 'sv') {
   currentVditorMode.value = mode;
+  isPreviewActive.value = false;
   if (!vditorInstance) return;
-  
-  // Vditor provides internal mode switching by re-initializing or toolbar
-  // Or we can safely recreate/switch
   initVditor(mode);
 }
 
+// Toggle Vditor native preview action
+function togglePreview() {
+  if (!vditorContainerRef.value) return;
+  const previewBtn = vditorContainerRef.value.querySelector('.vditor-toolbar button[data-type="preview"]') as HTMLButtonElement | null;
+  if (previewBtn) {
+    previewBtn.click();
+    isPreviewActive.value = previewBtn.classList.contains('vditor-menu--current');
+  }
+}
+
+// Search matches computation
+const searchMatches = computed(() => {
+  const q = searchQuery.value;
+  if (!q) return [];
+  const text = localContent.value || '';
+  const flags = isCaseSensitive.value ? 'g' : 'gi';
+  // Escape regex special chars
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(escaped, flags);
+  const matches: number[] = [];
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    matches.push(match.index);
+  }
+  return matches;
+});
+
+function openSearch() {
+  isSearchOpen.value = true;
+  nextTick(() => {
+    searchInputRef.value?.focus();
+    searchInputRef.value?.select();
+    highlightAndScrollToMatch();
+  });
+}
+
+function closeSearch() {
+  isSearchOpen.value = false;
+  searchQuery.value = '';
+  currentMatchIndex.value = 0;
+  clearDomHighlights();
+}
+
+function nextMatch() {
+  if (!searchMatches.value.length) return;
+  currentMatchIndex.value = (currentMatchIndex.value + 1) % searchMatches.value.length;
+  highlightAndScrollToMatch();
+}
+
+function prevMatch() {
+  if (!searchMatches.value.length) return;
+  currentMatchIndex.value = (currentMatchIndex.value - 1 + searchMatches.value.length) % searchMatches.value.length;
+  highlightAndScrollToMatch();
+}
+
+function clearDomHighlights() {
+  if (!vditorContainerRef.value) return;
+  const existingMarks = vditorContainerRef.value.querySelectorAll('.vditor-search-highlight');
+  existingMarks.forEach((el) => {
+    const parent = el.parentNode;
+    if (parent) {
+      parent.replaceChild(document.createTextNode(el.textContent || ''), el);
+      parent.normalize();
+    }
+  });
+}
+
+function highlightAndScrollToMatch() {
+  if (!vditorContainerRef.value || !searchQuery.value) return;
+
+  const contentArea = vditorContainerRef.value.querySelector('.vditor-reset');
+  if (!contentArea) return;
+
+  // Try window.find if available, or scroll match into view
+  const q = searchQuery.value;
+  const textNodes: Text[] = [];
+  const walk = document.createTreeWalker(contentArea, NodeFilter.SHOW_TEXT, null);
+  let n: Text | null;
+  while ((n = walk.nextNode() as Text | null)) {
+    textNodes.push(n);
+  }
+
+  let foundCount = 0;
+  const targetIndex = currentMatchIndex.value;
+  const lowerQ = isCaseSensitive.value ? q : q.toLowerCase();
+
+  for (const node of textNodes) {
+    const nodeText = isCaseSensitive.value ? node.textContent || '' : (node.textContent || '').toLowerCase();
+    let pos = 0;
+    while ((pos = nodeText.indexOf(lowerQ, pos)) !== -1) {
+      if (foundCount === targetIndex) {
+        // Scroll parent element into view
+        const parentElem = node.parentElement;
+        if (parentElem) {
+          parentElem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return;
+      }
+      foundCount++;
+      pos += lowerQ.length;
+    }
+  }
+}
+
+function handleReplaceOne() {
+  if (!searchMatches.value.length) return;
+  const q = searchQuery.value;
+  const repl = replaceQuery.value;
+  const text = localContent.value || '';
+  const matchPos = searchMatches.value[currentMatchIndex.value];
+  if (matchPos === undefined) return;
+
+  const newText = text.slice(0, matchPos) + repl + text.slice(matchPos + q.length);
+  localContent.value = newText;
+  if (vditorInstance) {
+    vditorInstance.setValue(newText);
+  }
+  triggerAutoSave();
+  nextTick(() => {
+    if (currentMatchIndex.value >= searchMatches.value.length) {
+      currentMatchIndex.value = Math.max(0, searchMatches.value.length - 1);
+    }
+    highlightAndScrollToMatch();
+  });
+}
+
+function handleReplaceAll() {
+  if (!searchMatches.value.length) return;
+  const q = searchQuery.value;
+  const repl = replaceQuery.value;
+  const text = localContent.value || '';
+  const flags = isCaseSensitive.value ? 'g' : 'gi';
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(escaped, flags);
+  const newText = text.replace(regex, repl);
+
+  localContent.value = newText;
+  if (vditorInstance) {
+    vditorInstance.setValue(newText);
+  }
+  triggerAutoSave();
+  currentMatchIndex.value = 0;
+}
+
 // Initialize Vditor instance
-function initVditor(initialMode: 'ir' | 'wysiwyg' | 'sv' = 'ir') {
+function initVditor(initialMode: 'wysiwyg' | 'ir' | 'sv' = 'wysiwyg') {
   if (!vditorContainerRef.value) return;
 
   if (vditorInstance) {
@@ -282,6 +440,7 @@ function initVditor(initialMode: 'ir' | 'wysiwyg' | 'sv' = 'ir') {
       'redo',
       '|',
       'outline',
+      'preview',
       'content-theme',
       'code-theme',
       'fullscreen',
@@ -314,16 +473,33 @@ watch(
   }
 );
 
-// Keyboard shortcuts for save
+// Keyboard shortcuts for in-editor actions
 function handleEditorKeyDown(e: KeyboardEvent) {
   const isMod = e.metaKey || e.ctrlKey;
 
+  // Ctrl/Cmd + F: In-editor search
+  if (isMod && e.key.toLowerCase() === 'f') {
+    e.preventDefault();
+    e.stopPropagation();
+    openSearch();
+    return;
+  }
+
+  // Esc: Close search bar
+  if (e.key === 'Escape' && isSearchOpen.value) {
+    e.preventDefault();
+    closeSearch();
+    return;
+  }
+
+  // Ctrl/Cmd + S: Save
   if (isMod && e.key.toLowerCase() === 's' && !e.shiftKey) {
     e.preventDefault();
     handleManualSave();
     return;
   }
 
+  // Ctrl/Cmd + Shift + S: Star
   if (isMod && e.shiftKey && e.key.toLowerCase() === 's') {
     e.preventDefault();
     emit('toggleStar', props.note.id);
@@ -332,14 +508,14 @@ function handleEditorKeyDown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
-  window.addEventListener('keydown', handleEditorKeyDown);
+  window.addEventListener('keydown', handleEditorKeyDown, true);
   nextTick(() => {
-    initVditor('ir');
+    initVditor('wysiwyg');
   });
 });
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleEditorKeyDown);
+  window.removeEventListener('keydown', handleEditorKeyDown, true);
   if (vditorInstance) {
     try {
       vditorInstance.destroy();
@@ -411,8 +587,19 @@ onUnmounted(() => {
 
         <!-- Mode Switches & Actions -->
         <div class="flex items-center gap-2 shrink-0">
-          <!-- Mode Toggle: WYSIWYG / Instant Rendering (IR) / Split View (SV) -->
+          <!-- Mode Toggle: WYSIWYG (所见即所得，默认) / Instant Rendering (IR) / Split View (SV) / Preview -->
           <div class="bg-gray-100 p-0.5 rounded-lg flex items-center text-xs text-gray-600">
+            <button
+              @click="switchMode('wysiwyg')"
+              :class="[
+                'px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1 cursor-pointer',
+                currentVditorMode === 'wysiwyg' ? 'bg-white shadow-xs text-emerald-700 font-semibold' : 'hover:text-gray-900'
+              ]"
+              title="所见即所得 (富文本排版编辑，默认)"
+            >
+              <LayoutTemplate class="w-3.5 h-3.5" />
+              <span class="hidden md:inline">所见即所得</span>
+            </button>
             <button
               @click="switchMode('ir')"
               :class="[
@@ -425,17 +612,6 @@ onUnmounted(() => {
               <span class="hidden md:inline">即时渲染</span>
             </button>
             <button
-              @click="switchMode('wysiwyg')"
-              :class="[
-                'px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1 cursor-pointer',
-                currentVditorMode === 'wysiwyg' ? 'bg-white shadow-xs text-emerald-700 font-semibold' : 'hover:text-gray-900'
-              ]"
-              title="所见即所得 (富文本排版编辑)"
-            >
-              <LayoutTemplate class="w-3.5 h-3.5" />
-              <span class="hidden md:inline">所见即所得</span>
-            </button>
-            <button
               @click="switchMode('sv')"
               :class="[
                 'px-2.5 py-1 rounded-md transition-all font-medium hidden sm:flex items-center gap-1 cursor-pointer',
@@ -446,9 +622,34 @@ onUnmounted(() => {
               <Columns class="w-3.5 h-3.5" />
               <span class="hidden md:inline">分屏对照</span>
             </button>
+            <!-- 预览按钮 (Toggle Preview) -->
+            <button
+              @click="togglePreview"
+              :class="[
+                'px-2.5 py-1 rounded-md transition-all font-medium flex items-center gap-1 cursor-pointer',
+                isPreviewActive ? 'bg-emerald-600 text-white shadow-xs font-semibold' : 'hover:text-gray-900'
+              ]"
+              title="切换渲染预览"
+            >
+              <EyeOff v-if="isPreviewActive" class="w-3.5 h-3.5" />
+              <Eye v-else class="w-3.5 h-3.5" />
+              <span class="hidden md:inline">{{ isPreviewActive ? '退出预览' : '预览' }}</span>
+            </button>
           </div>
 
-          <div class="h-4 w-px bg-gray-200 mx-1"></div>
+          <!-- In-Editor Search Button -->
+          <button
+            @click="isSearchOpen ? closeSearch() : openSearch()"
+            :class="[
+              'p-1.5 rounded-md transition-colors cursor-pointer text-xs flex items-center gap-1 font-medium',
+              isSearchOpen ? 'bg-emerald-50 text-emerald-700' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'
+            ]"
+            :title="'页内查找 (' + (isMac ? '⌘F' : 'Ctrl+F') + ')'"
+          >
+            <Search class="w-4 h-4" />
+          </button>
+
+          <div class="h-4 w-px bg-gray-200 mx-0.5"></div>
 
           <!-- Star & Favorite Buttons -->
           <button
@@ -520,8 +721,112 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Main Vditor Container Body -->
+      <!-- Main Vditor Container Body & Floating Search Bar -->
       <div id="vditor-wrapper" class="flex-1 w-full overflow-hidden relative flex flex-col bg-white">
+        <!-- Floating In-Editor Search Bar (Ctrl+F) -->
+        <transition name="slide-fade">
+          <div
+            v-if="isSearchOpen"
+            class="absolute top-3 right-5 z-40 bg-white/95 backdrop-blur-md rounded-xl shadow-xl border border-gray-200/90 p-2.5 flex flex-col gap-2 min-w-[320px] max-w-[420px] animate-in fade-in zoom-in-95 duration-150 select-none"
+          >
+            <!-- Search Row -->
+            <div class="flex items-center gap-1.5">
+              <div class="relative flex-1 flex items-center">
+                <Search class="w-3.5 h-3.5 text-gray-400 absolute left-2.5 pointer-events-none" />
+                <input
+                  ref="searchInputRef"
+                  v-model="searchQuery"
+                  @input="currentMatchIndex = 0; highlightAndScrollToMatch();"
+                  @keydown.enter.exact.prevent="nextMatch"
+                  @keydown.shift.enter.prevent="prevMatch"
+                  @keydown.esc="closeSearch"
+                  placeholder="在笔记中查找..."
+                  class="w-full pl-8 pr-16 py-1 text-xs text-gray-800 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-emerald-500 focus:bg-white select-text"
+                />
+                <!-- Match count indicator -->
+                <span class="absolute right-2 text-[10px] text-gray-400 font-mono">
+                  {{ searchQuery ? (searchMatches.length ? `${currentMatchIndex + 1}/${searchMatches.length}` : '无匹配') : '' }}
+                </span>
+              </div>
+
+              <!-- Case Sensitive Button -->
+              <button
+                @click="isCaseSensitive = !isCaseSensitive; highlightAndScrollToMatch();"
+                :class="[
+                  'p-1.5 rounded-md text-xs font-semibold transition-colors cursor-pointer',
+                  isCaseSensitive ? 'bg-emerald-100 text-emerald-800' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-100'
+                ]"
+                title="区分大小写"
+              >
+                <CaseSensitive class="w-3.5 h-3.5" />
+              </button>
+
+              <!-- Prev / Next Match Buttons -->
+              <button
+                @click="prevMatch"
+                :disabled="!searchMatches.length"
+                class="p-1 rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                title="上一个匹配项 (Shift + Enter)"
+              >
+                <ChevronUp class="w-4 h-4" />
+              </button>
+              <button
+                @click="nextMatch"
+                :disabled="!searchMatches.length"
+                class="p-1 rounded-md text-gray-500 hover:text-gray-800 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                title="下一个匹配项 (Enter)"
+              >
+                <ChevronDown class="w-4 h-4" />
+              </button>
+
+              <!-- Toggle Replace -->
+              <button
+                @click="showReplace = !showReplace"
+                :class="[
+                  'p-1 rounded-md transition-colors cursor-pointer',
+                  showReplace ? 'bg-emerald-100 text-emerald-800' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+                ]"
+                title="切换替换模式"
+              >
+                <Replace class="w-4 h-4" />
+              </button>
+
+              <!-- Close Search -->
+              <button
+                @click="closeSearch"
+                class="p-1 rounded-md text-gray-400 hover:text-gray-700 hover:bg-gray-100 cursor-pointer"
+                title="关闭 (Esc)"
+              >
+                <X class="w-4 h-4" />
+              </button>
+            </div>
+
+            <!-- Replace Row -->
+            <div v-if="showReplace" class="flex items-center gap-1.5 pt-1 border-t border-gray-100">
+              <input
+                v-model="replaceQuery"
+                @keydown.enter.prevent="handleReplaceOne"
+                placeholder="替换为..."
+                class="flex-1 px-2.5 py-1 text-xs text-gray-800 bg-gray-50 border border-gray-200 rounded-lg outline-none focus:border-emerald-500 focus:bg-white select-text"
+              />
+              <button
+                @click="handleReplaceOne"
+                :disabled="!searchMatches.length"
+                class="px-2 py-1 text-[11px] font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              >
+                替换
+              </button>
+              <button
+                @click="handleReplaceAll"
+                :disabled="!searchMatches.length"
+                class="px-2 py-1 text-[11px] font-medium bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+              >
+                全部替换
+              </button>
+            </div>
+          </div>
+        </transition>
+
         <div ref="vditorContainerRef" id="vditor-editor-instance" class="w-full flex-1 overflow-hidden"></div>
       </div>
 
@@ -681,5 +986,17 @@ onUnmounted(() => {
   background-color: #ecfdf5 !important;
   color: #059669 !important;
   font-weight: 600 !important;
+}
+
+.slide-fade-enter-active {
+  transition: all 0.2s ease-out;
+}
+.slide-fade-leave-active {
+  transition: all 0.15s ease-in;
+}
+.slide-fade-enter-from,
+.slide-fade-leave-to {
+  transform: translateY(-8px);
+  opacity: 0;
 }
 </style>
