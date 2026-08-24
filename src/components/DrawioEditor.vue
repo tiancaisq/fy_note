@@ -85,6 +85,19 @@ const activeViewTab = ref<'editor' | 'xml' | 'preview'>('editor');
 const isTemplateModalOpen = ref(false);
 const selectedTemplateToApply = ref<DrawioTemplateInfo | null>(null);
 
+let isMouseDownOnTemplateBackdrop = false;
+
+function handleTemplateBackdropMouseDown(e: MouseEvent) {
+  isMouseDownOnTemplateBackdrop = e.target === e.currentTarget;
+}
+
+function handleTemplateBackdropClick(e: MouseEvent) {
+  if (isMouseDownOnTemplateBackdrop && e.target === e.currentTarget) {
+    isTemplateModalOpen.value = false;
+  }
+  isMouseDownOnTemplateBackdrop = false;
+}
+
 // Export dropdown
 const isExportMenuOpen = ref(false);
 const exportMenuRef = ref<HTMLElement | null>(null);
@@ -974,7 +987,8 @@ onUnmounted(() => {
       v-if="isTemplateModalOpen"
       id="drawio-template-modal"
       class="fixed inset-0 z-60 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
-      @click.self="isTemplateModalOpen = false"
+      @mousedown="handleTemplateBackdropMouseDown"
+      @click="handleTemplateBackdropClick"
     >
       <div class="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden border border-gray-100 flex flex-col max-h-[85vh]">
         <!-- Header -->

@@ -165,13 +165,27 @@ function handleSearchKeydown(e: KeyboardEvent) {
     }
   }
 }
+
+let isMouseDownOnBackdrop = false;
+
+function handleBackdropMouseDown(e: MouseEvent) {
+  isMouseDownOnBackdrop = e.target === e.currentTarget;
+}
+
+function handleBackdropClick(e: MouseEvent) {
+  if (isMouseDownOnBackdrop && e.target === e.currentTarget) {
+    emit('close');
+  }
+  isMouseDownOnBackdrop = false;
+}
 </script>
 
 <template>
   <div
     v-if="isOpen"
     class="fixed inset-0 z-60 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in"
-    @click.self="emit('close')"
+    @mousedown="handleBackdropMouseDown"
+    @click="handleBackdropClick"
   >
     <div
       class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl border border-gray-200 overflow-hidden flex flex-col h-[600px] max-h-[92vh] animate-in zoom-in-95 duration-150 relative"

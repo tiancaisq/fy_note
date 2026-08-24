@@ -151,13 +151,27 @@ function submitImport() {
   emit('importFiles', payload);
   emit('close');
 }
+
+let isMouseDownOnBackdrop = false;
+
+function handleBackdropMouseDown(e: MouseEvent) {
+  isMouseDownOnBackdrop = e.target === e.currentTarget;
+}
+
+function handleBackdropClick(e: MouseEvent) {
+  if (isMouseDownOnBackdrop && e.target === e.currentTarget) {
+    emit('close');
+  }
+  isMouseDownOnBackdrop = false;
+}
 </script>
 
 <template>
   <div
     id="import-modal-overlay"
     class="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
-    @click.self="emit('close')"
+    @mousedown="handleBackdropMouseDown"
+    @click="handleBackdropClick"
   >
     <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden border border-gray-100 flex flex-col">
       <!-- Modal Header -->

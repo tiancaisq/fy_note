@@ -15,6 +15,19 @@ const emit = defineEmits<{
 const title = ref(props.note.title);
 const inputRef = ref<HTMLInputElement | null>(null);
 
+let isMouseDownOnBackdrop = false;
+
+function handleBackdropMouseDown(e: MouseEvent) {
+  isMouseDownOnBackdrop = e.target === e.currentTarget;
+}
+
+function handleBackdropClick(e: MouseEvent) {
+  if (isMouseDownOnBackdrop && e.target === e.currentTarget) {
+    emit('close');
+  }
+  isMouseDownOnBackdrop = false;
+}
+
 onMounted(() => {
   inputRef.value?.focus();
   inputRef.value?.select();
@@ -31,7 +44,8 @@ function handleSubmit() {
 <template>
   <div
     class="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
-    @click.self="emit('close')"
+    @mousedown="handleBackdropMouseDown"
+    @click="handleBackdropClick"
   >
     <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden border border-gray-100 flex flex-col">
       <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">

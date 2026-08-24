@@ -182,13 +182,27 @@ function formatSyncTime(timestamp?: number | null) {
   const d = new Date(timestamp);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
+
+let isMouseDownOnBackdrop = false;
+
+function handleBackdropMouseDown(e: MouseEvent) {
+  isMouseDownOnBackdrop = e.target === e.currentTarget;
+}
+
+function handleBackdropClick(e: MouseEvent) {
+  if (isMouseDownOnBackdrop && e.target === e.currentTarget) {
+    emit('close');
+  }
+  isMouseDownOnBackdrop = false;
+}
 </script>
 
 <template>
   <div
     v-if="isOpen"
     class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-in fade-in duration-150"
-    @click.self="emit('close')"
+    @mousedown="handleBackdropMouseDown"
+    @click="handleBackdropClick"
   >
     <div
       id="cloud-sync-modal"
