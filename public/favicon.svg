@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="maple-grad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.15" />
+    </filter>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#maple-grad)" />
+  <!-- Crisp Stylized Maple / Note Star Symbol -->
+  <g filter="url(#shadow)" transform="translate(4, 4) scale(1)">
+    <path
+      d="M12 2C11.5 5 8.5 7.5 5.5 8C6 11 3.5 14 0.5 14.5C3.5 15 6 18 6.5 21C9.5 20.5 12 23 12.5 26C13 23 15.5 20.5 18.5 20C18 17 20.5 14 23.5 13.5C20.5 13 18 10 17.5 7C14.5 7.5 12 5 12 2Z"
+      fill="#ffffff"
+      transform="scale(0.96) translate(0.5, 0.5)"
+    />
+  </g>
+</svg>
