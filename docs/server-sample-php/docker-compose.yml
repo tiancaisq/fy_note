@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------------------
+  # MySQL 数据库服务 (自动挂载并执行 init.sql 初始化表结构与种子数据)
+  # ----------------------------------------------------------------------------
+  db:
+    image: mysql:8.0
+    container_name: fengye_notes_mysql
+    restart: unless-stopped
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: fengye_notes
+    ports:
+      - "3306:3306"
+    volumes:
+      # 挂载上级目录的 init.sql，容器初次启动时自动导入数据库表结构与演示数据
+      - ../init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      # 数据持久化卷
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - fengye_network
+
+  # ----------------------------------------------------------------------------
+  # PHP Apache 服务端服务 (自动安装 PDO MySQL 扩展，开箱即用)
+  # ----------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fengye_notes_server
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: fengye_notes
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_CHARSET: utf8mb4
+      ENABLE_TOKEN: "false"
+      SECRET_TOKEN: "my_secret_token_123"
+    volumes:
+      # 支持代码热更新挂载
+      - ./:/var/www/html
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - fengye_network
+
+volumes:
+  db_data:
+    driver: local
+
+networks:
+  fengye_network:
+    driver: bridge

@@ -4,7 +4,38 @@
 
 ---
 
-## 1. 快速启动（3 步完成）
+## 1. 方式一：Docker Compose 一键启动（推荐 🚀）
+
+无需手动安装 PHP、MySQL 和各种扩展，使用 Docker Compose 一键拉起完整运行环境，并自动导入 `init.sql` 初始化数据库及演示数据：
+
+### 1. 启动服务
+在 `docs/server-sample-php/` 目录下执行：
+```bash
+docker compose up -d
+```
+> 服务将在后台启动：
+> - **PHP Web API 服务**：`http://localhost:8000/api.php`
+> - **MySQL 数据库**：`localhost:3306` (数据库名: `fengye_notes`，账号: `root`，密码: `root`)
+> - 数据库初次创建时已自动通过挂载的 `../init.sql` 完成数据表建立及基础目录/笔记初始化。
+
+### 2. 常用运维指令
+```bash
+# 查看容器运行状态
+docker compose ps
+
+# 查看服务端实时日志
+docker compose logs -f app
+
+# 停止服务
+docker compose down
+
+# 停止服务并重置数据库数据
+docker compose down -v
+```
+
+---
+
+## 2. 方式二：本地传统方式启动（3 步完成）
 
 ### 第一步：导入数据库
 创建并导入 MySQL 初始化脚本：
@@ -34,7 +65,7 @@ php -S 0.0.0.0:8000
 
 ---
 
-## 2. 在前端配置连接
+## 3. 在前端配置连接
 
 1. 打开前端笔记应用，点击搜索框右侧的 **「未同步」** 或 **「云端已同步」** 徽章；
 2. 切换到 **「服务器接口设置」** 标签；
