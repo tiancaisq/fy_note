@@ -3,6 +3,7 @@ import { ref, computed } from 'vue';
 import { X, UploadCloud, FileText, Check, AlertCircle } from 'lucide-vue-next';
 import { Folder } from '../types';
 import { importFromXMind } from '../utils/xmind';
+import { importFromFreeMind } from '../utils/freemind';
 import { compareFolders } from '../utils/folderSort';
 import { extractDrawioXml } from '../utils/drawioTemplates';
 import DrawioIcon from './icons/DrawioIcon.vue';
@@ -85,12 +86,12 @@ async function processFiles(files: FileList) {
   errorMessage.value = null;
   for (const file of Array.from(files)) {
     const isDrawio = file.name.match(/\.(drawio|xml|drawio\.xml|drawio\.svg|drawio\.png)$/i);
-    const isMindmap = file.name.match(/\.(xmind|km)$/i);
+    const isMindmap = file.name.match(/\.(xmind|km|mm)$/i);
     const isMarkdown = file.name.match(/\.(md|txt|markdown)$/i);
     const isJson = file.name.match(/\.json$/i);
 
     if (!isDrawio && !isMindmap && !isMarkdown && !isJson) {
-      errorMessage.value = '请上传 .drawio, .xml, .xmind, .km, .json, .md 或 .txt 格式的文件';
+      errorMessage.value = '请上传 .drawio, .xml, .xmind, .mm, .km, .json, .md 或 .txt 格式的文件';
       continue;
     }
 
@@ -108,6 +109,18 @@ async function processFiles(files: FileList) {
       } catch (err: any) {
         errorMessage.value = `解析 XMind 文件失败: ${err.message || '格式不兼容'}`;
       }
+    } else if (file.name.toLowerCase().endsWith('.mm')) {
+      try {
+        const freeMindData = await importFromFreeMind(file);
+        fileList.value.push({
+          name: file.name,
+          content: JSON.stringify(freeMindData, null, 2),
+          size: sizeStr,
+          format: 'mindmap',
+        });
+      } catch (err: any) {
+        errorMessage.value = `解析 FreeMind (.mm) 文件失败: ${err.message || '格式不兼容'}`;
+      }
     } else {
       const reader = new FileReader();
       reader.onload = (event) => {
@@ -116,7 +129,7 @@ async function processFiles(files: FileList) {
 
         if (isDrawio || rawContent.includes('<mxGraphModel') || rawContent.includes('<mxfile') || rawContent.includes('diagrams.net')) {
           detectedFormat = 'drawio';
-        } else if (file.name.endsWith('.km') || (file.name.endsWith('.json') && rawContent.includes('"root"'))) {
+        } else if (file.name.endsWith('.km') || (file.name.endsWith('.json') && rawContent.includes('"root"')) || rawContent.includes('<map') || rawContent.includes('<node')) {
           detectedFormat = 'mindmap';
         } else {
           detectedFormat = 'markdown';
@@ -213,14 +226,14 @@ function handleBackdropClick(e: MouseEvent) {
           <input
             type="file"
             multiple
-            accept=".drawio,.xml,.drawio.xml,.drawio.svg,.drawio.png,.xmind,.km,.json,.md,.txt,.markdown"
+            accept=".drawio,.xml,.drawio.xml,.drawio.svg,.drawio.png,.xmind,.mm,.km,.json,.md,.txt,.markdown"
             @change="handleFileSelect"
             class="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
           />
           <div class="flex flex-col items-center justify-center">
             <UploadCloud class="w-10 h-10 text-amber-500 mb-2" />
             <p class="text-sm font-semibold text-gray-800">拖拽文件到此处，或点击上传</p>
-            <p class="text-xs text-gray-400 mt-1">支持 Draw.io (.drawio, .xml)、XMind (.xmind)、脑图 (.km)、Markdown (.md)</p>
+            <p class="text-xs text-gray-400 mt-1">支持 Draw.io (.drawio, .xml)、XMind (.xmind)、FreeMind (.mm)、脑图 (.km)、Markdown (.md)</p>
           </div>
         </div>
 

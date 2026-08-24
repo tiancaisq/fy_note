@@ -14,6 +14,7 @@ import {
 } from '../types';
 import { INITIAL_FOLDERS, INITIAL_NOTES } from '../data/initialData';
 import { exportToXMind } from '../utils/xmind';
+import { parseFreeMindXml } from '../utils/freemind';
 import { createDefaultDrawioXml, extractDrawioTextNodes } from '../utils/drawioTemplates';
 import { compareFolders, normalizeFolderOrders, reorderFolder } from '../utils/folderSort';
 import {
@@ -1565,11 +1566,24 @@ export function useNotes() {
   function importMindMapFile(filename: string, content: string, targetFolderId?: string) {
     const folder = resolveTargetFolderId(targetFolderId);
     const now = formatDateTime();
-    const title = filename.replace(/\.(xmind|km|json)$/i, '') || '导入的思维导图';
+    const title = filename.replace(/\.(xmind|km|mm|json)$/i, '') || '导入的思维导图';
+    
+    let processedContent = content;
+    // If raw XML from FreeMind (.mm)
+    const trimmed = (content || '').trim();
+    if (trimmed.startsWith('<') && (trimmed.includes('<map') || trimmed.includes('<node'))) {
+      try {
+        const parsed = parseFreeMindXml(trimmed);
+        processedContent = JSON.stringify(parsed, null, 2);
+      } catch (err) {
+        console.warn('Failed to parse FreeMind XML, storing raw content', err);
+      }
+    }
+
     const newNote: Note = {
       id: 'note-' + Date.now() + Math.random().toString(36).substring(2, 5),
       title,
-      content,
+      content: processedContent,
       folderId: folder,
       createdAt: now,
       updatedAt: now,

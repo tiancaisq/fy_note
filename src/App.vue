@@ -313,7 +313,7 @@ function handleBatchImport(files: { name: string; content: string; folderId: str
   files.forEach((f) => {
     if (f.format === 'drawio' || f.name.match(/\.(drawio|drawio\.xml|drawio\.svg|drawio\.png)$/i)) {
       importDrawioFile(f.name, f.content, f.folderId);
-    } else if (f.format === 'mindmap' || f.name.match(/\.(xmind|km)$/i)) {
+    } else if (f.format === 'mindmap' || f.name.match(/\.(xmind|km|mm)$/i)) {
       importMindMapFile(f.name, f.content, f.folderId);
     } else {
       importMarkdownFile(f.name, f.content, f.folderId);

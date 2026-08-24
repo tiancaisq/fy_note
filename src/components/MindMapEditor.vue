@@ -62,6 +62,7 @@ import MindMapBiLinkModal from './MindMapBiLinkModal.vue';
 import { loadKityMinder } from '../utils/kityminder';
 import { registerKityMinderBiLinkModule } from '../utils/kityminderBiLinkModule';
 import { exportToXMind, importFromXMind } from '../utils/xmind';
+import { exportToFreeMind, importFromFreeMind } from '../utils/freemind';
 import {
   addBidirectionalLink,
   removeBidirectionalLink,
@@ -1347,6 +1348,16 @@ async function exportAsXMind() {
   }
 }
 
+async function exportAsFreeMind() {
+  if (!minder) return;
+  try {
+    const data = minder.exportJson();
+    exportToFreeMind(data, localTitle.value || '思维导图');
+  } catch (err) {
+    console.error('Failed to export FreeMind', err);
+  }
+}
+
 async function exportAsJson() {
   if (!minder) return;
   const data = minder.exportJson();
@@ -1402,11 +1413,11 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-// Import JSON / XMind / Markdown file
+// Import JSON / XMind / FreeMind / Markdown file
 function triggerImportFile() {
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.xmind,.km,.json,.md';
+  input.accept = '.xmind,.km,.mm,.json,.md';
   input.onchange = async (e: any) => {
     const file = e.target.files?.[0];
     if (!file || !minder) return;
@@ -1414,6 +1425,9 @@ function triggerImportFile() {
       if (file.name.toLowerCase().endsWith('.xmind')) {
         const xmindData = await importFromXMind(file);
         minder.importJson(xmindData);
+      } else if (file.name.toLowerCase().endsWith('.mm')) {
+        const freeMindData = await importFromFreeMind(file);
+        minder.importJson(freeMindData);
       } else if (file.name.endsWith('.json') || file.name.endsWith('.km')) {
         const text = await file.text();
         const json = JSON.parse(text);
@@ -3516,6 +3530,15 @@ onUnmounted(() => {
             </button>
 
             <button
+              @click="exportAsFreeMind"
+              class="px-2.5 py-1 rounded bg-teal-50 hover:bg-teal-100 text-teal-800 text-xs flex items-center gap-1.5 cursor-pointer transition-colors border border-teal-200/60 font-semibold"
+              title="导出为 FreeMind (.mm) 经典格式，兼容 FreeMind / Freeplane 软件"
+            >
+              <Download class="w-3.5 h-3.5 text-teal-600" />
+              <span>导出 FreeMind (.mm)</span>
+            </button>
+
+            <button
               @click="exportAsPng"
               class="px-2.5 py-1 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs flex items-center gap-1.5 cursor-pointer transition-colors border border-emerald-200/60 font-medium"
               title="导出为高清 PNG 图片"
@@ -3557,10 +3580,10 @@ onUnmounted(() => {
             <button
               @click="triggerImportFile"
               class="px-2.5 py-1 rounded bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs flex items-center gap-1.5 cursor-pointer transition-colors font-medium"
-              title="导入 XMind (.xmind)、JSON/KM 或 Markdown 大纲"
+              title="导入 XMind (.xmind)、FreeMind (.mm)、JSON/KM 或 Markdown 大纲"
             >
               <FileUp class="w-3.5 h-3.5 text-gray-600" />
-              <span>导入文件 (.xmind / .km / .md)</span>
+              <span>导入文件 (.xmind / .mm / .km / .md)</span>
             </button>
           </div>
         </template>
