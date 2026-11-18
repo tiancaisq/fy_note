@@ -65,18 +65,25 @@ export function normalizeApiUrl(url: string): string {
   return trimmed.replace(/\/+$/, '');
 }
 
+function formatLocalDateTime(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 /**
  * Standardize note fields coming from server (e.g. folder_id -> folderId, is_starred -> isStarred, JSON tags)
  */
 export function normalizeRemoteNote(raw: any): Note {
   if (!raw || typeof raw !== 'object') {
+    const nowStr = formatLocalDateTime();
     return {
       id: 'note-' + Date.now(),
       title: '未命名笔记',
       content: '',
       folderId: '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: nowStr,
+      updatedAt: nowStr,
+      updatedAtMs: Date.now(),
       isStarred: false,
       isFavorite: false,
       isShared: false,
@@ -107,21 +114,30 @@ export function normalizeRemoteNote(raw: any): Note {
   }
 
   const format =
-    raw.format === 'mindmap' || raw.type === 'mindmap' ? 'mindmap' : raw.format || 'markdown';
+    raw.format === 'mindmap' || raw.type === 'mindmap'
+      ? 'mindmap'
+      : raw.format === 'drawio' || raw.type === 'drawio'
+      ? 'drawio'
+      : raw.format || 'markdown';
+
+  const fallbackNow = formatLocalDateTime();
+  const createdAt = String(raw.createdAt || raw.created_at || fallbackNow);
+  const updatedAt = String(raw.updatedAt || raw.updated_at || createdAt);
+  const updatedAtMs =
+    typeof raw.updatedAtMs === 'number' && !isNaN(raw.updatedAtMs)
+      ? raw.updatedAtMs
+      : typeof raw.updated_at_ms === 'number' && !isNaN(raw.updated_at_ms)
+      ? raw.updated_at_ms
+      : undefined;
 
   return {
     id: String(raw.id || raw.noteId || raw._id || 'note-' + Date.now()),
     title: String(raw.title !== undefined && raw.title !== null ? raw.title : '未命名笔记'),
     content: String(raw.content !== undefined && raw.content !== null ? raw.content : ''),
     folderId: String(raw.folderId ?? raw.folder_id ?? raw.folder ?? ''),
-    createdAt: String(raw.createdAt || raw.created_at || new Date().toISOString()),
-    updatedAt: String(
-      raw.updatedAt ||
-        raw.updated_at ||
-        raw.createdAt ||
-        raw.created_at ||
-        new Date().toISOString()
-    ),
+    createdAt,
+    updatedAt,
+    ...(updatedAtMs !== undefined ? { updatedAtMs } : {}),
     isStarred: Boolean(raw.isStarred || raw.is_starred || raw.starred),
     isFavorite: Boolean(raw.isFavorite || raw.is_favorite || raw.favorite),
     isShared: Boolean(raw.isShared || raw.is_shared || raw.shared),
@@ -130,7 +146,7 @@ export function normalizeRemoteNote(raw: any): Note {
     shareUrl: raw.shareUrl || raw.share_url || undefined,
     tags,
     format,
-    type: format,
+    type: format === 'mindmap' || format === 'drawio' ? format : 'markdown',
   };
 }
 
@@ -139,12 +155,16 @@ export function normalizeRemoteNote(raw: any): Note {
  */
 export function normalizeRemoteFolder(raw: any): Folder {
   if (!raw || typeof raw !== 'object') {
+    const nowStr = formatLocalDateTime();
     return {
       id: 'folder-' + Date.now(),
       name: '新建文件夹',
       parentId: null,
       isOpen: true,
       order: 1,
+      createdAt: nowStr,
+      updatedAt: nowStr,
+      updatedAtMs: Date.now(),
     };
   }
 
@@ -167,12 +187,24 @@ export function normalizeRemoteFolder(raw: any): Folder {
       ? !raw.is_collapsed
       : true;
 
+  const createdAt = raw.createdAt || raw.created_at || undefined;
+  const updatedAt = raw.updatedAt || raw.updated_at || createdAt || undefined;
+  const updatedAtMs =
+    typeof raw.updatedAtMs === 'number' && !isNaN(raw.updatedAtMs)
+      ? raw.updatedAtMs
+      : typeof raw.updated_at_ms === 'number' && !isNaN(raw.updated_at_ms)
+      ? raw.updated_at_ms
+      : undefined;
+
   return {
     id: String(raw.id || raw.folderId || 'folder-' + Date.now()),
     name: String(raw.name || raw.folderName || '新建文件夹'),
     parentId,
     isOpen,
     order: Number(raw.order || raw.order_num || raw.sort || 0),
+    ...(createdAt ? { createdAt: String(createdAt) } : {}),
+    ...(updatedAt ? { updatedAt: String(updatedAt) } : {}),
+    ...(updatedAtMs !== undefined ? { updatedAtMs } : {}),
   };
 }
 
@@ -192,17 +224,48 @@ function getHeaders(config: CloudConfig): Record<string, string> {
   return headers;
 }
 
-// Global cache for detected backend working mode to eliminate probe queries
+// Fetch with timeout protection to prevent indefinite hang / sync lockup
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 15000
+): Promise<Response> {
+  if (init.signal) {
+    return fetch(url, init);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Per-baseUrl cache for detected backend working mode to eliminate probe queries and cross-URL pollution
 type ApiFlavor = 'rest' | 'php' | 'query';
-const FLAVOR_STORAGE_KEY = 'fengye_cloud_api_flavor';
+const FLAVORS_BY_URL_STORAGE_KEY = 'fengye_cloud_api_flavors_v2';
 const ENDPOINTS_STORAGE_KEY = 'fengye_cloud_api_endpoints';
 
-function loadCachedApiFlavor(): ApiFlavor | null {
+function loadCachedFlavorsByUrl(): Map<string, ApiFlavor> {
+  const map = new Map<string, ApiFlavor>();
   try {
-    const saved = localStorage.getItem(FLAVOR_STORAGE_KEY);
-    if (saved === 'rest' || saved === 'php' || saved === 'query') return saved;
+    const raw = localStorage.getItem(FLAVORS_BY_URL_STORAGE_KEY);
+    if (raw) {
+      const obj = JSON.parse(raw);
+      if (obj && typeof obj === 'object') {
+        Object.entries(obj).forEach(([k, v]) => {
+          if (v === 'rest' || v === 'php' || v === 'query') {
+            map.set(k, v);
+          }
+        });
+      }
+    }
   } catch {}
-  return null;
+  return map;
 }
 
 function loadCachedEndpoints(): Map<string, string> {
@@ -221,7 +284,7 @@ function loadCachedEndpoints(): Map<string, string> {
   return map;
 }
 
-let cachedApiFlavor: ApiFlavor | null = loadCachedApiFlavor();
+const cachedFlavorMap = loadCachedFlavorsByUrl();
 const cachedEndpointMap = loadCachedEndpoints();
 
 function saveCachedEndpoints() {
@@ -231,20 +294,36 @@ function saveCachedEndpoints() {
       obj[k] = v;
     });
     localStorage.setItem(ENDPOINTS_STORAGE_KEY, JSON.stringify(obj));
-    if (cachedApiFlavor) {
-      localStorage.setItem(FLAVOR_STORAGE_KEY, cachedApiFlavor);
-    }
+
+    const flavorObj: Record<string, ApiFlavor> = {};
+    cachedFlavorMap.forEach((v, k) => {
+      flavorObj[k] = v;
+    });
+    localStorage.setItem(FLAVORS_BY_URL_STORAGE_KEY, JSON.stringify(flavorObj));
   } catch {}
 }
 
 /**
- * Clear cached API flavor and endpoints (e.g. when user changes server URL)
+ * Clear cached API flavor and endpoints (all or for a specific baseUrl)
  */
-export function clearApiEndpointCache() {
-  cachedApiFlavor = null;
+export function clearApiEndpointCache(targetBaseUrl?: string) {
+  if (targetBaseUrl) {
+    const normalized = normalizeApiUrl(targetBaseUrl);
+    cachedFlavorMap.delete(normalized);
+    for (const key of Array.from(cachedEndpointMap.keys())) {
+      if (key.startsWith(`${normalized}::`)) {
+        cachedEndpointMap.delete(key);
+      }
+    }
+    saveCachedEndpoints();
+    return;
+  }
+
+  cachedFlavorMap.clear();
   cachedEndpointMap.clear();
   try {
-    localStorage.removeItem(FLAVOR_STORAGE_KEY);
+    localStorage.removeItem(FLAVORS_BY_URL_STORAGE_KEY);
+    localStorage.removeItem('fengye_cloud_api_flavor');
     localStorage.removeItem(ENDPOINTS_STORAGE_KEY);
   } catch {}
 }
@@ -262,8 +341,9 @@ function resolveActionUrl(baseUrl: string, action: string, restPath?: string): s
     return cachedEndpointMap.get(cacheKey)!;
   }
 
-  const isPhp = normalized.includes('.php') || cachedApiFlavor === 'php';
-  const endsWithApi = normalized.endsWith('/api') || cachedApiFlavor === 'rest';
+  const cachedFlavor = cachedFlavorMap.get(normalized) || null;
+  const isPhp = normalized.includes('.php') || cachedFlavor === 'php';
+  const endsWithApi = normalized.endsWith('/api') || cachedFlavor === 'rest';
 
   if (isPhp) {
     const sep = normalized.includes('?') ? '&' : '?';
@@ -294,7 +374,7 @@ function resolveActionUrl(baseUrl: string, action: string, restPath?: string): s
 
 /**
  * Returns prioritized candidates in order of highest probability.
- * When endpoint is cached or flavor is identified, only the exact matched URL is returned to avoid trial-and-error probes.
+ * When endpoint is cached or flavor is identified for this URL, only the exact matched URL is returned.
  */
 function getActionCandidateUrls(baseUrl: string, action: string, restPath?: string): string[] {
   const normalized = normalizeApiUrl(baseUrl);
@@ -307,9 +387,10 @@ function getActionCandidateUrls(baseUrl: string, action: string, restPath?: stri
   }
 
   const primary = resolveActionUrl(baseUrl, action, restPath);
-  
-  // If server flavor has already been determined or URL explicitly indicates flavor, don't probe other variants
-  if (cachedApiFlavor !== null || normalized.includes('.php') || normalized.endsWith('/api')) {
+  const cachedFlavor = cachedFlavorMap.get(normalized) || null;
+
+  // If server flavor has already been determined for this URL or URL explicitly indicates flavor, don't probe other variants
+  if (cachedFlavor !== null || normalized.includes('.php') || normalized.endsWith('/api')) {
     return [primary];
   }
 
@@ -353,10 +434,20 @@ function recordSuccessfulEndpoint(baseUrl: string, action: string, url: string) 
   const cacheKey = `${normalized}::${action}`;
   cachedEndpointMap.set(cacheKey, url);
 
-  if (url.includes('.php')) {
-    cachedApiFlavor = 'php';
-  } else if (url.includes('/api/') || url.endsWith('/api') || url.includes('/data') || url.includes('/sync') || url.includes('/ping') || url.includes('/notes') || url.includes('/folders') || url.includes('/frequent-folders') || url.includes('/trash')) {
-    cachedApiFlavor = 'rest';
+  if (url.includes('.php') || url.includes('?action=') || url.includes('&action=')) {
+    cachedFlavorMap.set(normalized, url.includes('.php') ? 'php' : 'query');
+  } else if (
+    url.includes('/api/') ||
+    url.endsWith('/api') ||
+    url.includes('/data') ||
+    url.includes('/sync') ||
+    url.includes('/ping') ||
+    url.includes('/notes') ||
+    url.includes('/folders') ||
+    url.includes('/frequent-folders') ||
+    url.includes('/trash')
+  ) {
+    cachedFlavorMap.set(normalized, 'rest');
   }
 
   saveCachedEndpoints();
@@ -409,6 +500,9 @@ export async function testCloudApi(
   }
 
   try {
+    // Clear stale endpoint cache for this URL before explicit connection test
+    clearApiEndpointCache(baseUrl);
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8000);
 
@@ -532,7 +626,7 @@ export async function fetchRemoteData(
 
     for (const url of urlsToTry) {
       try {
-        const res = await fetch(url, { method: 'GET', headers });
+        const res = await fetchWithTimeout(url, { method: 'GET', headers }, 15000);
         if (res.ok || res.status === 401 || res.status === 403) {
           lastRes = res;
           matchedUrl = url;
@@ -631,6 +725,21 @@ function parseSafeTime(timeStr?: string | number | null): number {
   return isNaN(fallback) ? 0 : fallback;
 }
 
+function getEntityTimestampMs(entity?: { updatedAtMs?: number; updatedAt?: string; createdAt?: string }): number {
+  if (!entity) return 0;
+  if (typeof entity.updatedAtMs === 'number' && !isNaN(entity.updatedAtMs) && entity.updatedAtMs > 0) {
+    return entity.updatedAtMs;
+  }
+  return parseSafeTime(entity.updatedAt || entity.createdAt);
+}
+
+function areTagsEqual(a?: string[], b?: string[]): boolean {
+  const listA = Array.isArray(a) ? a.map(String) : [];
+  const listB = Array.isArray(b) ? b.map(String) : [];
+  if (listA.length !== listB.length) return false;
+  return listA.every((tag, idx) => tag === listB[idx]);
+}
+
 // 3. Compare and compute differences between local and cloud
 export function calculateSyncDiff(
   localNotes: Note[],
@@ -651,9 +760,11 @@ export function calculateSyncDiff(
   let localOnlyNotes = 0;
   let localUpdatedNotes = 0;
   let localOnlyFolders = 0;
+  let localUpdatedFolders = 0;
   let cloudOnlyNotes = 0;
   let cloudUpdatedNotes = 0;
   let cloudOnlyFolders = 0;
+  let cloudUpdatedFolders = 0;
 
   // Compare local notes against remote
   for (const local of localNoteList) {
@@ -661,8 +772,8 @@ export function calculateSyncDiff(
     if (!remote) {
       localOnlyNotes++;
     } else {
-      const localTime = parseSafeTime(local.updatedAt || local.createdAt);
-      const remoteTime = parseSafeTime(remote.updatedAt || remote.createdAt);
+      const localTime = getEntityTimestampMs(local);
+      const remoteTime = getEntityTimestampMs(remote);
 
       const isContentDiff =
         (local.title || '') !== (remote.title || '') ||
@@ -671,12 +782,16 @@ export function calculateSyncDiff(
         Boolean(local.isStarred) !== Boolean(remote.isStarred) ||
         Boolean(local.isFavorite) !== Boolean(remote.isFavorite) ||
         Boolean(local.isDeleted) !== Boolean(remote.isDeleted) ||
-        (local.format || 'markdown') !== (remote.format || 'markdown');
+        (local.format || 'markdown') !== (remote.format || 'markdown') ||
+        !areTagsEqual(local.tags, remote.tags);
 
-      // More than 1 second difference
-      if (localTime - remoteTime > 1000) {
+      // More than 1 second difference (or sub-second when updatedAtMs is present on both)
+      const timeThreshold =
+        typeof local.updatedAtMs === 'number' && typeof remote.updatedAtMs === 'number' ? 0 : 1000;
+
+      if (localTime - remoteTime > timeThreshold) {
         localUpdatedNotes++;
-      } else if (remoteTime - localTime > 1000) {
+      } else if (remoteTime - localTime > timeThreshold) {
         // Will be counted in remote loop
       } else if (isContentDiff) {
         localUpdatedNotes++;
@@ -690,19 +805,35 @@ export function calculateSyncDiff(
     if (!local) {
       cloudOnlyNotes++;
     } else {
-      const localTime = parseSafeTime(local.updatedAt || local.createdAt);
-      const remoteTime = parseSafeTime(remote.updatedAt || remote.createdAt);
-      if (remoteTime - localTime > 1000) {
+      const localTime = getEntityTimestampMs(local);
+      const remoteTime = getEntityTimestampMs(remote);
+      const timeThreshold =
+        typeof local.updatedAtMs === 'number' && typeof remote.updatedAtMs === 'number' ? 0 : 1000;
+      if (remoteTime - localTime > timeThreshold) {
         cloudUpdatedNotes++;
       }
     }
   }
 
-  // Compare folders (only true un-synced folders)
+  // Compare folders (missing/extra + rename/move/reorder diffs)
   for (const localF of localFolderList) {
     const remoteF = remoteFolderMap.get(String(localF.id));
     if (!remoteF) {
       localOnlyFolders++;
+    } else {
+      const isFolderDiff =
+        (localF.name || '') !== (remoteF.name || '') ||
+        (localF.parentId || null) !== (remoteF.parentId || null) ||
+        Number(localF.order || 0) !== Number(remoteF.order || 0);
+      if (isFolderDiff) {
+        const localTime = getEntityTimestampMs(localF);
+        const remoteTime = getEntityTimestampMs(remoteF);
+        if (remoteTime > localTime + 1000) {
+          cloudUpdatedFolders++;
+        } else {
+          localUpdatedFolders++;
+        }
+      }
     }
   }
 
@@ -718,7 +849,9 @@ export function calculateSyncDiff(
     cloudOnlyNotes +
     cloudUpdatedNotes +
     localOnlyFolders +
-    cloudOnlyFolders;
+    cloudOnlyFolders +
+    localUpdatedFolders +
+    cloudUpdatedFolders;
 
   return {
     localOnlyNotes,
@@ -727,6 +860,8 @@ export function calculateSyncDiff(
     cloudUpdatedNotes,
     localOnlyFolders,
     cloudOnlyFolders,
+    localUpdatedFolders,
+    cloudUpdatedFolders,
     totalDiff,
   };
 }
@@ -791,11 +926,15 @@ export async function pushSyncToCloud(
 
     for (const url of urlsToTry) {
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-        });
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          },
+          30000
+        );
         if (res.ok || res.status === 401 || res.status === 403) {
           lastRes = res;
           matchedUrl = url;
@@ -904,11 +1043,15 @@ export async function saveSingleNoteToCloud(
 
     for (const url of urls) {
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ note, action: 'upsert_note' }),
-        });
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ note, action: 'upsert_note' }),
+          },
+          12000
+        );
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
@@ -945,15 +1088,20 @@ export async function deleteSingleNoteFromCloud(
 
     for (const url of urls) {
       try {
-        const fullUrl = url.includes('?')
+        const isQueryMode = url.includes('?action=') || url.includes('&action=');
+        const fullUrl = isQueryMode
           ? `${url}&id=${encodeURIComponent(noteId)}`
-          : `${url}?id=${encodeURIComponent(noteId)}`;
+          : url;
 
-        const res = await fetch(fullUrl, {
-          method: 'DELETE',
-          headers,
-          body: JSON.stringify({ id: noteId, action: 'delete_note' }),
-        });
+        const res = await fetchWithTimeout(
+          fullUrl,
+          {
+            method: 'DELETE',
+            headers,
+            body: JSON.stringify({ id: noteId, action: 'delete_note' }),
+          },
+          12000
+        );
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
@@ -990,11 +1138,15 @@ export async function emptyTrashOnCloud(
 
     for (const url of urls) {
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-        });
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          },
+          15000
+        );
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
@@ -1013,9 +1165,13 @@ export async function emptyTrashOnCloud(
       let failCount = 0;
       await Promise.all(
         noteIds.map((id) =>
-          deleteSingleNoteFromCloud(config, id).catch(() => {
-            failCount++;
-          })
+          deleteSingleNoteFromCloud(config, id)
+            .then((r) => {
+              if (!r.success) failCount++;
+            })
+            .catch(() => {
+              failCount++;
+            })
         )
       );
       if (failCount === 0) {
@@ -1058,11 +1214,15 @@ export async function saveFoldersToCloud(
 
     for (const url of urls) {
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-        });
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          },
+          12000
+        );
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
@@ -1099,15 +1259,20 @@ export async function deleteSingleFolderFromCloud(
 
     for (const url of urls) {
       try {
-        const fullUrl = url.includes('?')
+        const isQueryMode = url.includes('?action=') || url.includes('&action=');
+        const fullUrl = isQueryMode
           ? `${url}&id=${encodeURIComponent(folderId)}`
-          : `${url}?id=${encodeURIComponent(folderId)}`;
+          : url;
 
-        const res = await fetch(fullUrl, {
-          method: 'DELETE',
-          headers,
-          body: JSON.stringify({ id: folderId, action: 'delete_folder' }),
-        });
+        const res = await fetchWithTimeout(
+          fullUrl,
+          {
+            method: 'DELETE',
+            headers,
+            body: JSON.stringify({ id: folderId, action: 'delete_folder' }),
+          },
+          12000
+        );
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
@@ -1149,11 +1314,15 @@ export async function saveFrequentFoldersToCloud(
 
     for (const url of urls) {
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(payload),
-        });
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          },
+          12000
+        );
 
         if (res.ok) {
           const data = await res.json().catch(() => null);
@@ -1191,15 +1360,20 @@ export async function deleteFrequentFolderFromCloud(
 
     for (const url of urls) {
       try {
-        const fullUrl = url.includes('?')
+        const isQueryMode = url.includes('?action=') || url.includes('&action=');
+        const fullUrl = isQueryMode
           ? `${url}&id=${encodeURIComponent(folderId)}`
-          : `${url}?id=${encodeURIComponent(folderId)}`;
+          : url;
 
-        const res = await fetch(fullUrl, {
-          method: 'DELETE',
-          headers,
-          body: JSON.stringify({ id: folderId, folderId, action: 'delete_frequent_folder' }),
-        });
+        const res = await fetchWithTimeout(
+          fullUrl,
+          {
+            method: 'DELETE',
+            headers,
+            body: JSON.stringify({ id: folderId, folderId, action: 'delete_frequent_folder' }),
+          },
+          12000
+        );
 
         if (res.ok) {
           const data = await res.json().catch(() => null);

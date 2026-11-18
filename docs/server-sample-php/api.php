@@ -365,31 +365,30 @@ switch ($action) {
         break;
 
     // --------------------------------------------------------------------------
-    // 接口 5: 单个文件夹保存 (Upsert Folder)
+    // 接口 5: 文件夹保存 / 批量排序保存 (Upsert Folder / Batch Folders)
     // --------------------------------------------------------------------------
     // 请求方式: POST
-    // 请求体: { "folder": { id, name, parentId, ... } } 或直接传入 folder 对象
-    // 说明: 文件夹的创建、重命名、移动或折叠状态同步
+    // 请求体: { "folders": [...] } 或 { "folder": { id, name, parentId, ... } }
+    // 说明: 文件夹的创建、重命名、移动、排序或折叠状态同步
     // --------------------------------------------------------------------------
     case 'upsert_folder':
     case 'save_folder':
         requireMethod('POST');
-        $folder = !empty($body['folder']) && is_array($body['folder']) ? $body['folder'] : $body;
-        
-        if (empty($folder['id'])) {
-            jsonResponse(400, false, '参数缺失: 缺少文件夹唯一标识 (id)');
+        $foldersToUpsert = [];
+        if (!empty($body['folders']) && is_array($body['folders'])) {
+            $foldersToUpsert = $body['folders'];
+        } elseif (!empty($body['folder']) && is_array($body['folder'])) {
+            $foldersToUpsert = [$body['folder']];
+        } elseif (!empty($body['id'])) {
+            $foldersToUpsert = [$body];
+        }
+
+        if (empty($foldersToUpsert)) {
+            jsonResponse(400, false, '参数缺失: 缺少文件夹数据');
         }
 
         try {
-            $id = (string)$folder['id'];
-            $parentId = !empty($folder['parentId']) ? (string)$folder['parentId'] : null;
-            $name = (string)($folder['name'] ?? '未命名文件夹');
-            $orderNum = (int)($folder['order'] ?? 0);
-            $isCollapsed = !empty($folder['isCollapsed']) ? 1 : 0;
-            $color = $folder['color'] ?? null;
-            $createdAt = $folder['createdAt'] ?? date('Y-m-d H:i:s');
-            $updatedAt = $folder['updatedAt'] ?? date('Y-m-d H:i:s');
-
+            $pdo->beginTransaction();
             $stmt = $pdo->prepare("INSERT INTO folders 
                 (id, user_id, parent_id, name, order_num, is_collapsed, color, created_at, updated_at, is_deleted)
                 VALUES (:id, :userId, :parentId, :name, :orderNum, :isCollapsed, :color, :createdAt, :updatedAt, 0)
@@ -399,31 +398,56 @@ switch ($action) {
                     order_num = :uOrderNum,
                     is_collapsed = :uIsCollapsed,
                     color = :uColor,
-                    updated_at = :uUpdatedAt");
+                    updated_at = :uUpdatedAt,
+                    is_deleted = 0");
 
-            $stmt->execute([
-                ':id'          => $id,
-                ':userId'      => $userId,
-                ':parentId'    => $parentId,
-                ':name'        => $name,
-                ':orderNum'    => $orderNum,
-                ':isCollapsed' => $isCollapsed,
-                ':color'       => $color,
-                ':createdAt'   => $createdAt,
-                ':updatedAt'   => $updatedAt,
-                ':uParentId'   => $parentId,
-                ':uName'       => $name,
-                ':uOrderNum'   => $orderNum,
-                ':uIsCollapsed'=> $isCollapsed,
-                ':uColor'      => $color,
-                ':uUpdatedAt'  => $updatedAt,
-            ]);
+            $savedIds = [];
+            $lastUpdatedAt = date('Y-m-d H:i:s');
+
+            foreach ($foldersToUpsert as $folder) {
+                if (!is_array($folder) || empty($folder['id'])) continue;
+                $id = (string)$folder['id'];
+                $parentId = !empty($folder['parentId']) ? (string)$folder['parentId'] : null;
+                $name = (string)($folder['name'] ?? '未命名文件夹');
+                $orderNum = (int)($folder['order'] ?? 0);
+                $isCollapsed = !empty($folder['isCollapsed']) ? 1 : ($folder['isOpen'] === false ? 1 : 0);
+                $color = $folder['color'] ?? null;
+                $createdAt = $folder['createdAt'] ?? date('Y-m-d H:i:s');
+                $updatedAt = $folder['updatedAt'] ?? date('Y-m-d H:i:s');
+
+                $stmt->execute([
+                    ':id'          => $id,
+                    ':userId'      => $userId,
+                    ':parentId'    => $parentId,
+                    ':name'        => $name,
+                    ':orderNum'    => $orderNum,
+                    ':isCollapsed' => $isCollapsed,
+                    ':color'       => $color,
+                    ':createdAt'   => $createdAt,
+                    ':updatedAt'   => $updatedAt,
+                    ':uParentId'   => $parentId,
+                    ':uName'       => $name,
+                    ':uOrderNum'   => $orderNum,
+                    ':uIsCollapsed'=> $isCollapsed,
+                    ':uColor'      => $color,
+                    ':uUpdatedAt'  => $updatedAt,
+                ]);
+                $savedIds[] = $id;
+                $lastUpdatedAt = $updatedAt;
+            }
+
+            $pdo->commit();
 
             jsonResponse(200, true, '文件夹已成功同步至云端', [
-                'id'        => $id,
-                'updatedAt' => $updatedAt
+                'id'        => $savedIds[0] ?? '',
+                'ids'       => $savedIds,
+                'count'     => count($savedIds),
+                'updatedAt' => $lastUpdatedAt
             ]);
         } catch (Exception $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             jsonResponse(500, false, '保存文件夹失败: ' . $e->getMessage());
         }
         break;
@@ -599,9 +623,12 @@ switch ($action) {
                 
                 if (!isset($cloudFolderMap[$fid])) {
                     $shouldUpdate = true;
+                } elseif (empty($cf['updatedAt'])) {
+                    // Legacy client without folder updatedAt: allow update
+                    $shouldUpdate = true;
                 } else {
                     $cloudTs = strtotime($cloudFolderMap[$fid]['updated_at'] ?? '2000-01-01');
-                    $localTs = strtotime($cf['updatedAt'] ?? '2000-01-01');
+                    $localTs = strtotime($cf['updatedAt']);
                     if ($localTs >= $cloudTs) {
                         $shouldUpdate = true;
                     }

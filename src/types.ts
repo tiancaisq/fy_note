@@ -4,6 +4,9 @@ export interface Folder {
   parentId?: string | null;
   isOpen?: boolean;
   order: number;
+  createdAt?: string;
+  updatedAt?: string;
+  updatedAtMs?: number;
 }
 
 export type NoteFormat = 'markdown' | 'mindmap' | 'drawio' | 'text';
@@ -13,8 +16,9 @@ export interface Note {
   title: string;
   content: string; // Markdown text, KityMinder JSON string, OR Draw.io XML
   folderId: string;
-  createdAt: string; // e.g. '2025-12-30 10:06'
+  createdAt: string; // e.g. '2025-12-30 10:06:00'
   updatedAt: string;
+  updatedAtMs?: number;
   isStarred: boolean;
   isFavorite?: boolean;
   isShared?: boolean;
@@ -72,5 +76,7 @@ export interface SyncDiffResult {
   cloudUpdatedNotes: number;
   localOnlyFolders: number;
   cloudOnlyFolders: number;
+  localUpdatedFolders?: number;
+  cloudUpdatedFolders?: number;
   totalDiff: number;
 }

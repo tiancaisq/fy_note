@@ -10,12 +10,19 @@ const KEY_NOTES = 'notes';
 const KEY_FOLDERS = 'folders';
 const KEY_FREQUENT_FOLDERS = 'frequent_folders';
 const KEY_CLOUD_CONFIG = 'cloud_config';
+const KEY_PENDING_DELETIONS = 'pending_deletions';
 
 // Old LocalStorage Keys for automatic seamless migration
 const LEGACY_STORAGE_KEY_NOTES = 'fengye_cloud_notes_data_v2';
 const LEGACY_STORAGE_KEY_FOLDERS = 'fengye_cloud_folders_data_v2';
 const LEGACY_STORAGE_KEY_FREQUENT_FOLDERS = 'fengye_cloud_frequent_folders_v2';
 const LEGACY_STORAGE_KEY_CLOUD_CONFIG = 'fengye_cloud_sync_config_v2';
+const STORAGE_KEY_PENDING_DELETIONS = 'fengye_cloud_pending_deletions_v1';
+
+export interface PendingDeletions {
+  noteIds: string[];
+  folderIds: string[];
+}
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
@@ -157,6 +164,50 @@ export async function saveCloudConfigToIDB(config: CloudConfig): Promise<void> {
     await db.put(STORE_NAME, JSON.parse(JSON.stringify(config)), KEY_CLOUD_CONFIG);
   } catch (e) {
     console.error('Failed to save cloud config to IndexedDB', e);
+  }
+}
+
+export async function loadPendingDeletionsFromIDB(): Promise<PendingDeletions> {
+  try {
+    const db = await getDB();
+    const stored = await db.get(STORE_NAME, KEY_PENDING_DELETIONS);
+    if (stored && (Array.isArray(stored.noteIds) || Array.isArray(stored.folderIds))) {
+      return {
+        noteIds: Array.isArray(stored.noteIds) ? stored.noteIds.map(String) : [],
+        folderIds: Array.isArray(stored.folderIds) ? stored.folderIds.map(String) : [],
+      };
+    }
+  } catch (e) {
+    console.warn('Failed to load pending deletions from IndexedDB', e);
+  }
+
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PENDING_DELETIONS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        noteIds: Array.isArray(parsed?.noteIds) ? parsed.noteIds.map(String) : [],
+        folderIds: Array.isArray(parsed?.folderIds) ? parsed.folderIds.map(String) : [],
+      };
+    }
+  } catch {}
+
+  return { noteIds: [], folderIds: [] };
+}
+
+export async function savePendingDeletionsToIDB(pending: PendingDeletions): Promise<void> {
+  const payload: PendingDeletions = {
+    noteIds: Array.from(new Set(pending.noteIds.map(String))),
+    folderIds: Array.from(new Set(pending.folderIds.map(String))),
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY_PENDING_DELETIONS, JSON.stringify(payload));
+  } catch {}
+  try {
+    const db = await getDB();
+    await db.put(STORE_NAME, payload, KEY_PENDING_DELETIONS);
+  } catch (e) {
+    console.error('Failed to save pending deletions to IndexedDB', e);
   }
 }
 

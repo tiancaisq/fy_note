@@ -423,15 +423,15 @@ function handleBackdropClick(e: MouseEvent) {
                     <div class="text-[11px] text-blue-700">本地待上传新增项</div>
                   </div>
                   <div class="p-2.5 bg-amber-50/60 border border-amber-100 rounded-lg text-center">
-                    <div class="text-lg font-bold text-amber-600">{{ syncDiff.localUpdatedNotes }}</div>
-                    <div class="text-[11px] text-amber-700">本地待更新笔记</div>
+                    <div class="text-lg font-bold text-amber-600">{{ syncDiff.localUpdatedNotes + (syncDiff.localUpdatedFolders || 0) }}</div>
+                    <div class="text-[11px] text-amber-700">本地待更新项</div>
                   </div>
                   <div class="p-2.5 bg-emerald-50/60 border border-emerald-100 rounded-lg text-center">
                     <div class="text-lg font-bold text-emerald-600">{{ syncDiff.cloudOnlyNotes + syncDiff.cloudOnlyFolders }}</div>
                     <div class="text-[11px] text-emerald-700">云端待拉取新增项</div>
                   </div>
                   <div class="p-2.5 bg-purple-50/60 border border-purple-100 rounded-lg text-center">
-                    <div class="text-lg font-bold text-purple-600">{{ syncDiff.cloudUpdatedNotes }}</div>
+                    <div class="text-lg font-bold text-purple-600">{{ syncDiff.cloudUpdatedNotes + (syncDiff.cloudUpdatedFolders || 0) }}</div>
                     <div class="text-[11px] text-purple-700">云端最新修改项</div>
                   </div>
                 </div>

@@ -1,4 +1,4 @@
-import { ref, computed, watch, onMounted, nextTick } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import {
   Folder,
   Note,
@@ -23,6 +23,8 @@ import {
   saveFoldersToIDB,
   saveFrequentFoldersToIDB,
   saveCloudConfigToIDB,
+  loadPendingDeletionsFromIDB,
+  savePendingDeletionsToIDB,
   getStorageEstimate,
 } from '../utils/idbStorage';
 import {
@@ -33,7 +35,6 @@ import {
   saveSingleNoteToCloud,
   deleteSingleNoteFromCloud,
   emptyTrashOnCloud,
-  saveSingleFolderToCloud,
   saveFoldersToCloud,
   deleteSingleFolderFromCloud,
   saveFrequentFoldersToCloud,
@@ -94,11 +95,27 @@ export function useNotes() {
   };
   const cloudConfig = ref<CloudConfig>(loadStoredData(STORAGE_KEY_CLOUD_CONFIG, defaultCloudConfig));
   const isCloudSyncModalOpen = ref<boolean>(false);
-  const syncStatus = ref<SyncStatus>(cloudConfig.value.enabled && cloudConfig.value.apiUrl ? 'synced' : 'unconfigured');
+  const syncStatus = ref<SyncStatus>(
+    cloudConfig.value.enabled && cloudConfig.value.apiUrl
+      ? cloudConfig.value.lastSyncedAt
+        ? 'synced'
+        : 'unsynced'
+      : 'unconfigured'
+  );
   const syncDiff = ref<SyncDiffResult | null>(null);
   const isSyncing = ref<boolean>(false);
   const isApplyingRemoteSync = ref<boolean>(false);
   let autoSyncDebounceTimer: any = null;
+  let hasQueuedChangesDuringSync = false;
+  let lastVisibilitySyncAt = 0;
+
+  function isCloudConfigured(): boolean {
+    return Boolean(cloudConfig.value.enabled && cloudConfig.value.apiUrl && cloudConfig.value.apiUrl.trim());
+  }
+
+  function isAutoSyncActive(): boolean {
+    return isCloudConfigured() && Boolean(cloudConfig.value.autoSync);
+  }
 
   // Storage estimation metrics
   const storageInfo = ref<{
@@ -124,11 +141,18 @@ export function useNotes() {
     }
   }
 
+  let handleStorageChangeRef: ((e: StorageEvent) => void) | null = null;
+  let handleVisibilityChangeRef: (() => void) | null = null;
+
   // Asynchronous IndexedDB initialization & migration on startup
   onMounted(async () => {
     try {
       isApplyingRemoteSync.value = true;
-      const { notes: idbNotes, folders: idbFolders, frequentFolderIds: idbFrequentFolders, cloudConfig: idbConfig } = await initStorageAndMigrate();
+      const [
+        { notes: idbNotes, folders: idbFolders, frequentFolderIds: idbFrequentFolders, cloudConfig: idbConfig },
+        storedDeletions,
+      ] = await Promise.all([initStorageAndMigrate(), loadPendingDeletionsFromIDB()]);
+
       if (Array.isArray(idbNotes)) notes.value = idbNotes;
       if (Array.isArray(idbFolders)) {
         folders.value = normalizeFolderOrders(idbFolders);
@@ -137,6 +161,11 @@ export function useNotes() {
         frequentFolderIds.value = idbFrequentFolders;
       }
       if (idbConfig) cloudConfig.value = idbConfig;
+
+      // Restore pending deletions from durable storage before initial merge
+      storedDeletions.noteIds.forEach((id) => pendingDeletedNoteIds.add(id));
+      storedDeletions.folderIds.forEach((id) => pendingDeletedFolderIds.add(id));
+
       isStorageReady.value = true;
       await updateStorageEstimate();
       await nextTick();
@@ -145,7 +174,10 @@ export function useNotes() {
       // Check URL parameters for noteId to directly open in a workspace tab
       try {
         const urlParams = new URLSearchParams(window.location.search);
-        const targetNoteId = urlParams.get('noteId') || urlParams.get('note') || (window.location.hash.startsWith('#note-') ? window.location.hash.substring(1) : null);
+        const targetNoteId =
+          urlParams.get('noteId') ||
+          urlParams.get('note') ||
+          (window.location.hash.startsWith('#note-') ? window.location.hash.substring(1) : null);
         if (targetNoteId) {
           const matched = notes.value.find((n) => n.id === targetNoteId);
           if (matched && !matched.isDeleted) {
@@ -158,7 +190,8 @@ export function useNotes() {
       }
 
       // Automatically sync latest notes and folders from cloud on initial startup if enabled
-      if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+      if (isCloudConfigured()) {
+        lastVisibilitySyncAt = Date.now();
         performCloudSync('merge', undefined, true).catch((e) => {
           console.warn('Initial cloud sync notice:', e);
         });
@@ -193,7 +226,37 @@ export function useNotes() {
         } catch {}
       }
     };
+    handleStorageChangeRef = handleStorageChange;
     window.addEventListener('storage', handleStorageChange);
+
+    // Multi-device freshness: silently merge remote changes when returning to tab (throttled to 30s)
+    const handleVisibilityChange = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        isAutoSyncActive() &&
+        !isSyncing.value &&
+        !isApplyingRemoteSync.value &&
+        Date.now() - lastVisibilitySyncAt > 30000
+      ) {
+        lastVisibilitySyncAt = Date.now();
+        performCloudSync('merge', undefined, true).catch(() => {});
+      }
+    };
+    handleVisibilityChangeRef = handleVisibilityChange;
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  });
+
+  onUnmounted(() => {
+    if (autoSyncDebounceTimer) {
+      clearTimeout(autoSyncDebounceTimer);
+      autoSyncDebounceTimer = null;
+    }
+    if (handleStorageChangeRef) {
+      window.removeEventListener('storage', handleStorageChangeRef);
+    }
+    if (handleVisibilityChangeRef) {
+      document.removeEventListener('visibilitychange', handleVisibilityChangeRef);
+    }
   });
 
   // Current active view and selection
@@ -339,138 +402,333 @@ export function useNotes() {
     { deep: true }
   );
 
-  // Queue of modified entity IDs for incremental sync
+  // Queue of modified/deleted entity IDs & mutation sequence tracking for race-free incremental sync
   const pendingModifiedNoteIds = new Set<string>();
   const pendingModifiedFolderIds = new Set<string>();
   const pendingDeletedNoteIds = new Set<string>();
   const pendingDeletedFolderIds = new Set<string>();
+  const noteDirtySeq = new Map<string, number>();
+  const folderDirtySeq = new Map<string, number>();
+  let globalDirtySeq = 0;
+
+  function persistPendingDeletions() {
+    savePendingDeletionsToIDB({
+      noteIds: Array.from(pendingDeletedNoteIds),
+      folderIds: Array.from(pendingDeletedFolderIds),
+    }).catch(console.error);
+  }
+
+  function hasAnyPendingSyncItems(): boolean {
+    return (
+      pendingModifiedNoteIds.size > 0 ||
+      pendingModifiedFolderIds.size > 0 ||
+      pendingDeletedNoteIds.size > 0 ||
+      pendingDeletedFolderIds.size > 0
+    );
+  }
+
+  async function executeAutoSyncBatch() {
+    if (!isAutoSyncActive()) return;
+    if (isSyncing.value || isApplyingRemoteSync.value) {
+      hasQueuedChangesDuringSync = true;
+      return;
+    }
+
+    try {
+      isSyncing.value = true;
+      syncStatus.value = 'syncing';
+
+      // Snapshot current dirty IDs & sequence numbers BEFORE async requests
+      const syncStartSeq = globalDirtySeq;
+      const batchNoteIds = Array.from(pendingModifiedNoteIds);
+      const batchFolderIds = Array.from(pendingModifiedFolderIds);
+      const batchDelNoteIds = Array.from(pendingDeletedNoteIds);
+      const batchDelFolderIds = Array.from(pendingDeletedFolderIds);
+
+      const noteSeqSnapshot = new Map<string, number>();
+      batchNoteIds.forEach((id) => noteSeqSnapshot.set(id, noteDirtySeq.get(id) || 0));
+      const folderSeqSnapshot = new Map<string, number>();
+      batchFolderIds.forEach((id) => folderSeqSnapshot.set(id, folderDirtySeq.get(id) || 0));
+
+      const totalPending =
+        batchNoteIds.length +
+        batchFolderIds.length +
+        batchDelNoteIds.length +
+        batchDelFolderIds.length;
+
+      // 1. Lightweight incremental sync when pending item count is small
+      if (totalPending > 0 && totalPending <= 15) {
+        let allOk = true;
+        let deletionsChanged = false;
+
+        // Sync modified notes individually
+        for (const nid of batchNoteIds) {
+          const note = notes.value.find((n) => n.id === nid);
+          if (!note) {
+            // Note was subsequently deleted
+            if ((noteDirtySeq.get(nid) || 0) <= (noteSeqSnapshot.get(nid) || 0)) {
+              pendingModifiedNoteIds.delete(nid);
+            }
+            continue;
+          }
+          const res = await saveSingleNoteToCloud(cloudConfig.value, note);
+          if (res.success) {
+            if ((noteDirtySeq.get(nid) || 0) <= (noteSeqSnapshot.get(nid) || 0)) {
+              pendingModifiedNoteIds.delete(nid);
+            }
+          } else {
+            allOk = false;
+          }
+        }
+
+        // Sync deleted notes
+        for (const nid of batchDelNoteIds) {
+          const res = await deleteSingleNoteFromCloud(cloudConfig.value, nid);
+          if (res.success) {
+            pendingDeletedNoteIds.delete(nid);
+            deletionsChanged = true;
+          } else {
+            allOk = false;
+          }
+        }
+
+        // Sync modified folders in batch (preserving all updated orders and parentIds)
+        if (batchFolderIds.length > 0) {
+          const modifiedFolders = folders.value.filter((f) => batchFolderIds.includes(f.id));
+          if (modifiedFolders.length > 0) {
+            const res = await saveFoldersToCloud(cloudConfig.value, modifiedFolders);
+            if (res.success) {
+              batchFolderIds.forEach((fid) => {
+                if ((folderDirtySeq.get(fid) || 0) <= (folderSeqSnapshot.get(fid) || 0)) {
+                  pendingModifiedFolderIds.delete(fid);
+                }
+              });
+            } else {
+              allOk = false;
+            }
+          } else {
+            batchFolderIds.forEach((fid) => {
+              if ((folderDirtySeq.get(fid) || 0) <= (folderSeqSnapshot.get(fid) || 0)) {
+                pendingModifiedFolderIds.delete(fid);
+              }
+            });
+          }
+        }
+
+        // Sync deleted folders
+        for (const fid of batchDelFolderIds) {
+          const res = await deleteSingleFolderFromCloud(cloudConfig.value, fid);
+          if (res.success) {
+            pendingDeletedFolderIds.delete(fid);
+            deletionsChanged = true;
+          } else {
+            allOk = false;
+          }
+        }
+
+        if (deletionsChanged) {
+          persistPendingDeletions();
+        }
+
+        if (allOk) {
+          cloudConfig.value.lastSyncedAt = Date.now();
+          lastVisibilitySyncAt = Date.now();
+          if (hasAnyPendingSyncItems()) {
+            hasQueuedChangesDuringSync = true;
+            syncStatus.value = 'unsynced';
+          } else {
+            syncStatus.value = 'synced';
+          }
+          return;
+        }
+        // If incremental failed (e.g. network error or unsupported route), only keep error if nothing changed;
+        // fallback to full merge only if we still have items, preserving failures on error.
+      }
+
+      // 2. Full two-way smart merge (for large batches, generic watch triggers, or incremental fallback)
+      const res = await pushSyncToCloud(cloudConfig.value, notes.value, folders.value, 'merge', {
+        deletedNoteIds: batchDelNoteIds,
+        deletedFolderIds: batchDelFolderIds,
+        frequentFolderIds: frequentFolderIds.value,
+      });
+
+      if (res.success) {
+        isApplyingRemoteSync.value = true;
+
+        // Clear only the items whose mutation happened at or before syncStartSeq
+        batchNoteIds.forEach((nid) => {
+          if ((noteDirtySeq.get(nid) || 0) <= (noteSeqSnapshot.get(nid) || 0)) {
+            pendingModifiedNoteIds.delete(nid);
+          }
+        });
+        batchFolderIds.forEach((fid) => {
+          if ((folderDirtySeq.get(fid) || 0) <= (folderSeqSnapshot.get(fid) || 0)) {
+            pendingModifiedFolderIds.delete(fid);
+          }
+        });
+        batchDelNoteIds.forEach((nid) => pendingDeletedNoteIds.delete(nid));
+        batchDelFolderIds.forEach((fid) => pendingDeletedFolderIds.delete(fid));
+        persistPendingDeletions();
+
+        if (res.mergedNotes) {
+          const deletedSet = new Set(pendingDeletedNoteIds);
+          const inFlightModifiedNotes = new Map<string, Note>();
+          notes.value.forEach((localN) => {
+            if ((noteDirtySeq.get(localN.id) || 0) > syncStartSeq) {
+              inFlightModifiedNotes.set(localN.id, localN);
+            }
+          });
+          const mergedIds = new Set<string>();
+          const nextNotes = res.mergedNotes
+            .filter((n) => !deletedSet.has(n.id))
+            .map((n) => {
+              mergedIds.add(n.id);
+              return inFlightModifiedNotes.get(n.id) || n;
+            });
+          inFlightModifiedNotes.forEach((localN, id) => {
+            if (!mergedIds.has(id) && !deletedSet.has(id)) {
+              nextNotes.unshift(localN);
+            }
+          });
+          notes.value = nextNotes;
+        }
+
+        if (res.mergedFolders) {
+          const deletedFSet = new Set(pendingDeletedFolderIds);
+          const inFlightModifiedFolders = new Map<string, Folder>();
+          folders.value.forEach((localF) => {
+            if ((folderDirtySeq.get(localF.id) || 0) > syncStartSeq) {
+              inFlightModifiedFolders.set(localF.id, localF);
+            }
+          });
+          const mergedFIds = new Set<string>();
+          const nextFolders = res.mergedFolders
+            .filter((f) => !deletedFSet.has(f.id))
+            .map((f) => {
+              mergedFIds.add(f.id);
+              return inFlightModifiedFolders.get(f.id) || f;
+            });
+          inFlightModifiedFolders.forEach((localF, id) => {
+            if (!mergedFIds.has(id) && !deletedFSet.has(id)) {
+              nextFolders.push(localF);
+            }
+          });
+          folders.value = normalizeFolderOrders(nextFolders);
+        }
+
+        cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
+        lastVisibilitySyncAt = Date.now();
+        await nextTick();
+        isApplyingRemoteSync.value = false;
+
+        if (hasAnyPendingSyncItems()) {
+          hasQueuedChangesDuringSync = true;
+          syncStatus.value = 'unsynced';
+        } else {
+          syncStatus.value = 'synced';
+        }
+      } else {
+        // Keep pendingModified* and pendingDeleted* intact so next sync retries them!
+        syncStatus.value = 'error';
+      }
+    } catch (e) {
+      syncStatus.value = 'error';
+    } finally {
+      isSyncing.value = false;
+      isApplyingRemoteSync.value = false;
+      if (hasQueuedChangesDuringSync) {
+        hasQueuedChangesDuringSync = false;
+        triggerAutoSyncDebounced();
+      }
+    }
+  }
 
   // Trigger Debounced Sync when changes happen in Cloud Mode
   function triggerAutoSyncDebounced(options?: {
     noteId?: string;
+    noteIds?: string[];
     folderId?: string;
     folderIds?: string[];
     deletedNoteId?: string;
+    deletedNoteIds?: string[];
     deletedFolderId?: string;
+    deletedFolderIds?: string[];
   }) {
-    if (options?.noteId) pendingModifiedNoteIds.add(options.noteId);
-    if (options?.folderId) pendingModifiedFolderIds.add(options.folderId);
-    if (options?.folderIds && Array.isArray(options.folderIds)) {
-      options.folderIds.forEach((id) => pendingModifiedFolderIds.add(id));
+    let deletionsUpdated = false;
+    if (options?.noteId) {
+      pendingModifiedNoteIds.add(options.noteId);
+      noteDirtySeq.set(options.noteId, ++globalDirtySeq);
     }
-    if (options?.deletedNoteId) pendingDeletedNoteIds.add(options.deletedNoteId);
-    if (options?.deletedFolderId) pendingDeletedFolderIds.add(options.deletedFolderId);
+    if (options?.noteIds && Array.isArray(options.noteIds)) {
+      options.noteIds.forEach((id) => {
+        pendingModifiedNoteIds.add(id);
+        noteDirtySeq.set(id, ++globalDirtySeq);
+      });
+    }
+    if (options?.folderId) {
+      pendingModifiedFolderIds.add(options.folderId);
+      folderDirtySeq.set(options.folderId, ++globalDirtySeq);
+    }
+    if (options?.folderIds && Array.isArray(options.folderIds)) {
+      options.folderIds.forEach((id) => {
+        pendingModifiedFolderIds.add(id);
+        folderDirtySeq.set(id, ++globalDirtySeq);
+      });
+    }
+    if (options?.deletedNoteId) {
+      pendingDeletedNoteIds.add(options.deletedNoteId);
+      pendingModifiedNoteIds.delete(options.deletedNoteId);
+      deletionsUpdated = true;
+    }
+    if (options?.deletedNoteIds && Array.isArray(options.deletedNoteIds)) {
+      options.deletedNoteIds.forEach((id) => {
+        pendingDeletedNoteIds.add(id);
+        pendingModifiedNoteIds.delete(id);
+      });
+      deletionsUpdated = true;
+    }
+    if (options?.deletedFolderId) {
+      pendingDeletedFolderIds.add(options.deletedFolderId);
+      pendingModifiedFolderIds.delete(options.deletedFolderId);
+      deletionsUpdated = true;
+    }
+    if (options?.deletedFolderIds && Array.isArray(options.deletedFolderIds)) {
+      options.deletedFolderIds.forEach((id) => {
+        pendingDeletedFolderIds.add(id);
+        pendingModifiedFolderIds.delete(id);
+      });
+      deletionsUpdated = true;
+    }
 
-    if (isSyncing.value || isApplyingRemoteSync.value) {
+    if (deletionsUpdated) {
+      persistPendingDeletions();
+    }
+
+    if (isApplyingRemoteSync.value) {
       return;
     }
 
-    if (!cloudConfig.value.enabled || !cloudConfig.value.apiUrl || !cloudConfig.value.autoSync) {
-      if (!cloudConfig.value.enabled) {
-        syncStatus.value = 'unconfigured';
-      }
+    if (!isCloudConfigured()) {
+      syncStatus.value = 'unconfigured';
+      return;
+    }
+
+    if (!cloudConfig.value.autoSync) {
+      syncStatus.value = 'unsynced';
       return;
     }
 
     syncStatus.value = 'unsynced';
+
+    if (isSyncing.value) {
+      hasQueuedChangesDuringSync = true;
+      return;
+    }
+
     if (autoSyncDebounceTimer) clearTimeout(autoSyncDebounceTimer);
-
-    autoSyncDebounceTimer = setTimeout(async () => {
-      if (!cloudConfig.value.enabled || !cloudConfig.value.apiUrl) return;
-      if (isSyncing.value || isApplyingRemoteSync.value) return;
-
-      try {
-        isSyncing.value = true;
-        syncStatus.value = 'syncing';
-
-        // 1. If only a few notes/folders were modified, do lightweight incremental sync!
-        const totalPending =
-          pendingModifiedNoteIds.size +
-          pendingModifiedFolderIds.size +
-          pendingDeletedNoteIds.size +
-          pendingDeletedFolderIds.size;
-
-        if (totalPending > 0 && totalPending <= 15) {
-          let allOk = true;
-
-          // Sync modified notes individually
-          for (const nid of Array.from(pendingModifiedNoteIds)) {
-            const note = notes.value.find((n) => n.id === nid);
-            if (note) {
-              const res = await saveSingleNoteToCloud(cloudConfig.value, note);
-              if (!res.success) allOk = false;
-            }
-          }
-
-          // Sync deleted notes
-          for (const nid of Array.from(pendingDeletedNoteIds)) {
-            const res = await deleteSingleNoteFromCloud(cloudConfig.value, nid);
-            if (!res.success) allOk = false;
-          }
-
-          // Sync modified folders in batch (preserving all updated orders and parentIds)
-          if (pendingModifiedFolderIds.size > 0) {
-            const modifiedFolders = folders.value.filter((f) => pendingModifiedFolderIds.has(f.id));
-            if (modifiedFolders.length > 0) {
-              const res = await saveFoldersToCloud(cloudConfig.value, modifiedFolders);
-              if (!res.success) allOk = false;
-            }
-          }
-
-          // Sync deleted folders
-          for (const fid of Array.from(pendingDeletedFolderIds)) {
-            const res = await deleteSingleFolderFromCloud(cloudConfig.value, fid);
-            if (!res.success) allOk = false;
-          }
-
-          pendingModifiedNoteIds.clear();
-          pendingModifiedFolderIds.clear();
-          pendingDeletedNoteIds.clear();
-          pendingDeletedFolderIds.clear();
-
-          if (allOk) {
-            cloudConfig.value.lastSyncedAt = Date.now();
-            syncStatus.value = 'synced';
-            return;
-          }
-        }
-
-        // 2. Fallback: Full two-way smart merge
-        const deletedNotesToSync = Array.from(pendingDeletedNoteIds);
-        const deletedFoldersToSync = Array.from(pendingDeletedFolderIds);
-
-        pendingModifiedNoteIds.clear();
-        pendingModifiedFolderIds.clear();
-        pendingDeletedNoteIds.clear();
-        pendingDeletedFolderIds.clear();
-
-        const res = await pushSyncToCloud(cloudConfig.value, notes.value, folders.value, 'merge', {
-          deletedNoteIds: deletedNotesToSync,
-          deletedFolderIds: deletedFoldersToSync,
-        });
-        if (res.success) {
-          isApplyingRemoteSync.value = true;
-          if (res.mergedNotes) {
-            const deletedSet = new Set(deletedNotesToSync);
-            notes.value = res.mergedNotes.filter((n) => !deletedSet.has(n.id));
-          }
-          if (res.mergedFolders) {
-            const deletedFSet = new Set(deletedFoldersToSync);
-            folders.value = normalizeFolderOrders(res.mergedFolders.filter((f) => !deletedFSet.has(f.id)));
-          }
-          cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
-          await nextTick();
-          isApplyingRemoteSync.value = false;
-          syncStatus.value = 'synced';
-        } else {
-          syncStatus.value = 'error';
-        }
-      } catch (e) {
-        syncStatus.value = 'error';
-      } finally {
-        isSyncing.value = false;
-        isApplyingRemoteSync.value = false;
-      }
+    autoSyncDebounceTimer = setTimeout(() => {
+      autoSyncDebounceTimer = null;
+      executeAutoSyncBatch();
     }, 1500);
   }
 
@@ -638,10 +896,12 @@ export function useNotes() {
       localStorage.setItem(STORAGE_KEY_FREQUENT_FOLDERS, JSON.stringify(frequentFolderIds.value));
     } catch {}
 
-    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+    if (isAutoSyncActive()) {
       saveFrequentFoldersToCloud(cloudConfig.value, frequentFolderIds.value).catch((err) => {
         console.warn('Frequent folder cloud sync warning:', err);
       });
+    } else if (isCloudConfigured()) {
+      syncStatus.value = 'unsynced';
     }
   }
 
@@ -651,7 +911,7 @@ export function useNotes() {
     if (idx !== -1) {
       frequentFolderIds.value.splice(idx, 1);
       showToast(`已从常用目录移除 "${targetFolder?.name || '文件夹'}"`);
-      if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+      if (isAutoSyncActive()) {
         deleteFrequentFolderFromCloud(cloudConfig.value, folderId).catch(() => {});
       }
     } else {
@@ -685,7 +945,7 @@ export function useNotes() {
       frequentFolderIds.value.splice(idx, 1);
       const targetFolder = folders.value.find((f) => f.id === folderId);
       showToast(`已从常用目录移除 "${targetFolder?.name || '文件夹'}"`);
-      if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+      if (isAutoSyncActive()) {
         deleteFrequentFolderFromCloud(cloudConfig.value, folderId).catch(() => {});
       }
       syncFrequentFoldersToCloud();
@@ -945,7 +1205,17 @@ export function useNotes() {
 
   function formatDateTime(d = new Date()) {
     const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function stampNoteMutation(note: Note) {
+    note.updatedAt = formatDateTime();
+    note.updatedAtMs = Date.now();
+  }
+
+  function stampFolderMutation(folder: Folder) {
+    folder.updatedAt = formatDateTime();
+    folder.updatedAtMs = Date.now();
   }
 
   function resolveTargetFolderId(folderId?: string): string {
@@ -962,12 +1232,17 @@ export function useNotes() {
       return folders.value[0].id;
     }
     // If no folders exist, create a clean default root folder
+    const nowStr = formatDateTime();
+    const nowMs = Date.now();
     const defaultFolder: Folder = {
-      id: 'folder-' + Date.now(),
+      id: 'folder-' + nowMs,
       name: '我的笔记',
       parentId: null,
       order: 1,
       isOpen: true,
+      createdAt: nowStr,
+      updatedAt: nowStr,
+      updatedAtMs: nowMs,
     };
     folders.value.push(defaultFolder);
     activeFolderId.value = defaultFolder.id;
@@ -978,13 +1253,15 @@ export function useNotes() {
   function createNewNote(title = '无标题笔记', folderId?: string) {
     const targetFolder = resolveTargetFolderId(folderId);
     const now = formatDateTime();
+    const nowMs = Date.now();
     const newNote: Note = {
-      id: 'note-' + Date.now(),
+      id: 'note-' + nowMs,
       title: title,
       content: `# ${title}\n\n在这里开始编写你的笔记内容...\n`,
       folderId: targetFolder,
       createdAt: now,
       updatedAt: now,
+      updatedAtMs: nowMs,
       isStarred: false,
       isDeleted: false,
       tags: [],
@@ -1001,6 +1278,7 @@ export function useNotes() {
   function createNewMindMap(title = '无标题思维导图', folderId?: string) {
     const targetFolder = resolveTargetFolderId(folderId);
     const now = formatDateTime();
+    const nowMs = Date.now();
     const defaultMindMapJson = {
       root: {
         data: { text: title, expandState: 'expand' },
@@ -1031,12 +1309,13 @@ export function useNotes() {
     };
 
     const newNote: Note = {
-      id: 'note-' + Date.now(),
+      id: 'note-' + nowMs,
       title: title,
       content: JSON.stringify(defaultMindMapJson, null, 2),
       folderId: targetFolder,
       createdAt: now,
       updatedAt: now,
+      updatedAtMs: nowMs,
       isStarred: false,
       isDeleted: false,
       tags: ['思维导图'],
@@ -1054,15 +1333,17 @@ export function useNotes() {
   function createNewDrawioDiagram(title = '无标题图表', folderId?: string, templateId = 'flowchart') {
     const targetFolder = resolveTargetFolderId(folderId);
     const now = formatDateTime();
+    const nowMs = Date.now();
     const defaultXml = createDefaultDrawioXml(title, templateId);
 
     const newNote: Note = {
-      id: 'note-' + Date.now(),
+      id: 'note-' + nowMs,
       title: title,
       content: defaultXml,
       folderId: targetFolder,
       createdAt: now,
       updatedAt: now,
+      updatedAtMs: nowMs,
       isStarred: false,
       isDeleted: false,
       tags: ['Draw.io', '流程图'],
@@ -1194,6 +1475,7 @@ export function useNotes() {
         ...notes.value[idx],
         ...updates,
         updatedAt: formatDateTime(),
+        updatedAtMs: Date.now(),
       };
       triggerAutoSyncDebounced({ noteId: id });
     }
@@ -1203,6 +1485,7 @@ export function useNotes() {
     const note = notes.value.find((n) => n.id === noteId);
     if (note) {
       note.isStarred = !note.isStarred;
+      stampNoteMutation(note);
       showToast(note.isStarred ? '已添加标星' : '已取消标星');
       triggerAutoSyncDebounced({ noteId });
     }
@@ -1211,8 +1494,11 @@ export function useNotes() {
   function moveToTrash(noteId: string) {
     const note = notes.value.find((n) => n.id === noteId);
     if (note) {
+      const now = formatDateTime();
       note.isDeleted = true;
-      note.deletedAt = formatDateTime();
+      note.deletedAt = now;
+      note.updatedAt = now;
+      note.updatedAtMs = Date.now();
       closeTab(noteId);
       showToast('已移入回收站');
       triggerAutoSyncDebounced({ noteId });
@@ -1224,6 +1510,7 @@ export function useNotes() {
     if (note) {
       note.isDeleted = false;
       note.deletedAt = undefined;
+      stampNoteMutation(note);
       showToast('已成功还原笔记');
       triggerAutoSyncDebounced({ noteId });
     }
@@ -1231,13 +1518,8 @@ export function useNotes() {
 
   async function permanentlyDeleteNote(noteId: string) {
     notes.value = notes.value.filter((n) => n.id !== noteId);
-    pendingDeletedNoteIds.add(noteId);
     closeTab(noteId);
     showToast('笔记已彻底删除');
-
-    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
-      deleteSingleNoteFromCloud(cloudConfig.value, noteId).catch(() => {});
-    }
     triggerAutoSyncDebounced({ deletedNoteId: noteId });
   }
 
@@ -1249,28 +1531,36 @@ export function useNotes() {
       return;
     }
 
-    // 1. Remove from local memory & IDB
+    // 1. Remove from local memory & persist pending deletion IDs immediately
     notes.value = notes.value.filter((n) => !n.isDeleted);
-    trashIds.forEach((id) => pendingDeletedNoteIds.add(id));
+    trashIds.forEach((id) => {
+      pendingDeletedNoteIds.add(id);
+      pendingModifiedNoteIds.delete(id);
+    });
+    persistPendingDeletions();
 
-    // 2. If cloud is enabled, sync the permanent deletion immediately
-    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
+    // 2. If auto-sync is active, sync permanent deletion immediately
+    if (isAutoSyncActive()) {
       syncStatus.value = 'syncing';
       try {
         const res = await emptyTrashOnCloud(cloudConfig.value, trashIds);
         if (res.success) {
           trashIds.forEach((id) => pendingDeletedNoteIds.delete(id));
-          syncStatus.value = 'synced';
+          persistPendingDeletions();
+          syncStatus.value = hasAnyPendingSyncItems() ? 'unsynced' : 'synced';
           cloudConfig.value.lastSyncedAt = Date.now();
           showToast('回收站已清空，云端数据已同步彻底删除');
         } else {
           triggerAutoSyncDebounced();
-          showToast('本地回收站已清空，正在同步至云端...');
+          showToast('本地回收站已清空，正在后台重试云端同步...');
         }
       } catch (err) {
         triggerAutoSyncDebounced();
         showToast('本地回收站已清空，后台将自动同步至云端');
       }
+    } else if (isCloudConfigured()) {
+      syncStatus.value = 'unsynced';
+      showToast('本地回收站已清空（手动同步模式下将在下次同步时清理云端）');
     } else {
       showToast('回收站已清空');
     }
@@ -1282,13 +1572,18 @@ export function useNotes() {
     const targetParentId = parentId || null;
     const siblings = folders.value.filter((f) => (f.parentId || null) === targetParentId);
     const maxOrder = siblings.reduce((max, f) => Math.max(max, typeof f.order === 'number' ? f.order : 0), 0);
+    const nowStr = formatDateTime();
+    const nowMs = Date.now();
 
     const newFolder: Folder = {
-      id: 'folder-' + Date.now(),
+      id: 'folder-' + nowMs,
       name: name.trim(),
       parentId: targetParentId,
       order: maxOrder + 1,
       isOpen: true,
+      createdAt: nowStr,
+      updatedAt: nowStr,
+      updatedAtMs: nowMs,
     };
     folders.value.push(newFolder);
     normalizeFolderOrders(folders.value);
@@ -1302,8 +1597,11 @@ export function useNotes() {
     // Mark all siblings in this group as modified to ensure continuous order sync to cloud
     const affectedSiblings = folders.value
       .filter((f) => (f.parentId || null) === targetParentId)
-      .map((f) => f.id);
-    affectedSiblings.forEach((id) => pendingModifiedFolderIds.add(id));
+      .map((f) => {
+        const folderObj = folders.value.find((x) => x.id === f.id);
+        if (folderObj) stampFolderMutation(folderObj);
+        return f.id;
+      });
 
     // Save to IDB & LocalStorage immediately
     saveFoldersToIDB(folders.value).catch(console.error);
@@ -1324,11 +1622,21 @@ export function useNotes() {
     const parentId = folder.parentId || null;
     // Collect all descendant folder IDs
     const allFolderIds = [folderId, ...getAllDescendantFolderIds(folderId)];
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const affectedNoteIds: string[] = [];
 
-    // Move all notes inside these folders to trash
+    // Move all notes inside these folders to trash and stamp updatedAt so cloud sync propagates deletion state
     notes.value.forEach((n) => {
       if (allFolderIds.includes(n.folderId)) {
-        n.isDeleted = true;
+        if (!n.isDeleted) {
+          n.isDeleted = true;
+          n.deletedAt = now;
+        }
+        n.updatedAt = now;
+        n.updatedAtMs = nowMs;
+        affectedNoteIds.push(n.id);
+        closeTab(n.id);
       }
     });
 
@@ -1343,8 +1651,10 @@ export function useNotes() {
     // Mark remaining siblings in this group as modified to update continuous orders
     const remainingSiblings = folders.value
       .filter((f) => (f.parentId || null) === parentId)
-      .map((f) => f.id);
-    remainingSiblings.forEach((id) => pendingModifiedFolderIds.add(id));
+      .map((f) => {
+        stampFolderMutation(f);
+        return f.id;
+      });
 
     // Save to IDB & LocalStorage immediately
     saveFoldersToIDB(folders.value).catch(console.error);
@@ -1353,15 +1663,19 @@ export function useNotes() {
     } catch {}
 
     showToast(`文件夹 "${folder.name}" 及其子内容已删除`);
-    triggerAutoSyncDebounced({ deletedFolderId: folderId, folderIds: remainingSiblings });
+    triggerAutoSyncDebounced({
+      deletedFolderIds: allFolderIds,
+      folderIds: remainingSiblings,
+      noteIds: affectedNoteIds,
+    });
   }
 
   function renameFolder(folderId: string, newName: string) {
     const folder = folders.value.find((f) => f.id === folderId);
     if (folder && newName.trim()) {
       folder.name = newName.trim();
+      stampFolderMutation(folder);
       normalizeFolderOrders(folders.value);
-      pendingModifiedFolderIds.add(folderId);
 
       // Save to IDB & LocalStorage immediately
       saveFoldersToIDB(folders.value).catch(console.error);
@@ -1394,9 +1708,12 @@ export function useNotes() {
       return;
     }
 
-    // Collect all affected sibling folders whose order or parentId changed
+    // Collect all affected sibling folders whose order or parentId changed and stamp updatedAt
     const affectedFolderIds = result.affectedFolderIds || [draggedFolderId];
-    affectedFolderIds.forEach((id) => pendingModifiedFolderIds.add(id));
+    affectedFolderIds.forEach((id) => {
+      const f = folders.value.find((x) => x.id === id);
+      if (f) stampFolderMutation(f);
+    });
 
     // Save to IDB & LocalStorage immediately
     saveFoldersToIDB(folders.value).catch(console.error);
@@ -1448,8 +1765,7 @@ export function useNotes() {
     const note = notes.value.find((n) => n.id === noteId);
     if (note) {
       note.folderId = targetFolderId;
-      note.updatedAt = formatDateTime();
-      pendingModifiedNoteIds.add(note.id);
+      stampNoteMutation(note);
       isMoveModalOpen.value = false;
       const targetF = folders.value.find((f) => f.id === targetFolderId);
       showToast(`已将笔记移动到 "${targetF?.name || '文件夹'}"`);
@@ -1460,19 +1776,20 @@ export function useNotes() {
   function batchMoveNotesToFolder(noteIds: string[], targetFolderId: string) {
     if (!noteIds.length) return;
     const now = formatDateTime();
-    let movedCount = 0;
+    const nowMs = Date.now();
+    const modifiedIds: string[] = [];
     notes.value.forEach((note) => {
       if (noteIds.includes(note.id)) {
         note.folderId = targetFolderId;
         note.updatedAt = now;
-        pendingModifiedNoteIds.add(note.id);
-        movedCount++;
+        note.updatedAtMs = nowMs;
+        modifiedIds.push(note.id);
       }
     });
     isMoveModalOpen.value = false;
     const targetF = folders.value.find((f) => f.id === targetFolderId);
-    showToast(`已将 ${movedCount} 篇笔记移动到 "${targetF?.name || '文件夹'}"`);
-    triggerAutoSyncDebounced();
+    showToast(`已将 ${modifiedIds.length} 篇笔记移动到 "${targetF?.name || '文件夹'}"`);
+    triggerAutoSyncDebounced({ noteIds: modifiedIds });
   }
 
   function batchToggleStar(noteIds: string[], forceState?: boolean) {
@@ -1480,58 +1797,63 @@ export function useNotes() {
     const targetNotes = notes.value.filter((n) => noteIds.includes(n.id));
     if (!targetNotes.length) return;
     const shouldStar = forceState !== undefined ? forceState : targetNotes.some((n) => !n.isStarred);
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const modifiedIds: string[] = [];
     targetNotes.forEach((n) => {
       n.isStarred = shouldStar;
-      pendingModifiedNoteIds.add(n.id);
+      n.updatedAt = now;
+      n.updatedAtMs = nowMs;
+      modifiedIds.push(n.id);
     });
     showToast(shouldStar ? `已为 ${targetNotes.length} 篇笔记添加标星` : `已取消 ${targetNotes.length} 篇笔记的标星`);
-    triggerAutoSyncDebounced();
+    triggerAutoSyncDebounced({ noteIds: modifiedIds });
   }
 
   function batchMoveToTrash(noteIds: string[]) {
     if (!noteIds.length) return;
     const now = formatDateTime();
-    let count = 0;
+    const nowMs = Date.now();
+    const modifiedIds: string[] = [];
     notes.value.forEach((note) => {
       if (noteIds.includes(note.id)) {
         note.isDeleted = true;
         note.deletedAt = now;
-        pendingModifiedNoteIds.add(note.id);
-        count++;
+        note.updatedAt = now;
+        note.updatedAtMs = nowMs;
+        modifiedIds.push(note.id);
+        closeTab(note.id);
       }
     });
-    showToast(`已将 ${count} 篇笔记移入回收站`);
-    triggerAutoSyncDebounced();
+    showToast(`已将 ${modifiedIds.length} 篇笔记移入回收站`);
+    triggerAutoSyncDebounced({ noteIds: modifiedIds });
   }
 
   function batchRestoreFromTrash(noteIds: string[]) {
     if (!noteIds.length) return;
-    let count = 0;
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const modifiedIds: string[] = [];
     notes.value.forEach((note) => {
       if (noteIds.includes(note.id)) {
         note.isDeleted = false;
         note.deletedAt = undefined;
-        pendingModifiedNoteIds.add(note.id);
-        count++;
+        note.updatedAt = now;
+        note.updatedAtMs = nowMs;
+        modifiedIds.push(note.id);
       }
     });
-    showToast(`已成功还原 ${count} 篇笔记`);
-    triggerAutoSyncDebounced();
+    showToast(`已成功还原 ${modifiedIds.length} 篇笔记`);
+    triggerAutoSyncDebounced({ noteIds: modifiedIds });
   }
 
   async function batchPermanentlyDelete(noteIds: string[]) {
     if (!noteIds.length) return;
     const count = noteIds.length;
     notes.value = notes.value.filter((n) => !noteIds.includes(n.id));
-    noteIds.forEach((id) => pendingDeletedNoteIds.add(id));
+    noteIds.forEach((id) => closeTab(id));
     showToast(`已彻底删除 ${count} 篇笔记`);
-
-    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
-      for (const id of noteIds) {
-        deleteSingleNoteFromCloud(cloudConfig.value, id).catch(() => {});
-      }
-    }
-    triggerAutoSyncDebounced();
+    triggerAutoSyncDebounced({ deletedNoteIds: noteIds });
   }
 
   async function batchExportNotes(notesToExport: Note[]) {
@@ -1546,16 +1868,19 @@ export function useNotes() {
 
   function duplicateNote(note: Note) {
     const now = formatDateTime();
+    const nowMs = Date.now();
     const copy: Note = {
       ...note,
-      id: 'note-' + Date.now(),
+      id: 'note-' + nowMs,
       title: `${note.title} (副本)`,
       createdAt: now,
       updatedAt: now,
+      updatedAtMs: nowMs,
       shareUrl: undefined,
     };
     notes.value.unshift(copy);
     showToast('已创建笔记副本');
+    triggerAutoSyncDebounced({ noteId: copy.id });
   }
 
   async function exportNoteAsMarkdown(note: Note) {
@@ -1605,14 +1930,16 @@ export function useNotes() {
   function importMarkdownFile(filename: string, content: string, targetFolderId?: string) {
     const folder = resolveTargetFolderId(targetFolderId);
     const now = formatDateTime();
+    const nowMs = Date.now();
     const title = filename.replace(/\.(md|txt|markdown)$/i, '') || '导入的笔记';
     const newNote: Note = {
-      id: 'note-' + Date.now() + Math.random().toString(36).substring(2, 5),
+      id: 'note-' + nowMs + Math.random().toString(36).substring(2, 5),
       title,
       content,
       folderId: folder,
       createdAt: now,
       updatedAt: now,
+      updatedAtMs: nowMs,
       isStarred: false,
       isDeleted: false,
       tags: ['导入'],
@@ -1620,13 +1947,15 @@ export function useNotes() {
       type: 'markdown',
     };
     notes.value.unshift(newNote);
+    triggerAutoSyncDebounced({ noteId: newNote.id });
   }
 
   function importMindMapFile(filename: string, content: string, targetFolderId?: string) {
     const folder = resolveTargetFolderId(targetFolderId);
     const now = formatDateTime();
+    const nowMs = Date.now();
     const title = filename.replace(/\.(xmind|km|mm|json)$/i, '') || '导入的思维导图';
-    
+
     let processedContent = content;
     // If raw XML from FreeMind (.mm)
     const trimmed = (content || '').trim();
@@ -1640,12 +1969,13 @@ export function useNotes() {
     }
 
     const newNote: Note = {
-      id: 'note-' + Date.now() + Math.random().toString(36).substring(2, 5),
+      id: 'note-' + nowMs + Math.random().toString(36).substring(2, 5),
       title,
       content: processedContent,
       folderId: folder,
       createdAt: now,
       updatedAt: now,
+      updatedAtMs: nowMs,
       isStarred: false,
       isDeleted: false,
       tags: ['思维导图', '导入'],
@@ -1653,20 +1983,23 @@ export function useNotes() {
       type: 'mindmap',
     };
     notes.value.unshift(newNote);
+    triggerAutoSyncDebounced({ noteId: newNote.id });
     return newNote;
   }
 
   function importDrawioFile(filename: string, content: string, targetFolderId?: string) {
     const folder = resolveTargetFolderId(targetFolderId);
     const now = formatDateTime();
+    const nowMs = Date.now();
     const title = filename.replace(/\.(drawio|xml|drawio\.xml|drawio\.svg|drawio\.png)$/i, '') || '导入的图表';
     const newNote: Note = {
-      id: 'note-' + Date.now() + Math.random().toString(36).substring(2, 5),
+      id: 'note-' + nowMs + Math.random().toString(36).substring(2, 5),
       title,
       content,
       folderId: folder,
       createdAt: now,
       updatedAt: now,
+      updatedAtMs: nowMs,
       isStarred: false,
       isDeleted: false,
       tags: ['Draw.io', '导入'],
@@ -1674,6 +2007,7 @@ export function useNotes() {
       type: 'drawio',
     };
     notes.value.unshift(newNote);
+    triggerAutoSyncDebounced({ noteId: newNote.id });
     return newNote;
   }
 
@@ -1724,36 +2058,111 @@ export function useNotes() {
       return { success: false, message: '已有同步任务正在进行中' };
     }
 
+    if (autoSyncDebounceTimer) {
+      clearTimeout(autoSyncDebounceTimer);
+      autoSyncDebounceTimer = null;
+    }
+
     isSyncing.value = true;
     syncStatus.value = 'syncing';
 
     try {
+      const syncStartSeq = globalDirtySeq;
+      const modifiedNotesSnapshot = Array.from(pendingModifiedNoteIds);
+      const modifiedFoldersSnapshot = Array.from(pendingModifiedFolderIds);
       const deletedNotesToSync = Array.from(pendingDeletedNoteIds);
       const deletedFoldersToSync = Array.from(pendingDeletedFolderIds);
+
+      const noteSeqSnapshot = new Map<string, number>();
+      modifiedNotesSnapshot.forEach((id) => noteSeqSnapshot.set(id, noteDirtySeq.get(id) || 0));
+      const folderSeqSnapshot = new Map<string, number>();
+      modifiedFoldersSnapshot.forEach((id) => folderSeqSnapshot.set(id, folderDirtySeq.get(id) || 0));
 
       const res = await pushSyncToCloud(config, notes.value, folders.value, mode, {
         deletedNoteIds: deletedNotesToSync,
         deletedFolderIds: deletedFoldersToSync,
         frequentFolderIds: frequentFolderIds.value,
       });
+
       if (res.success) {
         isApplyingRemoteSync.value = true;
-        if (res.mergedNotes) {
-          if (mode === 'pull_all') {
+
+        if (mode === 'pull_all') {
+          pendingModifiedNoteIds.clear();
+          pendingModifiedFolderIds.clear();
+          pendingDeletedNoteIds.clear();
+          pendingDeletedFolderIds.clear();
+          persistPendingDeletions();
+
+          if (res.mergedNotes) {
             notes.value = res.mergedNotes;
-          } else {
-            const deletedSet = new Set(deletedNotesToSync);
-            notes.value = res.mergedNotes.filter((n) => !deletedSet.has(n.id));
           }
-        }
-        if (res.mergedFolders) {
-          if (mode === 'pull_all') {
+          if (res.mergedFolders) {
             folders.value = normalizeFolderOrders(res.mergedFolders);
-          } else {
-            const deletedFSet = new Set(deletedFoldersToSync);
-            folders.value = normalizeFolderOrders(res.mergedFolders.filter((f) => !deletedFSet.has(f.id)));
+          }
+        } else {
+          // Clear only items synced up to syncStartSeq; preserve any edits made while sync was in flight
+          modifiedNotesSnapshot.forEach((id) => {
+            if ((noteDirtySeq.get(id) || 0) <= (noteSeqSnapshot.get(id) || 0)) {
+              pendingModifiedNoteIds.delete(id);
+            }
+          });
+          modifiedFoldersSnapshot.forEach((id) => {
+            if ((folderDirtySeq.get(id) || 0) <= (folderSeqSnapshot.get(id) || 0)) {
+              pendingModifiedFolderIds.delete(id);
+            }
+          });
+          deletedNotesToSync.forEach((id) => pendingDeletedNoteIds.delete(id));
+          deletedFoldersToSync.forEach((id) => pendingDeletedFolderIds.delete(id));
+          persistPendingDeletions();
+
+          if (res.mergedNotes) {
+            const deletedSet = new Set(pendingDeletedNoteIds);
+            const inFlightModifiedNotes = new Map<string, Note>();
+            notes.value.forEach((localN) => {
+              if ((noteDirtySeq.get(localN.id) || 0) > syncStartSeq) {
+                inFlightModifiedNotes.set(localN.id, localN);
+              }
+            });
+            const mergedIds = new Set<string>();
+            const nextNotes = res.mergedNotes
+              .filter((n) => !deletedSet.has(n.id))
+              .map((n) => {
+                mergedIds.add(n.id);
+                return inFlightModifiedNotes.get(n.id) || n;
+              });
+            inFlightModifiedNotes.forEach((localN, id) => {
+              if (!mergedIds.has(id) && !deletedSet.has(id)) {
+                nextNotes.unshift(localN);
+              }
+            });
+            notes.value = nextNotes;
+          }
+
+          if (res.mergedFolders) {
+            const deletedFSet = new Set(pendingDeletedFolderIds);
+            const inFlightModifiedFolders = new Map<string, Folder>();
+            folders.value.forEach((localF) => {
+              if ((folderDirtySeq.get(localF.id) || 0) > syncStartSeq) {
+                inFlightModifiedFolders.set(localF.id, localF);
+              }
+            });
+            const mergedFIds = new Set<string>();
+            const nextFolders = res.mergedFolders
+              .filter((f) => !deletedFSet.has(f.id))
+              .map((f) => {
+                mergedFIds.add(f.id);
+                return inFlightModifiedFolders.get(f.id) || f;
+              });
+            inFlightModifiedFolders.forEach((localF, id) => {
+              if (!mergedFIds.has(id) && !deletedFSet.has(id)) {
+                nextFolders.push(localF);
+              }
+            });
+            folders.value = normalizeFolderOrders(nextFolders);
           }
         }
+
         if (res.mergedFrequentFolderIds && Array.isArray(res.mergedFrequentFolderIds)) {
           frequentFolderIds.value = res.mergedFrequentFolderIds;
         }
@@ -1765,10 +2174,7 @@ export function useNotes() {
 
         cloudConfig.value.enabled = true;
         cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
-        pendingModifiedNoteIds.clear();
-        pendingModifiedFolderIds.clear();
-        pendingDeletedNoteIds.clear();
-        pendingDeletedFolderIds.clear();
+        lastVisibilitySyncAt = Date.now();
         syncDiff.value = {
           localOnlyNotes: 0,
           localUpdatedNotes: 0,
@@ -1776,11 +2182,19 @@ export function useNotes() {
           cloudUpdatedNotes: 0,
           localOnlyFolders: 0,
           cloudOnlyFolders: 0,
+          localUpdatedFolders: 0,
+          cloudUpdatedFolders: 0,
           totalDiff: 0,
         };
         await nextTick();
         isApplyingRemoteSync.value = false;
-        syncStatus.value = 'synced';
+
+        if (hasAnyPendingSyncItems()) {
+          hasQueuedChangesDuringSync = true;
+          syncStatus.value = 'unsynced';
+        } else {
+          syncStatus.value = 'synced';
+        }
         if (!silent) showToast(res.message || '数据已成功同步至云端');
         return { success: true, message: res.message };
       } else {
@@ -1795,19 +2209,26 @@ export function useNotes() {
     } finally {
       isSyncing.value = false;
       isApplyingRemoteSync.value = false;
+      if (hasQueuedChangesDuringSync && isAutoSyncActive()) {
+        hasQueuedChangesDuringSync = false;
+        triggerAutoSyncDebounced();
+      } else {
+        hasQueuedChangesDuringSync = false;
+      }
     }
   }
 
   function saveCloudConfig(newConfig: Partial<CloudConfig>) {
     if (newConfig.apiUrl && newConfig.apiUrl !== cloudConfig.value.apiUrl) {
-      clearApiEndpointCache();
+      clearApiEndpointCache(cloudConfig.value.apiUrl);
+      clearApiEndpointCache(newConfig.apiUrl);
     }
     cloudConfig.value = {
       ...cloudConfig.value,
       ...newConfig,
     };
-    if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
-      syncStatus.value = 'synced';
+    if (isCloudConfigured()) {
+      syncStatus.value = cloudConfig.value.lastSyncedAt && !hasAnyPendingSyncItems() ? 'synced' : 'unsynced';
     } else {
       syncStatus.value = 'unconfigured';
     }

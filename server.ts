@@ -105,6 +105,36 @@ function parseSafeTime(timeStr?: string | number | null): number {
   return isNaN(fallback) ? 0 : fallback;
 }
 
+function getEntityTimestampMs(entity?: { updatedAtMs?: number; updatedAt?: string; createdAt?: string }): number {
+  if (!entity) return 0;
+  if (typeof entity.updatedAtMs === 'number' && !isNaN(entity.updatedAtMs) && entity.updatedAtMs > 0) {
+    return entity.updatedAtMs;
+  }
+  return parseSafeTime(entity.updatedAt || entity.createdAt);
+}
+
+function formatServerDateTime(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function collectDescendantFolderIds(folders: Folder[], rootId: string): Set<string> {
+  const result = new Set<string>([String(rootId)]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const f of folders) {
+      const fid = String(f.id);
+      const pid = f.parentId ? String(f.parentId) : null;
+      if (pid && result.has(pid) && !result.has(fid)) {
+        result.add(fid);
+        added = true;
+      }
+    }
+  }
+  return result;
+}
+
 // Parse body & set standard CORS
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -116,6 +146,27 @@ app.use((req, res, next) => {
   res.header('Access-Control-Max-Age', '86400');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
+  }
+  next();
+});
+
+// Optional API Token enforcement when CLOUD_API_TOKEN / API_TOKEN is configured in env
+app.use(['/api', '/api.php'], (req, res, next) => {
+  const expectedToken = (process.env.CLOUD_API_TOKEN || process.env.API_TOKEN || '').trim();
+  if (!expectedToken) {
+    return next();
+  }
+  const headerKey = (req.headers['x-api-key'] as string) || '';
+  const authHeader = (req.headers['authorization'] as string) || '';
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  const clientToken = (bearerMatch ? bearerMatch[1] : headerKey).trim();
+
+  if (!clientToken || clientToken !== expectedToken) {
+    return res.status(401).json({
+      code: 401,
+      success: false,
+      message: '认证失败：API Token 无效或未授权',
+    });
   }
   next();
 });
@@ -252,7 +303,27 @@ function handleSync(req: express.Request, res: express.Response) {
     });
   }
 
-  // Mode: merge (Two-way smart merge based on timestamp)
+  // Mode: merge (Two-way smart merge based on timestamp + explicit deletions)
+  const deletedNoteIdSet = new Set<string>(
+    Array.isArray(body.deletedNoteIds) ? body.deletedNoteIds.map(String) : []
+  );
+  const deletedFolderIdSet = new Set<string>(
+    Array.isArray(body.deletedFolderIds) ? body.deletedFolderIds.map(String) : []
+  );
+
+  // Expand deletedFolderIdSet with any server-side descendants of deleted folders
+  if (deletedFolderIdSet.size > 0) {
+    for (const rootDelId of Array.from(deletedFolderIdSet)) {
+      const descendants = collectDescendantFolderIds(userStore.folders, rootDelId);
+      descendants.forEach((dId) => deletedFolderIdSet.add(dId));
+    }
+    userStore.folders = userStore.folders.filter((f) => !deletedFolderIdSet.has(String(f.id)));
+  }
+
+  if (deletedNoteIdSet.size > 0) {
+    userStore.notes = userStore.notes.filter((n) => !deletedNoteIdSet.has(String(n.id)));
+  }
+
   const serverNoteMap = new Map<string, Note>(userStore.notes.map((n) => [String(n.id), n]));
   const serverFolderMap = new Map<string, Folder>(userStore.folders.map((f) => [String(f.id), f]));
 
@@ -262,6 +333,7 @@ function handleSync(req: express.Request, res: express.Response) {
   // 1. Process client notes vs server notes
   for (const clientNote of clientNotes) {
     const id = String(clientNote.id);
+    if (deletedNoteIdSet.has(id)) continue;
     const serverNote = serverNoteMap.get(id);
 
     if (!serverNote) {
@@ -269,8 +341,8 @@ function handleSync(req: express.Request, res: express.Response) {
       mergedNotesMap.set(id, clientNote);
     } else {
       // Note exists in both -> compare update times
-      const clientTime = parseSafeTime(clientNote.updatedAt || clientNote.createdAt);
-      const serverTime = parseSafeTime(serverNote.updatedAt || serverNote.createdAt);
+      const clientTime = getEntityTimestampMs(clientNote);
+      const serverTime = getEntityTimestampMs(serverNote);
 
       if (clientTime >= serverTime) {
         mergedNotesMap.set(id, clientNote);
@@ -283,19 +355,35 @@ function handleSync(req: express.Request, res: express.Response) {
   // Add notes that only exist on server
   for (const serverNote of userStore.notes) {
     const id = String(serverNote.id);
+    if (deletedNoteIdSet.has(id)) continue;
     if (!mergedNotesMap.has(id)) {
       mergedNotesMap.set(id, serverNote);
     }
   }
 
-  // 2. Process folders
+  // 2. Process folders with timestamp comparison when available
   for (const clientFolder of clientFolders) {
     const id = String(clientFolder.id);
-    mergedFoldersMap.set(id, clientFolder);
+    if (deletedFolderIdSet.has(id)) continue;
+    const serverFolder = serverFolderMap.get(id);
+    if (!serverFolder) {
+      mergedFoldersMap.set(id, clientFolder);
+    } else {
+      const clientTime = getEntityTimestampMs(clientFolder);
+      const serverTime = getEntityTimestampMs(serverFolder);
+      if (clientTime === 0 && serverTime === 0) {
+        mergedFoldersMap.set(id, clientFolder);
+      } else if (clientTime >= serverTime) {
+        mergedFoldersMap.set(id, clientFolder);
+      } else {
+        mergedFoldersMap.set(id, serverFolder);
+      }
+    }
   }
 
   for (const serverFolder of userStore.folders) {
     const id = String(serverFolder.id);
+    if (deletedFolderIdSet.has(id)) continue;
     if (!mergedFoldersMap.has(id)) {
       mergedFoldersMap.set(id, serverFolder);
     }
@@ -314,7 +402,9 @@ function handleSync(req: express.Request, res: express.Response) {
 
   // Ensure frequent folder IDs reference existing folders
   const validFolderIdSet = new Set(finalMergedFolders.map((f) => String(f.id)));
-  finalFrequentFolderIds = finalFrequentFolderIds.filter((fid) => validFolderIdSet.has(fid));
+  finalFrequentFolderIds = finalFrequentFolderIds.filter(
+    (fid) => validFolderIdSet.has(fid) && !deletedFolderIdSet.has(fid)
+  );
 
   // Save to server database
   userStore.notes = finalMergedNotes;
@@ -464,16 +554,35 @@ function handleDeleteFolder(req: express.Request, res: express.Response) {
     return res.status(400).json({ code: 400, success: false, message: '缺少文件夹 ID' });
   }
 
-  userStore.folders = userStore.folders.filter((f) => String(f.id) !== String(folderId));
-  userStore.updatedAt = Date.now();
+  const allDeletedFolderIds = collectDescendantFolderIds(userStore.folders, String(folderId));
+  userStore.folders = userStore.folders.filter((f) => !allDeletedFolderIds.has(String(f.id)));
+
+  // Soft-delete notes inside deleted folders
+  const nowStr = formatServerDateTime();
+  const nowMs = Date.now();
+  userStore.notes.forEach((n) => {
+    if (allDeletedFolderIds.has(String(n.folderId)) && !n.isDeleted) {
+      n.isDeleted = true;
+      n.deletedAt = nowStr;
+      n.updatedAt = nowStr;
+      n.updatedAtMs = nowMs;
+    }
+  });
+
+  // Remove deleted folders from frequentFolderIds
+  userStore.frequentFolderIds = (userStore.frequentFolderIds || []).filter(
+    (fid) => !allDeletedFolderIds.has(String(fid))
+  );
+
+  userStore.updatedAt = nowMs;
   saveDatabase();
 
   return res.json({
     code: 200,
     success: true,
     message: '云端文件夹已删除',
-    data: { id: folderId, deleted: true },
-    serverTime: Date.now(),
+    data: { id: folderId, deletedIds: Array.from(allDeletedFolderIds), deleted: true },
+    serverTime: nowMs,
   });
 }
 
