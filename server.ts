@@ -17,6 +17,8 @@ interface UserDataStore {
   notes: Note[];
   folders: Folder[];
   frequentFolderIds?: string[];
+  deletedNotes?: Record<string, number>;
+  deletedFolders?: Record<string, number>;
   updatedAt: number;
 }
 
@@ -76,12 +78,20 @@ function getUserStore(userId = 'default_user'): UserDataStore {
       notes: JSON.parse(JSON.stringify(INITIAL_NOTES)),
       folders: JSON.parse(JSON.stringify(INITIAL_FOLDERS)),
       frequentFolderIds: [],
+      deletedNotes: {},
+      deletedFolders: {},
       updatedAt: Date.now(),
     };
     saveDatabase();
   }
   if (!Array.isArray(dbCache.users[normalizedId].frequentFolderIds)) {
     dbCache.users[normalizedId].frequentFolderIds = [];
+  }
+  if (!dbCache.users[normalizedId].deletedNotes || typeof dbCache.users[normalizedId].deletedNotes !== 'object') {
+    dbCache.users[normalizedId].deletedNotes = {};
+  }
+  if (!dbCache.users[normalizedId].deletedFolders || typeof dbCache.users[normalizedId].deletedFolders !== 'object') {
+    dbCache.users[normalizedId].deletedFolders = {};
   }
   return dbCache.users[normalizedId];
 }
@@ -133,6 +143,47 @@ function collectDescendantFolderIds(folders: Folder[], rootId: string): Set<stri
     }
   }
   return result;
+}
+
+const TOMBSTONE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const TOMBSTONE_MAX_ENTRIES = 5000;
+
+function pruneTombstoneMap(map: Record<string, number>, now = Date.now()): void {
+  const cutoff = now - TOMBSTONE_MAX_AGE_MS;
+  const entries = Object.entries(map).filter(([, ts]) => typeof ts === 'number' && ts >= cutoff);
+  if (entries.length > TOMBSTONE_MAX_ENTRIES) {
+    entries.sort((a, b) => b[1] - a[1]);
+    entries.length = TOMBSTONE_MAX_ENTRIES;
+  }
+  for (const key of Object.keys(map)) {
+    delete map[key];
+  }
+  for (const [k, v] of entries) {
+    map[k] = v;
+  }
+}
+
+function recordTombstones(map: Record<string, number>, ids: Iterable<string>, tsMs: number): void {
+  for (const rawId of ids) {
+    const id = String(rawId || '').trim();
+    if (!id) continue;
+    map[id] = Math.max(map[id] || 0, tsMs);
+  }
+  pruneTombstoneMap(map, tsMs);
+}
+
+function isBlockedByNoteTombstone(clientNote: Note, tombstoneMs?: number): boolean {
+  if (!tombstoneMs) return false;
+  // Trash notes on another client must never resurrect a permanently deleted note
+  if (clientNote.isDeleted) return true;
+  const clientTime = getEntityTimestampMs(clientNote);
+  return clientTime === 0 || clientTime <= tombstoneMs;
+}
+
+function isBlockedByFolderTombstone(clientFolder: Folder, tombstoneMs?: number): boolean {
+  if (!tombstoneMs) return false;
+  const clientTime = getEntityTimestampMs(clientFolder);
+  return clientTime === 0 || clientTime <= tombstoneMs;
 }
 
 // Parse body & set standard CORS
@@ -223,6 +274,8 @@ function handleGetAllData(req: express.Request, res: express.Response) {
       notes: userStore.notes,
       folders: userStore.folders,
       frequentFolderIds: userStore.frequentFolderIds || [],
+      deletedNotes: userStore.deletedNotes || {},
+      deletedFolders: userStore.deletedFolders || {},
       notesCount: userStore.notes.length,
       foldersCount: userStore.folders.length,
       frequentFoldersCount: (userStore.frequentFolderIds || []).length,
@@ -231,6 +284,8 @@ function handleGetAllData(req: express.Request, res: express.Response) {
     notes: userStore.notes,
     folders: userStore.folders,
     frequentFolderIds: userStore.frequentFolderIds || [],
+    deletedNotes: userStore.deletedNotes || {},
+    deletedFolders: userStore.deletedFolders || {},
     serverTime: Date.now(),
   });
 }
@@ -259,6 +314,20 @@ function handleSync(req: express.Request, res: express.Response) {
 
   // Mode: push_all (Overwrite cloud with client data)
   if (mode === 'push_all') {
+    const clientNoteIdSet = new Set(clientNotes.map((n) => String(n.id)));
+    const clientFolderIdSet = new Set(clientFolders.map((f) => String(f.id)));
+    const removedNoteIds = userStore.notes
+      .map((n) => String(n.id))
+      .filter((id) => !clientNoteIdSet.has(id));
+    const removedFolderIds = userStore.folders
+      .map((f) => String(f.id))
+      .filter((id) => !clientFolderIdSet.has(id));
+
+    recordTombstones(userStore.deletedNotes!, removedNoteIds, now);
+    recordTombstones(userStore.deletedFolders!, removedFolderIds, now);
+    clientNoteIdSet.forEach((id) => delete userStore.deletedNotes![id]);
+    clientFolderIdSet.forEach((id) => delete userStore.deletedFolders![id]);
+
     userStore.notes = clientNotes;
     userStore.folders = clientFolders;
     if (Array.isArray(body.frequentFolderIds) || Array.isArray(body.frequentFolders)) {
@@ -275,11 +344,15 @@ function handleSync(req: express.Request, res: express.Response) {
         notes: userStore.notes,
         folders: userStore.folders,
         frequentFolderIds: userStore.frequentFolderIds || [],
+        deletedNotes: userStore.deletedNotes || {},
+        deletedFolders: userStore.deletedFolders || {},
         serverTime: now,
       },
       notes: userStore.notes,
       folders: userStore.folders,
       frequentFolderIds: userStore.frequentFolderIds || [],
+      deletedNotes: userStore.deletedNotes || {},
+      deletedFolders: userStore.deletedFolders || {},
       serverTime: now,
     });
   }
@@ -294,16 +367,21 @@ function handleSync(req: express.Request, res: express.Response) {
         notes: userStore.notes,
         folders: userStore.folders,
         frequentFolderIds: userStore.frequentFolderIds || [],
+        deletedNotes: userStore.deletedNotes || {},
+        deletedFolders: userStore.deletedFolders || {},
         serverTime: now,
       },
       notes: userStore.notes,
       folders: userStore.folders,
       frequentFolderIds: userStore.frequentFolderIds || [],
+      deletedNotes: userStore.deletedNotes || {},
+      deletedFolders: userStore.deletedFolders || {},
       serverTime: now,
     });
   }
 
-  // Mode: merge (Two-way smart merge based on timestamp + explicit deletions)
+  // Mode: merge (Two-way smart merge based on timestamp + explicit deletions + tombstones)
+  const opTs = Math.max(now, Number(body.timestamp) || 0);
   const deletedNoteIdSet = new Set<string>(
     Array.isArray(body.deletedNoteIds) ? body.deletedNoteIds.map(String) : []
   );
@@ -318,10 +396,12 @@ function handleSync(req: express.Request, res: express.Response) {
       descendants.forEach((dId) => deletedFolderIdSet.add(dId));
     }
     userStore.folders = userStore.folders.filter((f) => !deletedFolderIdSet.has(String(f.id)));
+    recordTombstones(userStore.deletedFolders!, deletedFolderIdSet, opTs);
   }
 
   if (deletedNoteIdSet.size > 0) {
     userStore.notes = userStore.notes.filter((n) => !deletedNoteIdSet.has(String(n.id)));
+    recordTombstones(userStore.deletedNotes!, deletedNoteIdSet, opTs);
   }
 
   const serverNoteMap = new Map<string, Note>(userStore.notes.map((n) => [String(n.id), n]));
@@ -330,14 +410,18 @@ function handleSync(req: express.Request, res: express.Response) {
   const mergedNotesMap = new Map<string, Note>();
   const mergedFoldersMap = new Map<string, Folder>();
 
-  // 1. Process client notes vs server notes
+  // 1. Process client notes vs server notes (respecting tombstones)
   for (const clientNote of clientNotes) {
     const id = String(clientNote.id);
     if (deletedNoteIdSet.has(id)) continue;
     const serverNote = serverNoteMap.get(id);
 
     if (!serverNote) {
-      // Note only in client -> add to merged
+      // If another device permanently deleted this note/emptied trash, do not resurrect stale copy
+      if (isBlockedByNoteTombstone(clientNote, userStore.deletedNotes?.[id])) {
+        continue;
+      }
+      delete userStore.deletedNotes![id];
       mergedNotesMap.set(id, clientNote);
     } else {
       // Note exists in both -> compare update times
@@ -361,12 +445,16 @@ function handleSync(req: express.Request, res: express.Response) {
     }
   }
 
-  // 2. Process folders with timestamp comparison when available
+  // 2. Process folders with timestamp comparison & tombstones
   for (const clientFolder of clientFolders) {
     const id = String(clientFolder.id);
     if (deletedFolderIdSet.has(id)) continue;
     const serverFolder = serverFolderMap.get(id);
     if (!serverFolder) {
+      if (isBlockedByFolderTombstone(clientFolder, userStore.deletedFolders?.[id])) {
+        continue;
+      }
+      delete userStore.deletedFolders![id];
       mergedFoldersMap.set(id, clientFolder);
     } else {
       const clientTime = getEntityTimestampMs(clientFolder);
@@ -421,6 +509,8 @@ function handleSync(req: express.Request, res: express.Response) {
       notes: finalMergedNotes,
       folders: finalMergedFolders,
       frequentFolderIds: finalFrequentFolderIds,
+      deletedNotes: userStore.deletedNotes || {},
+      deletedFolders: userStore.deletedFolders || {},
       notesCount: finalMergedNotes.length,
       foldersCount: finalMergedFolders.length,
       frequentFoldersCount: finalFrequentFolderIds.length,
@@ -429,6 +519,8 @@ function handleSync(req: express.Request, res: express.Response) {
     notes: finalMergedNotes,
     folders: finalMergedFolders,
     frequentFolderIds: finalFrequentFolderIds,
+    deletedNotes: userStore.deletedNotes || {},
+    deletedFolders: userStore.deletedFolders || {},
     serverTime: now,
   });
 }
@@ -460,6 +552,7 @@ function handleUpsertNote(req: express.Request, res: express.Response) {
   } else {
     userStore.notes.unshift(note);
   }
+  delete userStore.deletedNotes![String(note.id)];
 
   userStore.updatedAt = Date.now();
   saveDatabase();
@@ -482,8 +575,10 @@ function handleDeleteNote(req: express.Request, res: express.Response) {
     return res.status(400).json({ code: 400, success: false, message: '缺少笔记 ID' });
   }
 
+  const opTs = Math.max(Date.now(), Number(req.body?.timestamp) || 0);
   userStore.notes = userStore.notes.filter((n) => String(n.id) !== String(noteId));
-  userStore.updatedAt = Date.now();
+  recordTombstones(userStore.deletedNotes!, [String(noteId)], opTs);
+  userStore.updatedAt = opTs;
   saveDatabase();
 
   return res.json({
@@ -531,6 +626,7 @@ function handleUpsertFolder(req: express.Request, res: express.Response) {
     } else {
       userStore.folders.push(cleanFolder);
     }
+    delete userStore.deletedFolders![String(folder.id)];
   }
 
   userStore.updatedAt = Date.now();
@@ -554,12 +650,14 @@ function handleDeleteFolder(req: express.Request, res: express.Response) {
     return res.status(400).json({ code: 400, success: false, message: '缺少文件夹 ID' });
   }
 
+  const nowMs = Date.now();
+  const opTs = Math.max(nowMs, Number(req.body?.timestamp) || 0);
   const allDeletedFolderIds = collectDescendantFolderIds(userStore.folders, String(folderId));
   userStore.folders = userStore.folders.filter((f) => !allDeletedFolderIds.has(String(f.id)));
+  recordTombstones(userStore.deletedFolders!, allDeletedFolderIds, opTs);
 
   // Soft-delete notes inside deleted folders
   const nowStr = formatServerDateTime();
-  const nowMs = Date.now();
   userStore.notes.forEach((n) => {
     if (allDeletedFolderIds.has(String(n.folderId)) && !n.isDeleted) {
       n.isDeleted = true;
@@ -590,15 +688,20 @@ function handleDeleteFolder(req: express.Request, res: express.Response) {
 function handleEmptyTrash(req: express.Request, res: express.Response) {
   const userId = extractUserId(req);
   const userStore = getUserStore(userId);
-  const noteIds: string[] = req.body?.noteIds || [];
+  const noteIds: string[] = Array.isArray(req.body?.noteIds) ? req.body.noteIds.map(String) : [];
+  const opTs = Math.max(Date.now(), Number(req.body?.timestamp) || 0);
 
-  if (Array.isArray(noteIds) && noteIds.length > 0) {
-    const idSet = new Set(noteIds.map((id) => String(id)));
+  let removedIds: string[] = [];
+  if (noteIds.length > 0) {
+    const idSet = new Set(noteIds);
+    removedIds = noteIds;
     userStore.notes = userStore.notes.filter((n) => !idSet.has(String(n.id)));
   } else {
+    removedIds = userStore.notes.filter((n) => n.isDeleted).map((n) => String(n.id));
     userStore.notes = userStore.notes.filter((n) => !n.isDeleted);
   }
 
+  recordTombstones(userStore.deletedNotes!, removedIds, opTs);
   userStore.updatedAt = Date.now();
   saveDatabase();
 
@@ -606,7 +709,7 @@ function handleEmptyTrash(req: express.Request, res: express.Response) {
     code: 200,
     success: true,
     message: '云端回收站已清空',
-    data: { deletedCount: noteIds.length },
+    data: { deletedCount: removedIds.length, deletedIds: removedIds },
     serverTime: Date.now(),
   });
 }

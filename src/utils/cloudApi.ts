@@ -10,10 +10,14 @@ export interface CloudSyncResponse {
     notes?: Note[];
     folders?: Folder[];
     frequentFolderIds?: string[];
+    deletedNotes?: Record<string, number>;
+    deletedFolders?: Record<string, number>;
   };
   notes?: Note[];
   folders?: Folder[];
   frequentFolderIds?: string[];
+  deletedNotes?: Record<string, number>;
+  deletedFolders?: Record<string, number>;
   serverTime?: number;
 }
 
@@ -602,6 +606,25 @@ export async function testCloudApi(
   }
 }
 
+function parseTombstoneMap(raw: any): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const map: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const id = String(k || '').trim();
+    if (!id) continue;
+    const ms =
+      typeof v === 'number'
+        ? v
+        : typeof v === 'object' && v !== null && typeof (v as any).ms === 'number'
+        ? (v as any).ms
+        : Number(v);
+    if (!isNaN(ms) && ms > 0) {
+      map[id] = ms;
+    }
+  }
+  return map;
+}
+
 // 2. Fetch Remote Data from Cloud (Direct Single Request with Fallback)
 export async function fetchRemoteData(
   config: CloudConfig
@@ -611,6 +634,8 @@ export async function fetchRemoteData(
     notes: Note[];
     folders: Folder[];
     frequentFolderIds?: string[];
+    deletedNotes?: Record<string, number>;
+    deletedFolders?: Record<string, number>;
     serverTime: number;
   };
   message?: string;
@@ -694,6 +719,8 @@ export async function fetchRemoteData(
 
     const notes: Note[] = rawNotesList.map(normalizeRemoteNote);
     const folders: Folder[] = rawFoldersList.map(normalizeRemoteFolder);
+    const deletedNotes = parseTombstoneMap(resData.deletedNotes || json.deletedNotes);
+    const deletedFolders = parseTombstoneMap(resData.deletedFolders || json.deletedFolders);
 
     return {
       success: true,
@@ -701,6 +728,8 @@ export async function fetchRemoteData(
         notes,
         folders,
         frequentFolderIds: rawFrequentFolderIds ? rawFrequentFolderIds.map(String) : undefined,
+        ...(deletedNotes ? { deletedNotes } : {}),
+        ...(deletedFolders ? { deletedFolders } : {}),
         serverTime: resData.serverTime || json.serverTime || Date.now(),
       },
     };
@@ -745,7 +774,9 @@ export function calculateSyncDiff(
   localNotes: Note[],
   localFolders: Folder[],
   remoteNotes: Note[],
-  remoteFolders: Folder[]
+  remoteFolders: Folder[],
+  remoteDeletedNotes?: Record<string, number>,
+  remoteDeletedFolders?: Record<string, number>
 ): SyncDiffResult {
   const remoteNoteList = Array.isArray(remoteNotes) ? remoteNotes : [];
   const remoteFolderList = Array.isArray(remoteFolders) ? remoteFolders : [];
@@ -768,9 +799,17 @@ export function calculateSyncDiff(
 
   // Compare local notes against remote
   for (const local of localNoteList) {
-    const remote = remoteNoteMap.get(String(local.id));
+    const lid = String(local.id);
+    const remote = remoteNoteMap.get(lid);
     if (!remote) {
-      localOnlyNotes++;
+      const tombMs = remoteDeletedNotes?.[lid];
+      const localTime = getEntityTimestampMs(local);
+      if (tombMs && (local.isDeleted || localTime === 0 || localTime <= tombMs)) {
+        // Deleted permanently on another device; sync will clean up local copy
+        cloudUpdatedNotes++;
+      } else {
+        localOnlyNotes++;
+      }
     } else {
       const localTime = getEntityTimestampMs(local);
       const remoteTime = getEntityTimestampMs(remote);
@@ -817,9 +856,16 @@ export function calculateSyncDiff(
 
   // Compare folders (missing/extra + rename/move/reorder diffs)
   for (const localF of localFolderList) {
-    const remoteF = remoteFolderMap.get(String(localF.id));
+    const fid = String(localF.id);
+    const remoteF = remoteFolderMap.get(fid);
     if (!remoteF) {
-      localOnlyFolders++;
+      const tombMs = remoteDeletedFolders?.[fid];
+      const localTime = getEntityTimestampMs(localF);
+      if (tombMs && (localTime === 0 || localTime <= tombMs)) {
+        cloudUpdatedFolders++;
+      } else {
+        localOnlyFolders++;
+      }
     } else {
       const isFolderDiff =
         (localF.name || '') !== (remoteF.name || '') ||
@@ -883,6 +929,8 @@ export async function pushSyncToCloud(
   mergedNotes?: Note[];
   mergedFolders?: Folder[];
   mergedFrequentFolderIds?: string[];
+  deletedNotes?: Record<string, number>;
+  deletedFolders?: Record<string, number>;
   serverTime?: number;
 }> {
   const baseUrl = normalizeApiUrl(config.apiUrl);
@@ -900,6 +948,8 @@ export async function pushSyncToCloud(
         mergedNotes: remoteRes.data.notes,
         mergedFolders: remoteRes.data.folders,
         mergedFrequentFolderIds: remoteRes.data.frequentFolderIds,
+        deletedNotes: remoteRes.data.deletedNotes,
+        deletedFolders: remoteRes.data.deletedFolders,
         serverTime: remoteRes.data.serverTime,
       };
     }
@@ -918,6 +968,7 @@ export async function pushSyncToCloud(
       deletedNoteIds: options?.deletedNoteIds || [],
       deletedFolderIds: options?.deletedFolderIds || [],
       timestamp: Date.now(),
+      clientTimeStr: formatLocalDateTime(),
     };
 
     let lastRes: Response | null = null;
@@ -1013,12 +1064,17 @@ export async function pushSyncToCloud(
         ? '已成功从云端拉取覆盖本地数据！'
         : extractResponseMessage(result, '云端双向智能同步成功！');
 
+    const deletedNotes = parseTombstoneMap(data.deletedNotes || result.deletedNotes);
+    const deletedFolders = parseTombstoneMap(data.deletedFolders || result.deletedFolders);
+
     return {
       success: true,
       message: successMessage,
       mergedNotes,
       mergedFolders,
       mergedFrequentFolderIds,
+      ...(deletedNotes ? { deletedNotes } : {}),
+      ...(deletedFolders ? { deletedFolders } : {}),
       serverTime: data.serverTime || result.serverTime || Date.now(),
     };
   } catch (err: any) {
@@ -1098,7 +1154,12 @@ export async function deleteSingleNoteFromCloud(
           {
             method: 'DELETE',
             headers,
-            body: JSON.stringify({ id: noteId, action: 'delete_note' }),
+            body: JSON.stringify({
+              id: noteId,
+              action: 'delete_note',
+              timestamp: Date.now(),
+              deletedAt: formatLocalDateTime(),
+            }),
           },
           12000
         );
@@ -1134,6 +1195,8 @@ export async function emptyTrashOnCloud(
     const payload = {
       action: 'empty_trash',
       noteIds: noteIds || [],
+      timestamp: Date.now(),
+      deletedAt: formatLocalDateTime(),
     };
 
     for (const url of urls) {
@@ -1269,7 +1332,12 @@ export async function deleteSingleFolderFromCloud(
           {
             method: 'DELETE',
             headers,
-            body: JSON.stringify({ id: folderId, action: 'delete_folder' }),
+            body: JSON.stringify({
+              id: folderId,
+              action: 'delete_folder',
+              timestamp: Date.now(),
+              deletedAt: formatLocalDateTime(),
+            }),
           },
           12000
         );

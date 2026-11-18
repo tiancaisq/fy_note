@@ -100,6 +100,162 @@ function requireMethod($allowedMethods): void {
     }
 }
 
+/**
+ * 读取指定类型的删除墓碑记录 (存储于 user_settings，无需修改数据库表结构)
+ */
+function loadTombstones(PDO $pdo, string $userId, string $settingKey): array {
+    $stmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = :key");
+    $stmt->execute([':userId' => $userId, ':key' => $settingKey]);
+    $row = $stmt->fetch();
+    if (!$row || empty($row['setting_value'])) {
+        return [];
+    }
+    $decoded = json_decode($row['setting_value'], true);
+    if (!is_array($decoded)) {
+        return [];
+    }
+    $nowMs = (int)(microtime(true) * 1000);
+    $cutoffMs = $nowMs - 90 * 24 * 60 * 60 * 1000;
+    $result = [];
+    foreach ($decoded as $id => $val) {
+        $idStr = (string)$id;
+        if ($idStr === '') continue;
+        if (is_array($val)) {
+            $ms = (int)($val['ms'] ?? 0);
+            $at = (string)($val['at'] ?? '');
+        } else {
+            $ms = (int)$val;
+            $at = '';
+        }
+        if ($ms > 0 && $ms >= $cutoffMs) {
+            $result[$idStr] = ['ms' => $ms, 'at' => $at];
+        }
+    }
+    return $result;
+}
+
+function saveTombstones(PDO $pdo, string $userId, string $settingKey, array $tombstones): void {
+    $nowMs = (int)(microtime(true) * 1000);
+    $cutoffMs = $nowMs - 90 * 24 * 60 * 60 * 1000;
+    $filtered = [];
+    foreach ($tombstones as $id => $val) {
+        $ms = is_array($val) ? (int)($val['ms'] ?? 0) : (int)$val;
+        $at = is_array($val) ? (string)($val['at'] ?? '') : '';
+        if ($ms >= $cutoffMs) {
+            $filtered[(string)$id] = ['ms' => $ms, 'at' => $at];
+        }
+    }
+    if (count($filtered) > 2000) {
+        uasort($filtered, function($a, $b) {
+            return $b['ms'] <=> $a['ms'];
+        });
+        $filtered = array_slice($filtered, 0, 2000, true);
+    }
+    $jsonVal = json_encode($filtered, JSON_UNESCAPED_UNICODE);
+    $nowStr = date('Y-m-d H:i:s');
+    $stmt = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
+        VALUES (:userId, :key, :val, :updatedAt)
+        ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
+    $stmt->execute([
+        ':userId'    => $userId,
+        ':key'       => $settingKey,
+        ':val'       => $jsonVal,
+        ':updatedAt' => $nowStr,
+        ':uVal'      => $jsonVal,
+        ':uUpdatedAt'=> $nowStr,
+    ]);
+}
+
+function addTombstones(PDO $pdo, string $userId, string $settingKey, array $ids, int $tsMs, string $atStr): array {
+    $tombstones = loadTombstones($pdo, $userId, $settingKey);
+    $changed = false;
+    foreach ($ids as $rawId) {
+        $id = trim((string)$rawId);
+        if ($id === '') continue;
+        $prevMs = isset($tombstones[$id]['ms']) ? (int)$tombstones[$id]['ms'] : 0;
+        if ($tsMs >= $prevMs) {
+            $tombstones[$id] = ['ms' => $tsMs, 'at' => $atStr];
+            $changed = true;
+        }
+    }
+    if ($changed) {
+        saveTombstones($pdo, $userId, $settingKey, $tombstones);
+    }
+    return $tombstones;
+}
+
+function removeTombstones(PDO $pdo, string $userId, string $settingKey, array $ids): void {
+    if (empty($ids)) return;
+    $tombstones = loadTombstones($pdo, $userId, $settingKey);
+    $changed = false;
+    foreach ($ids as $rawId) {
+        $id = (string)$rawId;
+        if (isset($tombstones[$id])) {
+            unset($tombstones[$id]);
+            $changed = true;
+        }
+    }
+    if ($changed) {
+        saveTombstones($pdo, $userId, $settingKey, $tombstones);
+    }
+}
+
+function tombstoneIdsMap(array $tombstones): array {
+    $map = [];
+    foreach ($tombstones as $id => $val) {
+        $map[(string)$id] = is_array($val) ? (int)($val['ms'] ?? 0) : (int)$val;
+    }
+    return $map;
+}
+
+function isBlockedByTombstone(array $entity, $tombstone, bool $isNote = false): bool {
+    if (empty($tombstone)) return false;
+    // 回收站中的旧副本绝不应因为多端同步而被重新复活
+    if ($isNote && !empty($entity['isDeleted'])) {
+        return true;
+    }
+    $tombMs = is_array($tombstone) ? (int)($tombstone['ms'] ?? 0) : (int)$tombstone;
+    $tombAt = is_array($tombstone) ? (string)($tombstone['at'] ?? '') : '';
+
+    if (!empty($entity['updatedAtMs']) && is_numeric($entity['updatedAtMs']) && (int)$entity['updatedAtMs'] > 0) {
+        return (int)$entity['updatedAtMs'] <= $tombMs;
+    }
+    if (!empty($entity['updatedAt']) && $tombAt !== '') {
+        return strtotime((string)$entity['updatedAt']) <= strtotime($tombAt);
+    }
+    if (!empty($entity['updatedAt'])) {
+        return strtotime((string)$entity['updatedAt']) * 1000 <= $tombMs;
+    }
+    return true;
+}
+
+function collectDescendantFolderIdsPhp(PDO $pdo, string $userId, array $rootIds): array {
+    $allSet = [];
+    foreach ($rootIds as $rid) {
+        $s = trim((string)$rid);
+        if ($s !== '') $allSet[$s] = true;
+    }
+    if (empty($allSet)) return [];
+
+    $stmt = $pdo->prepare("SELECT id, parent_id FROM folders WHERE user_id = :userId");
+    $stmt->execute([':userId' => $userId]);
+    $rows = $stmt->fetchAll();
+
+    $added = true;
+    while ($added) {
+        $added = false;
+        foreach ($rows as $row) {
+            $fid = (string)$row['id'];
+            $pid = !empty($row['parent_id']) ? (string)$row['parent_id'] : '';
+            if ($pid !== '' && isset($allSet[$pid]) && !isset($allSet[$fid])) {
+                $allSet[$fid] = true;
+                $added = true;
+            }
+        }
+    }
+    return array_keys($allSet);
+}
+
 // ==============================================================================
 // 3. 数据库连接初始化 (PDO)
 // ==============================================================================
@@ -241,10 +397,15 @@ switch ($action) {
                 }
             }
 
+            $noteTombstones = loadTombstones($pdo, $userId, 'deleted_note_tombstones');
+            $folderTombstones = loadTombstones($pdo, $userId, 'deleted_folder_tombstones');
+
             jsonResponse(200, true, '全量云端数据获取成功', [
                 'folders'              => $folders,
                 'notes'                => $notes,
                 'frequentFolderIds'    => $frequentFolderIds,
+                'deletedNotes'         => tombstoneIdsMap($noteTombstones),
+                'deletedFolders'       => tombstoneIdsMap($folderTombstones),
                 'foldersCount'         => count($folders),
                 'notesCount'           => count($notes),
                 'frequentFoldersCount' => count($frequentFolderIds),
@@ -329,6 +490,8 @@ switch ($action) {
                 ':uUpdatedAt' => $updatedAt,
             ]);
 
+            removeTombstones($pdo, $userId, 'deleted_note_tombstones', [$id]);
+
             jsonResponse(200, true, '笔记已成功同步至云端', [
                 'id'        => $id,
                 'updatedAt' => $updatedAt
@@ -354,6 +517,10 @@ switch ($action) {
         try {
             $stmt = $pdo->prepare("DELETE FROM notes WHERE id = :id AND user_id = :userId");
             $stmt->execute([':id' => $noteId, ':userId' => $userId]);
+
+            $opMs = max((int)(microtime(true) * 1000), (int)($body['timestamp'] ?? 0));
+            $opAt = (string)($body['deletedAt'] ?? date('Y-m-d H:i:s'));
+            addTombstones($pdo, $userId, 'deleted_note_tombstones', [$noteId], $opMs, $opAt);
 
             jsonResponse(200, true, '云端笔记已删除', [
                 'id'      => $noteId,
@@ -410,7 +577,7 @@ switch ($action) {
                 $parentId = !empty($folder['parentId']) ? (string)$folder['parentId'] : null;
                 $name = (string)($folder['name'] ?? '未命名文件夹');
                 $orderNum = (int)($folder['order'] ?? 0);
-                $isCollapsed = !empty($folder['isCollapsed']) ? 1 : ($folder['isOpen'] === false ? 1 : 0);
+                $isCollapsed = !empty($folder['isCollapsed']) ? 1 : ((isset($folder['isOpen']) && $folder['isOpen'] === false) ? 1 : 0);
                 $color = $folder['color'] ?? null;
                 $createdAt = $folder['createdAt'] ?? date('Y-m-d H:i:s');
                 $updatedAt = $folder['updatedAt'] ?? date('Y-m-d H:i:s');
@@ -436,6 +603,7 @@ switch ($action) {
                 $lastUpdatedAt = $updatedAt;
             }
 
+            removeTombstones($pdo, $userId, 'deleted_folder_tombstones', $savedIds);
             $pdo->commit();
 
             jsonResponse(200, true, '文件夹已成功同步至云端', [
@@ -466,8 +634,20 @@ switch ($action) {
         }
 
         try {
-            $stmt = $pdo->prepare("DELETE FROM folders WHERE id = :id AND user_id = :userId");
-            $stmt->execute([':id' => $folderId, ':userId' => $userId]);
+            $allDeletedFolderIds = collectDescendantFolderIdsPhp($pdo, $userId, [$folderId]);
+            if (!empty($allDeletedFolderIds)) {
+                $placeholders = implode(',', array_fill(0, count($allDeletedFolderIds), '?'));
+                $stmt = $pdo->prepare("DELETE FROM folders WHERE user_id = ? AND id IN ($placeholders)");
+                $stmt->execute(array_merge([$userId], $allDeletedFolderIds));
+
+                // 将被删文件夹下的有效笔记软删除至回收站
+                $nowStr = (string)($body['deletedAt'] ?? date('Y-m-d H:i:s'));
+                $noteStmt = $pdo->prepare("UPDATE notes SET is_deleted = 1, updated_at = ? WHERE user_id = ? AND is_deleted = 0 AND folder_id IN ($placeholders)");
+                $noteStmt->execute(array_merge([$nowStr, $userId], $allDeletedFolderIds));
+
+                $opMs = max((int)(microtime(true) * 1000), (int)($body['timestamp'] ?? 0));
+                addTombstones($pdo, $userId, 'deleted_folder_tombstones', $allDeletedFolderIds, $opMs, $nowStr);
+            }
 
             // 若在常用目录中，也同步移除常用目录固定
             $freqStmt = $pdo->prepare("SELECT setting_value FROM user_settings WHERE user_id = :userId AND setting_key = 'frequent_folder_ids'");
@@ -475,28 +655,32 @@ switch ($action) {
             $freqRow = $freqStmt->fetch();
             if ($freqRow && !empty($freqRow['setting_value'])) {
                 $currentFreqIds = json_decode($freqRow['setting_value'], true);
-                if (is_array($currentFreqIds) && in_array($folderId, $currentFreqIds, true)) {
-                    $newFreqIds = array_values(array_filter($currentFreqIds, function($id) use ($folderId) {
-                        return $id !== $folderId;
+                if (is_array($currentFreqIds)) {
+                    $deletedSet = array_flip($allDeletedFolderIds);
+                    $newFreqIds = array_values(array_filter($currentFreqIds, function($id) use ($deletedSet) {
+                        return !isset($deletedSet[(string)$id]);
                     }));
-                    $upsertFreq = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
-                        VALUES (:userId, 'frequent_folder_ids', :val, :updatedAt)
-                        ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
-                    $nowStr = date('Y-m-d H:i:s');
-                    $jsonVal = json_encode($newFreqIds, JSON_UNESCAPED_UNICODE);
-                    $upsertFreq->execute([
-                        ':userId'    => $userId,
-                        ':val'       => $jsonVal,
-                        ':updatedAt' => $nowStr,
-                        ':uVal'      => $jsonVal,
-                        ':uUpdatedAt'=> $nowStr,
-                    ]);
+                    if (count($newFreqIds) !== count($currentFreqIds)) {
+                        $upsertFreq = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
+                            VALUES (:userId, 'frequent_folder_ids', :val, :updatedAt)
+                            ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
+                        $nowStr = date('Y-m-d H:i:s');
+                        $jsonVal = json_encode($newFreqIds, JSON_UNESCAPED_UNICODE);
+                        $upsertFreq->execute([
+                            ':userId'    => $userId,
+                            ':val'       => $jsonVal,
+                            ':updatedAt' => $nowStr,
+                            ':uVal'      => $jsonVal,
+                            ':uUpdatedAt'=> $nowStr,
+                        ]);
+                    }
                 }
             }
 
             jsonResponse(200, true, '云端文件夹已删除', [
-                'id'      => $folderId,
-                'deleted' => true
+                'id'         => $folderId,
+                'deletedIds' => $allDeletedFolderIds,
+                'deleted'    => true
             ]);
         } catch (Exception $e) {
             jsonResponse(500, false, '删除文件夹失败: ' . $e->getMessage());
@@ -508,29 +692,42 @@ switch ($action) {
     // --------------------------------------------------------------------------
     // 请求方式: POST 或 DELETE 或 GET
     // 请求体: { "noteIds": [...] } (可选指定待彻底删除的回收站笔记ID列表，未传则清理该用户云端所有 is_deleted=1 的笔记)
-    // 说明: 彻底从云端物理删除回收站内的笔记数据
+    // 说明: 彻底从云端物理删除回收站内的笔记数据并写入删除墓碑，防止其他端同步复活
     // --------------------------------------------------------------------------
     case 'empty_trash':
     case 'clear_trash':
-        $targetNoteIds = is_array($body['noteIds'] ?? null) ? $body['noteIds'] : [];
+        $targetNoteIds = is_array($body['noteIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['noteIds']))) : [];
         if (empty($targetNoteIds) && !empty($_GET['ids'])) {
-            $targetNoteIds = explode(',', (string)$_GET['ids']);
+            $targetNoteIds = array_values(array_filter(array_map('trim', explode(',', (string)$_GET['ids']))));
         }
 
         try {
+            $removedIds = [];
             if (!empty($targetNoteIds)) {
+                $removedIds = $targetNoteIds;
                 $placeholders = implode(',', array_fill(0, count($targetNoteIds), '?'));
                 $stmt = $pdo->prepare("DELETE FROM notes WHERE user_id = ? AND id IN ($placeholders)");
                 $stmt->execute(array_merge([$userId], $targetNoteIds));
                 $deletedCount = $stmt->rowCount();
             } else {
+                $selStmt = $pdo->prepare("SELECT id FROM notes WHERE user_id = :userId AND is_deleted = 1");
+                $selStmt->execute([':userId' => $userId]);
+                $removedIds = array_map(function($r) { return (string)$r['id']; }, $selStmt->fetchAll());
+
                 $stmt = $pdo->prepare("DELETE FROM notes WHERE user_id = :userId AND is_deleted = 1");
                 $stmt->execute([':userId' => $userId]);
                 $deletedCount = $stmt->rowCount();
             }
 
+            if (!empty($removedIds)) {
+                $opMs = max((int)(microtime(true) * 1000), (int)($body['timestamp'] ?? 0));
+                $opAt = (string)($body['deletedAt'] ?? date('Y-m-d H:i:s'));
+                addTombstones($pdo, $userId, 'deleted_note_tombstones', $removedIds, $opMs, $opAt);
+            }
+
             jsonResponse(200, true, '云端回收站已清空', [
-                'deletedCount' => $deletedCount
+                'deletedCount' => $deletedCount,
+                'deletedIds'   => $removedIds,
             ]);
         } catch (Exception $e) {
             jsonResponse(500, false, '清空云端回收站失败: ' . $e->getMessage());
@@ -552,27 +749,41 @@ switch ($action) {
         $clientFrequentFolderIds = is_array($body['frequentFolderIds'] ?? null) 
             ? $body['frequentFolderIds'] 
             : (is_array($body['frequentFolders'] ?? null) ? $body['frequentFolders'] : null);
-        $deletedNoteIds = is_array($body['deletedNoteIds'] ?? null) ? $body['deletedNoteIds'] : [];
-        $deletedFolderIds = is_array($body['deletedFolderIds'] ?? null) ? $body['deletedFolderIds'] : [];
+        $deletedNoteIds = is_array($body['deletedNoteIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['deletedNoteIds']))) : [];
+        $deletedFolderIds = is_array($body['deletedFolderIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['deletedFolderIds']))) : [];
 
         try {
             $pdo->beginTransaction();
 
-            // 0. 先处理彻底删除项（如清空回收站或彻底删除文件夹）
+            $opMs = max((int)(microtime(true) * 1000), (int)($body['timestamp'] ?? 0));
+            $opAt = (string)($body['clientTimeStr'] ?? $body['deletedAt'] ?? date('Y-m-d H:i:s'));
+
+            // 0. 先处理彻底删除项并写入墓碑（如清空回收站或彻底删除文件夹）
+            if (!empty($deletedFolderIds)) {
+                $deletedFolderIds = collectDescendantFolderIdsPhp($pdo, $userId, $deletedFolderIds);
+                $placeholders = implode(',', array_fill(0, count($deletedFolderIds), '?'));
+                $delStmt = $pdo->prepare("DELETE FROM folders WHERE user_id = ? AND id IN ($placeholders)");
+                $delStmt->execute(array_merge([$userId], $deletedFolderIds));
+                addTombstones($pdo, $userId, 'deleted_folder_tombstones', $deletedFolderIds, $opMs, $opAt);
+            }
             if (!empty($deletedNoteIds)) {
                 $placeholders = implode(',', array_fill(0, count($deletedNoteIds), '?'));
                 $delStmt = $pdo->prepare("DELETE FROM notes WHERE user_id = ? AND id IN ($placeholders)");
                 $delStmt->execute(array_merge([$userId], $deletedNoteIds));
+                addTombstones($pdo, $userId, 'deleted_note_tombstones', $deletedNoteIds, $opMs, $opAt);
             }
-            if (!empty($deletedFolderIds)) {
-                $placeholders = implode(',', array_fill(0, count($deletedFolderIds), '?'));
-                $delStmt = $pdo->prepare("DELETE FROM folders WHERE user_id = ? AND id IN ($placeholders)");
-                $delStmt->execute(array_merge([$userId], $deletedFolderIds));
-            }
+
+            $deletedNoteSet = array_flip($deletedNoteIds);
+            $deletedFolderSet = array_flip($deletedFolderIds);
+
+            $noteTombstones = loadTombstones($pdo, $userId, 'deleted_note_tombstones');
+            $folderTombstones = loadTombstones($pdo, $userId, 'deleted_folder_tombstones');
 
             // 0.1 同步常用目录设置 (frequentFolderIds)
             if ($clientFrequentFolderIds !== null) {
-                $cleanFreqIds = array_values(array_filter(array_map('strval', $clientFrequentFolderIds)));
+                $cleanFreqIds = array_values(array_filter(array_map('strval', $clientFrequentFolderIds), function($fid) use ($deletedFolderSet) {
+                    return $fid !== '' && !isset($deletedFolderSet[$fid]);
+                }));
                 $upsertFreq = $pdo->prepare("INSERT INTO user_settings (user_id, setting_key, setting_value, updated_at)
                     VALUES (:userId, 'frequent_folder_ids', :val, :updatedAt)
                     ON DUPLICATE KEY UPDATE setting_value = :uVal, updated_at = :uUpdatedAt");
@@ -605,7 +816,7 @@ switch ($action) {
                 $cloudNoteMap[$cn['id']] = $cn;
             }
 
-            // 3. 执行文件夹双向比对与更新 (仅在本地时间戳 >= 云端时间戳或云端不存在时更新)
+            // 3. 执行文件夹双向比对与更新 (尊重墓碑，仅在本地时间戳 >= 云端时间戳或云端未删除且不存在时更新)
             $upsertFolder = $pdo->prepare("INSERT INTO folders 
                 (id, user_id, parent_id, name, order_num, is_collapsed, color, created_at, updated_at, is_deleted) 
                 VALUES (:id, :userId, :parentId, :name, :orderNum, :isCollapsed, :color, :createdAt, :updatedAt, 0)
@@ -617,11 +828,18 @@ switch ($action) {
                     color = :uColor, 
                     updated_at = :uUpdatedAt");
 
+            $revivedFolderIds = [];
             foreach ($clientFolders as $cf) {
+                if (!is_array($cf) || empty($cf['id'])) continue;
                 $fid = (string)$cf['id'];
+                if (isset($deletedFolderSet[$fid])) continue;
                 $shouldUpdate = false;
                 
                 if (!isset($cloudFolderMap[$fid])) {
+                    if (isBlockedByTombstone($cf, $folderTombstones[$fid] ?? null, false)) {
+                        continue;
+                    }
+                    $revivedFolderIds[] = $fid;
                     $shouldUpdate = true;
                 } elseif (empty($cf['updatedAt'])) {
                     // Legacy client without folder updatedAt: allow update
@@ -654,8 +872,12 @@ switch ($action) {
                     ]);
                 }
             }
+            if (!empty($revivedFolderIds)) {
+                removeTombstones($pdo, $userId, 'deleted_folder_tombstones', $revivedFolderIds);
+                $folderTombstones = loadTombstones($pdo, $userId, 'deleted_folder_tombstones');
+            }
 
-            // 4. 执行笔记双向比对与更新 (仅在本地时间戳 >= 云端时间戳或云端不存在时更新)
+            // 4. 执行笔记双向比对与更新 (尊重墓碑，仅在本地时间戳 >= 云端时间戳或云端未删除且不存在时更新)
             $upsertNote = $pdo->prepare("INSERT INTO notes 
                 (id, user_id, folder_id, title, content, format, type, tags, is_starred, is_favorite, is_shared, is_deleted, created_at, updated_at) 
                 VALUES (:id, :userId, :folderId, :title, :content, :format, :type, :tags, :isStarred, :isFavorite, :isShared, :isDeleted, :createdAt, :updatedAt)
@@ -672,11 +894,18 @@ switch ($action) {
                     is_deleted = :uIsDeleted, 
                     updated_at = :uUpdatedAt");
 
+            $revivedNoteIds = [];
             foreach ($clientNotes as $cn) {
+                if (!is_array($cn) || empty($cn['id'])) continue;
                 $nid = (string)$cn['id'];
+                if (isset($deletedNoteSet[$nid])) continue;
                 $shouldUpdate = false;
 
                 if (!isset($cloudNoteMap[$nid])) {
+                    if (isBlockedByTombstone($cn, $noteTombstones[$nid] ?? null, true)) {
+                        continue;
+                    }
+                    $revivedNoteIds[] = $nid;
                     $shouldUpdate = true;
                 } else {
                     $cloudTs = strtotime($cloudNoteMap[$nid]['updated_at'] ?? '2000-01-01');
@@ -715,6 +944,10 @@ switch ($action) {
                         ':uUpdatedAt' => $cn['updatedAt'] ?? date('Y-m-d H:i:s'),
                     ]);
                 }
+            }
+            if (!empty($revivedNoteIds)) {
+                removeTombstones($pdo, $userId, 'deleted_note_tombstones', $revivedNoteIds);
+                $noteTombstones = loadTombstones($pdo, $userId, 'deleted_note_tombstones');
             }
 
             // 查询合并后的最新完整数据并返回给客户端
@@ -776,12 +1009,16 @@ switch ($action) {
                 'folders'              => $mergedFolders,
                 'notes'                => $mergedNotes,
                 'frequentFolderIds'    => $mergedFreqIds,
+                'deletedNotes'         => tombstoneIdsMap($noteTombstones),
+                'deletedFolders'       => tombstoneIdsMap($folderTombstones),
                 'foldersCount'         => count($mergedFolders),
                 'notesCount'           => count($mergedNotes),
                 'frequentFoldersCount' => count($mergedFreqIds),
             ]);
         } catch (Exception $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             jsonResponse(500, false, '全量同步失败: ' . $e->getMessage());
         }
         break;

@@ -207,7 +207,7 @@ export function useNotes() {
       if (e.key === STORAGE_KEY_NOTES && e.newValue) {
         try {
           const parsed = JSON.parse(e.newValue);
-          if (Array.isArray(parsed) && parsed.length > 0) {
+          if (Array.isArray(parsed)) {
             isApplyingRemoteSync.value = true;
             notes.value = parsed;
             await nextTick();
@@ -217,7 +217,7 @@ export function useNotes() {
       } else if (e.key === STORAGE_KEY_FOLDERS && e.newValue) {
         try {
           const parsed = JSON.parse(e.newValue);
-          if (Array.isArray(parsed) && parsed.length > 0) {
+          if (Array.isArray(parsed)) {
             isApplyingRemoteSync.value = true;
             folders.value = normalizeFolderOrders(parsed);
             await nextTick();
@@ -409,6 +409,8 @@ export function useNotes() {
   const pendingDeletedFolderIds = new Set<string>();
   const noteDirtySeq = new Map<string, number>();
   const folderDirtySeq = new Map<string, number>();
+  const noteDeletedSeq = new Map<string, number>();
+  const folderDeletedSeq = new Map<string, number>();
   let globalDirtySeq = 0;
 
   function persistPendingDeletions() {
@@ -429,6 +431,12 @@ export function useNotes() {
 
   async function executeAutoSyncBatch() {
     if (!isAutoSyncActive()) return;
+    if (!hasAnyPendingSyncItems()) {
+      if (cloudConfig.value.lastSyncedAt) {
+        syncStatus.value = 'synced';
+      }
+      return;
+    }
     if (isSyncing.value || isApplyingRemoteSync.value) {
       hasQueuedChangesDuringSync = true;
       return;
@@ -574,19 +582,26 @@ export function useNotes() {
           const deletedSet = new Set(pendingDeletedNoteIds);
           const inFlightModifiedNotes = new Map<string, Note>();
           notes.value.forEach((localN) => {
-            if ((noteDirtySeq.get(localN.id) || 0) > syncStartSeq) {
+            const dirtySeq = noteDirtySeq.get(localN.id) || 0;
+            const deletedSeq = noteDeletedSeq.get(localN.id) || 0;
+            if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
               inFlightModifiedNotes.set(localN.id, localN);
             }
           });
           const mergedIds = new Set<string>();
           const nextNotes = res.mergedNotes
-            .filter((n) => !deletedSet.has(n.id))
+            .filter((n) => {
+              if (deletedSet.has(n.id)) return false;
+              if ((noteDeletedSeq.get(n.id) || 0) > syncStartSeq) return false;
+              if (n.isDeleted && res.deletedNotes?.[n.id]) return false;
+              return true;
+            })
             .map((n) => {
               mergedIds.add(n.id);
               return inFlightModifiedNotes.get(n.id) || n;
             });
           inFlightModifiedNotes.forEach((localN, id) => {
-            if (!mergedIds.has(id) && !deletedSet.has(id)) {
+            if (!mergedIds.has(id) && !deletedSet.has(id) && (noteDeletedSeq.get(id) || 0) <= syncStartSeq) {
               nextNotes.unshift(localN);
             }
           });
@@ -597,19 +612,21 @@ export function useNotes() {
           const deletedFSet = new Set(pendingDeletedFolderIds);
           const inFlightModifiedFolders = new Map<string, Folder>();
           folders.value.forEach((localF) => {
-            if ((folderDirtySeq.get(localF.id) || 0) > syncStartSeq) {
+            const dirtySeq = folderDirtySeq.get(localF.id) || 0;
+            const deletedSeq = folderDeletedSeq.get(localF.id) || 0;
+            if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
               inFlightModifiedFolders.set(localF.id, localF);
             }
           });
           const mergedFIds = new Set<string>();
           const nextFolders = res.mergedFolders
-            .filter((f) => !deletedFSet.has(f.id))
+            .filter((f) => !deletedFSet.has(f.id) && (folderDeletedSeq.get(f.id) || 0) <= syncStartSeq)
             .map((f) => {
               mergedFIds.add(f.id);
               return inFlightModifiedFolders.get(f.id) || f;
             });
           inFlightModifiedFolders.forEach((localF, id) => {
-            if (!mergedFIds.has(id) && !deletedFSet.has(id)) {
+            if (!mergedFIds.has(id) && !deletedFSet.has(id) && (folderDeletedSeq.get(id) || 0) <= syncStartSeq) {
               nextFolders.push(localF);
             }
           });
@@ -678,24 +695,28 @@ export function useNotes() {
     if (options?.deletedNoteId) {
       pendingDeletedNoteIds.add(options.deletedNoteId);
       pendingModifiedNoteIds.delete(options.deletedNoteId);
+      noteDeletedSeq.set(options.deletedNoteId, ++globalDirtySeq);
       deletionsUpdated = true;
     }
     if (options?.deletedNoteIds && Array.isArray(options.deletedNoteIds)) {
       options.deletedNoteIds.forEach((id) => {
         pendingDeletedNoteIds.add(id);
         pendingModifiedNoteIds.delete(id);
+        noteDeletedSeq.set(id, ++globalDirtySeq);
       });
       deletionsUpdated = true;
     }
     if (options?.deletedFolderId) {
       pendingDeletedFolderIds.add(options.deletedFolderId);
       pendingModifiedFolderIds.delete(options.deletedFolderId);
+      folderDeletedSeq.set(options.deletedFolderId, ++globalDirtySeq);
       deletionsUpdated = true;
     }
     if (options?.deletedFolderIds && Array.isArray(options.deletedFolderIds)) {
       options.deletedFolderIds.forEach((id) => {
         pendingDeletedFolderIds.add(id);
         pendingModifiedFolderIds.delete(id);
+        folderDeletedSeq.set(id, ++globalDirtySeq);
       });
       deletionsUpdated = true;
     }
@@ -710,6 +731,11 @@ export function useNotes() {
 
     if (!isCloudConfigured()) {
       syncStatus.value = 'unconfigured';
+      return;
+    }
+
+    // Ignore pure local UI watcher triggers (like folder expand/collapse) when nothing is queued for sync
+    if (!options && !hasAnyPendingSyncItems()) {
       return;
     }
 
@@ -1531,13 +1557,14 @@ export function useNotes() {
       return;
     }
 
-    // 1. Remove from local memory & persist pending deletion IDs immediately
-    notes.value = notes.value.filter((n) => !n.isDeleted);
+    // 1. Record deletion sequence, remove from local memory & persist pending deletion IDs immediately
     trashIds.forEach((id) => {
       pendingDeletedNoteIds.add(id);
       pendingModifiedNoteIds.delete(id);
+      noteDeletedSeq.set(id, ++globalDirtySeq);
     });
     persistPendingDeletions();
+    notes.value = notes.value.filter((n) => !n.isDeleted);
 
     // 2. If auto-sync is active, sync permanent deletion immediately
     if (isAutoSyncActive()) {
@@ -1547,8 +1574,13 @@ export function useNotes() {
         if (res.success) {
           trashIds.forEach((id) => pendingDeletedNoteIds.delete(id));
           persistPendingDeletions();
+          if (!hasAnyPendingSyncItems() && autoSyncDebounceTimer) {
+            clearTimeout(autoSyncDebounceTimer);
+            autoSyncDebounceTimer = null;
+          }
           syncStatus.value = hasAnyPendingSyncItems() ? 'unsynced' : 'synced';
           cloudConfig.value.lastSyncedAt = Date.now();
+          lastVisibilitySyncAt = Date.now();
           showToast('回收站已清空，云端数据已同步彻底删除');
         } else {
           triggerAutoSyncDebounced();
@@ -2038,7 +2070,14 @@ export function useNotes() {
       return { success: false, message: res.message || '获取云端数据失败' };
     }
 
-    const diff = calculateSyncDiff(notes.value, folders.value, res.data.notes, res.data.folders);
+    const diff = calculateSyncDiff(
+      notes.value,
+      folders.value,
+      res.data.notes,
+      res.data.folders,
+      res.data.deletedNotes,
+      res.data.deletedFolders
+    );
     syncDiff.value = diff;
     return { success: true, message: '差异检测完成', diff };
   }
@@ -2120,19 +2159,26 @@ export function useNotes() {
             const deletedSet = new Set(pendingDeletedNoteIds);
             const inFlightModifiedNotes = new Map<string, Note>();
             notes.value.forEach((localN) => {
-              if ((noteDirtySeq.get(localN.id) || 0) > syncStartSeq) {
+              const dirtySeq = noteDirtySeq.get(localN.id) || 0;
+              const deletedSeq = noteDeletedSeq.get(localN.id) || 0;
+              if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
                 inFlightModifiedNotes.set(localN.id, localN);
               }
             });
             const mergedIds = new Set<string>();
             const nextNotes = res.mergedNotes
-              .filter((n) => !deletedSet.has(n.id))
+              .filter((n) => {
+                if (deletedSet.has(n.id)) return false;
+                if ((noteDeletedSeq.get(n.id) || 0) > syncStartSeq) return false;
+                if (n.isDeleted && res.deletedNotes?.[n.id]) return false;
+                return true;
+              })
               .map((n) => {
                 mergedIds.add(n.id);
                 return inFlightModifiedNotes.get(n.id) || n;
               });
             inFlightModifiedNotes.forEach((localN, id) => {
-              if (!mergedIds.has(id) && !deletedSet.has(id)) {
+              if (!mergedIds.has(id) && !deletedSet.has(id) && (noteDeletedSeq.get(id) || 0) <= syncStartSeq) {
                 nextNotes.unshift(localN);
               }
             });
@@ -2143,19 +2189,21 @@ export function useNotes() {
             const deletedFSet = new Set(pendingDeletedFolderIds);
             const inFlightModifiedFolders = new Map<string, Folder>();
             folders.value.forEach((localF) => {
-              if ((folderDirtySeq.get(localF.id) || 0) > syncStartSeq) {
+              const dirtySeq = folderDirtySeq.get(localF.id) || 0;
+              const deletedSeq = folderDeletedSeq.get(localF.id) || 0;
+              if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
                 inFlightModifiedFolders.set(localF.id, localF);
               }
             });
             const mergedFIds = new Set<string>();
             const nextFolders = res.mergedFolders
-              .filter((f) => !deletedFSet.has(f.id))
+              .filter((f) => !deletedFSet.has(f.id) && (folderDeletedSeq.get(f.id) || 0) <= syncStartSeq)
               .map((f) => {
                 mergedFIds.add(f.id);
                 return inFlightModifiedFolders.get(f.id) || f;
               });
             inFlightModifiedFolders.forEach((localF, id) => {
-              if (!mergedFIds.has(id) && !deletedFSet.has(id)) {
+              if (!mergedFIds.has(id) && !deletedFSet.has(id) && (folderDeletedSeq.get(id) || 0) <= syncStartSeq) {
                 nextFolders.push(localF);
               }
             });
