@@ -7,9 +7,7 @@ import {
   FolderOpen,
   ChevronDown,
   ChevronRight,
-  Share2,
   Star,
-  Box,
   Trash2,
   FolderPlus,
   Clock,
@@ -35,9 +33,7 @@ const props = defineProps<{
   currentView: ViewType;
   activeFolderId: string;
   getFolderNoteCount: (id: string) => number;
-  sharedCount: number;
   starredCount: number;
-  favoriteCount: number;
   trashCount: number;
 }>();
 
@@ -766,24 +762,6 @@ onUnmounted(() => {
           <span class="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.2 rounded font-medium">动态</span>
         </div>
 
-        <!-- 我的分享 -->
-        <div
-          id="nav-shared"
-          @click="emit('selectView', 'shared')"
-          :class="[
-            'flex items-center justify-between px-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-colors',
-            currentView === 'shared'
-              ? 'bg-[#e8f1fd] text-blue-600 font-medium'
-              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-          ]"
-        >
-          <div class="flex items-center gap-2">
-            <Share2 class="w-4 h-4 text-gray-400" :class="{ 'text-blue-600': currentView === 'shared' }" />
-            <span class="text-[13px]">我的分享</span>
-          </div>
-          <span v-if="sharedCount > 0" class="text-xs text-gray-400">{{ sharedCount }}</span>
-        </div>
-
         <!-- 我的标星 -->
         <div
           id="nav-starred"
@@ -800,24 +778,6 @@ onUnmounted(() => {
             <span class="text-[13px]">我的标星</span>
           </div>
           <span v-if="starredCount > 0" class="text-xs text-gray-400">{{ starredCount }}</span>
-        </div>
-
-        <!-- 我的收藏 -->
-        <div
-          id="nav-favorite"
-          @click="emit('selectView', 'favorite')"
-          :class="[
-            'flex items-center justify-between px-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-colors',
-            currentView === 'favorite'
-              ? 'bg-[#e8f1fd] text-blue-600 font-medium'
-              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-          ]"
-        >
-          <div class="flex items-center gap-2">
-            <Box class="w-4 h-4 text-gray-400" :class="{ 'text-blue-600': currentView === 'favorite' }" />
-            <span class="text-[13px]">我的收藏</span>
-          </div>
-          <span v-if="favoriteCount > 0" class="text-xs text-gray-400">{{ favoriteCount }}</span>
         </div>
 
         <!-- 我的回收站 -->

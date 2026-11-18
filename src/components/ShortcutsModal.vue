@@ -73,11 +73,9 @@ const shortcutGroups = computed(() => [
     title: '列表与视图导航',
     shortcuts: [
       { keys: [altKey.value, '1'], desc: '切换到「我的笔记」' },
-      { keys: [altKey.value, '2'], desc: '切换到「我的分享」' },
-      { keys: [altKey.value, '3'], desc: '切换到「我的标星」' },
-      { keys: [altKey.value, '4'], desc: '切换到「我的收藏」' },
-      { keys: [altKey.value, '5'], desc: '切换到「我的回收站」' },
-      { keys: [altKey.value, '6'], desc: '切换到「文件时间线」' },
+      { keys: [altKey.value, '2'], desc: '切换到「我的标星」' },
+      { keys: [altKey.value, '3'], desc: '切换到「我的回收站」' },
+      { keys: [altKey.value, '4'], desc: '切换到「文件时间线」' },
     ],
   },
 ]);

@@ -6,8 +6,6 @@ import {
   X,
   Save,
   Star,
-  Box,
-  Share2,
   Download,
   Tag as TagIcon,
   Folder as FolderIcon,
@@ -25,24 +23,31 @@ import {
   ChevronDown,
   ChevronUp,
   Replace,
-  CaseSensitive
+  CaseSensitive,
+  FolderOpen
 } from 'lucide-vue-next';
 import { Note, Folder } from '../types';
 import { compareFolders } from '../utils/folderSort';
+import FileFormatIcon from './icons/FileFormatIcon.vue';
 
-const props = defineProps<{
-  note: Note;
-  folders: Folder[];
-  mode?: 'split' | 'edit' | 'preview';
-}>();
+const props = withDefaults(
+  defineProps<{
+    note: Note;
+    folders: Folder[];
+    mode?: 'split' | 'edit' | 'preview';
+    isActive?: boolean;
+  }>(),
+  {
+    isActive: true,
+  }
+);
 
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'updateNote', id: string, updates: Partial<Note>): void;
   (e: 'toggleStar', noteId: string): void;
-  (e: 'toggleFavorite', noteId: string): void;
-  (e: 'openShare', note: Note): void;
   (e: 'exportNote', note: Note): void;
+  (e: 'navigateFolder', folderId: string): void;
 }>();
 
 const isMac = computed(() => {
@@ -54,7 +59,7 @@ const localContent = ref(props.note.content || '');
 const localFolderId = ref(props.note.folderId);
 const localTags = ref<string[]>([...props.note.tags]);
 const newTagInput = ref('');
-const isFullscreen = ref(true);
+const isFullscreen = ref(false);
 const isCopied = ref(false);
 const saveStatus = ref('已自动同步');
 
@@ -585,8 +590,27 @@ watch(
   }
 );
 
+watch(
+  () => props.note.title,
+  (newTitle) => {
+    if (newTitle !== localTitle.value) {
+      localTitle.value = newTitle;
+    }
+  }
+);
+
+watch(
+  () => props.note.folderId,
+  (newFolderId) => {
+    if (newFolderId !== localFolderId.value) {
+      localFolderId.value = newFolderId;
+    }
+  }
+);
+
 // Keyboard shortcuts for in-editor actions
 function handleEditorKeyDown(e: KeyboardEvent) {
+  if (props.isActive === false) return;
   const isMod = e.metaKey || e.ctrlKey;
 
   // Ctrl/Cmd + F: In-editor search
@@ -597,11 +621,18 @@ function handleEditorKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  // Esc: Close search bar
-  if (e.key === 'Escape' && isSearchOpen.value) {
-    e.preventDefault();
-    closeSearch();
-    return;
+  // Esc: Close search bar or exit focus fullscreen
+  if (e.key === 'Escape') {
+    if (isSearchOpen.value) {
+      e.preventDefault();
+      closeSearch();
+      return;
+    }
+    if (isFullscreen.value) {
+      e.preventDefault();
+      isFullscreen.value = false;
+      return;
+    }
   }
 
   // Ctrl/Cmd + S: Save
@@ -642,61 +673,52 @@ onUnmounted(() => {
 
 <template>
   <div
-    id="note-editor-modal-container"
-    class="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center animate-in fade-in duration-150"
-    :class="isFullscreen ? 'p-0' : 'p-2 sm:p-4'"
+    :class="[
+      'flex flex-col bg-white overflow-hidden transition-all duration-150',
+      isFullscreen
+        ? 'fixed inset-0 z-50 w-screen h-screen'
+        : 'w-full h-full'
+    ]"
   >
-    <div
-      id="note-editor-dialog"
-      :class="[
-        'bg-white flex flex-col overflow-hidden border border-gray-200 transition-all duration-200',
-        isFullscreen
-          ? 'w-full h-full rounded-none shadow-none'
-          : 'w-full max-w-6xl h-[92vh] rounded-2xl shadow-2xl'
-      ]"
-    >
-      <!-- Editor Top Bar -->
-      <div class="h-14 px-3 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none">
-        <!-- Close button, Title & Folder info -->
-        <div class="flex items-center gap-2.5 sm:gap-3 flex-1 mr-3 sm:mr-4 min-w-0">
-          <!-- Close Editor Button at top-left corner -->
-          <button
-            id="btn-close-editor"
-            @click="emit('close')"
-            class="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer shrink-0"
-            title="关闭编辑器"
-          >
-            <X class="w-5 h-5" />
-          </button>
+    <!-- Document Tab Header Toolbar -->
+    <div class="h-12 px-4 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none gap-3">
+      <!-- Left: Format Icon + Document Title + Folder Location -->
+      <div class="flex items-center gap-2.5 flex-1 min-w-0">
+        <FileFormatIcon format="markdown" size="sm" class="shrink-0" />
 
-          <div class="h-4 w-px bg-gray-200 shrink-0"></div>
+        <input
+          id="editor-note-title-input"
+          v-model="localTitle"
+          @input="handleTitleChange"
+          placeholder="输入笔记标题..."
+          class="text-sm sm:text-base font-bold text-gray-900 placeholder-gray-300 border border-transparent hover:border-gray-200 focus:border-blue-300 focus:bg-slate-50/60 rounded-md px-2 py-1 outline-none bg-transparent flex-1 min-w-[120px] truncate select-text transition-colors"
+        />
 
-          <div class="w-7 h-7 rounded bg-[#ea580c] text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
-            <span>M↓</span>
-          </div>
-
-          <input
-            id="editor-note-title-input"
-            v-model="localTitle"
-            @input="handleTitleChange"
-            placeholder="输入笔记标题..."
-            class="text-base sm:text-lg font-bold text-gray-900 placeholder-gray-300 border-none outline-none focus:ring-0 bg-transparent flex-1 truncate select-text"
-          />
-
-          <!-- Folder Picker -->
-          <div class="hidden md:flex items-center gap-1.5 bg-gray-50 border border-gray-200 px-2.5 py-1 rounded-md text-xs text-gray-600">
-            <FolderIcon class="w-3.5 h-3.5 text-amber-500" />
+        <!-- Folder Location Picker & Quick Locate -->
+        <div class="hidden md:flex items-center bg-gray-50 border border-gray-200/80 rounded-md text-xs text-gray-600 shrink-0 overflow-hidden">
+          <div class="flex items-center gap-1 pl-2 pr-1 py-1">
+            <FolderIcon class="w-3.5 h-3.5 text-amber-500 shrink-0" />
             <select
               :value="localFolderId"
               @change="handleFolderChange"
-              class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer"
+              class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer max-w-[140px] truncate"
+              title="更改所属文件夹"
             >
               <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
                 {{ f.prefix }}📁 {{ f.name }}
               </option>
             </select>
           </div>
+          <button
+            type="button"
+            @click="emit('navigateFolder', localFolderId)"
+            class="px-1.5 py-1 border-l border-gray-200/80 text-gray-400 hover:text-blue-600 hover:bg-blue-50/70 transition-colors cursor-pointer"
+            title="在文件列表中定位此目录"
+          >
+            <FolderOpen class="w-3.5 h-3.5" />
+          </button>
         </div>
+      </div>
 
         <!-- Mode Switches & Actions -->
         <div class="flex items-center gap-2 shrink-0">
@@ -764,31 +786,13 @@ onUnmounted(() => {
 
           <div class="h-4 w-px bg-gray-200 mx-0.5"></div>
 
-          <!-- Star & Favorite Buttons -->
+          <!-- Star Button -->
           <button
             @click="emit('toggleStar', note.id)"
             class="p-1.5 text-gray-400 hover:text-amber-500 hover:bg-gray-50 rounded-md transition-colors cursor-pointer"
             title="标星"
           >
             <Star class="w-4 h-4" :class="note.isStarred ? 'text-amber-500 fill-amber-500' : ''" />
-          </button>
-
-          <button
-            @click="emit('toggleFavorite', note.id)"
-            class="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-gray-50 rounded-md transition-colors cursor-pointer"
-            title="收藏"
-          >
-            <Box class="w-4 h-4" :class="note.isFavorite ? 'text-indigo-600' : ''" />
-          </button>
-
-          <!-- Share Button -->
-          <button
-            @click="emit('openShare', note)"
-            class="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors text-xs flex items-center gap-1 font-medium cursor-pointer"
-            title="分享"
-          >
-            <Share2 class="w-4 h-4 text-blue-600" />
-            <span class="hidden sm:inline text-blue-600">分享</span>
           </button>
 
           <!-- Top Bar Universal Copy Content Button -->
@@ -822,11 +826,11 @@ onUnmounted(() => {
             <kbd class="text-[9px] font-mono text-emerald-500 hidden sm:inline">{{ isMac ? '⌘S' : 'Ctrl+S' }}</kbd>
           </button>
 
-          <!-- Fullscreen Toggle Button -->
+          <!-- Focus Fullscreen Toggle Button -->
           <button
             @click="isFullscreen = !isFullscreen"
             class="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded-md transition-colors cursor-pointer"
-            :title="isFullscreen ? '还原窗口' : '最大化窗口'"
+            :title="isFullscreen ? '退出专注全屏 (Esc)' : '专注全屏模式'"
           >
             <Minimize2 v-if="isFullscreen" class="w-4 h-4" />
             <Maximize2 v-else class="w-4 h-4" />
@@ -940,7 +944,7 @@ onUnmounted(() => {
           </div>
         </transition>
 
-        <div ref="vditorContainerRef" id="vditor-editor-instance" class="w-full flex-1 overflow-hidden"></div>
+        <div ref="vditorContainerRef" class="vditor-editor-instance w-full flex-1 overflow-hidden"></div>
       </div>
 
       <!-- Editor Footer: Tags & Status -->
@@ -973,18 +977,17 @@ onUnmounted(() => {
           </span>
         </div>
       </div>
-    </div>
   </div>
 </template>
 
 <style>
 /* Vditor Container Custom Styling & Integration */
-#vditor-editor-instance {
+.vditor-editor-instance {
   border: none !important;
   border-radius: 0 !important;
 }
 
-#vditor-editor-instance .vditor-toolbar {
+.vditor-editor-instance .vditor-toolbar {
   border-bottom: 1px solid #f1f5f9 !important;
   background-color: #f8fafc !important;
   padding: 4px 12px !important;
@@ -993,7 +996,7 @@ onUnmounted(() => {
 }
 
 /* Tooltips: 强制将工具栏悬浮提示向下弹出，避免被顶部 Editor Top Bar 遮挡或被父容器 overflow 裁切 */
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped::after {
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped::after {
   top: 100% !important;
   bottom: auto !important;
   margin-top: 6px !important;
@@ -1013,7 +1016,7 @@ onUnmounted(() => {
   z-index: 99999 !important;
 }
 
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped::before {
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped::before {
   top: auto !important;
   bottom: -6px !important;
   right: 50% !important;
@@ -1028,55 +1031,55 @@ onUnmounted(() => {
 }
 
 /* 靠右侧的工具栏按钮提示框向左对齐，防止超出右侧屏幕边界 */
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__nw::after,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__sw::after,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__w::after {
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__nw::after,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__sw::after,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__w::after {
   right: 0 !important;
   left: auto !important;
   transform: none !important;
 }
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__nw::before,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__sw::before,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__w::before {
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__nw::before,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__sw::before,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__w::before {
   right: 12px !important;
   left: auto !important;
   margin-right: 0 !important;
 }
 
 /* 靠左侧的工具栏按钮提示框向右对齐 */
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__ne::after,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__se::after,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__e::after {
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__ne::after,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__se::after,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__e::after {
   left: 0 !important;
   right: auto !important;
   transform: none !important;
 }
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__ne::before,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__se::before,
-#vditor-editor-instance .vditor-toolbar .vditor-tooltipped__e::before {
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__ne::before,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__se::before,
+.vditor-editor-instance .vditor-toolbar .vditor-tooltipped__e::before {
   left: 12px !important;
   right: auto !important;
   margin-right: 0 !important;
 }
 
-#vditor-editor-instance .vditor-content {
+.vditor-editor-instance .vditor-content {
   background-color: #ffffff !important;
 }
 
 /* Ensure preview mode and all editor text is fully selectable and copyable */
-#vditor-editor-instance .vditor,
-#vditor-editor-instance .vditor-reset,
-#vditor-editor-instance .vditor-preview,
-#vditor-editor-instance .vditor-preview__action,
-#vditor-editor-instance .vditor-sv,
-#vditor-editor-instance .vditor-ir,
-#vditor-editor-instance .vditor-wysiwyg,
-#vditor-editor-instance .vditor-reset * {
+.vditor-editor-instance .vditor,
+.vditor-editor-instance .vditor-reset,
+.vditor-editor-instance .vditor-preview,
+.vditor-editor-instance .vditor-preview__action,
+.vditor-editor-instance .vditor-sv,
+.vditor-editor-instance .vditor-ir,
+.vditor-editor-instance .vditor-wysiwyg,
+.vditor-editor-instance .vditor-reset * {
   user-select: text !important;
   -webkit-user-select: text !important;
 }
 
-#vditor-editor-instance .vditor-reset {
+.vditor-editor-instance .vditor-reset {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
   font-size: 15px !important;
   line-height: 1.7 !important;
@@ -1086,42 +1089,42 @@ onUnmounted(() => {
 }
 
 /* Code block copy icon enhancement */
-#vditor-editor-instance .vditor-copy {
+.vditor-editor-instance .vditor-copy {
   cursor: pointer !important;
   user-select: none !important;
   opacity: 0.75;
   transition: opacity 0.15s ease-in-out;
 }
-#vditor-editor-instance .vditor-copy:hover {
+.vditor-editor-instance .vditor-copy:hover {
   opacity: 1;
 }
 
-#vditor-editor-instance .vditor-toolbar__item {
+.vditor-editor-instance .vditor-toolbar__item {
   color: #475569 !important;
 }
 
-#vditor-editor-instance .vditor-toolbar__item:hover {
+.vditor-editor-instance .vditor-toolbar__item:hover {
   color: #059669 !important;
   background-color: #ecfdf5 !important;
 }
 
-#vditor-editor-instance .vditor-toolbar__item--current {
+.vditor-editor-instance .vditor-toolbar__item--current {
   color: #059669 !important;
   background-color: #d1fae5 !important;
 }
 
-#vditor-editor-instance .vditor-panel {
+.vditor-editor-instance .vditor-panel {
   z-index: 50 !important;
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
   border: 1px solid #e2e8f0 !important;
 }
 
-#vditor-editor-instance .vditor-outline {
+.vditor-editor-instance .vditor-outline {
   border-right: 1px solid #e2e8f0 !important;
   background-color: #f8fafc !important;
 }
 
-#vditor-editor-instance .vditor-outline__item--current {
+.vditor-editor-instance .vditor-outline__item--current {
   background-color: #ecfdf5 !important;
   color: #059669 !important;
   font-weight: 600 !important;

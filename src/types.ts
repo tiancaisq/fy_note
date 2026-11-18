@@ -16,8 +16,8 @@ export interface Note {
   createdAt: string; // e.g. '2025-12-30 10:06'
   updatedAt: string;
   isStarred: boolean;
-  isFavorite: boolean;
-  isShared: boolean;
+  isFavorite?: boolean;
+  isShared?: boolean;
   shareUrl?: string;
   isDeleted: boolean;
   deletedAt?: string;
@@ -27,14 +27,13 @@ export interface Note {
   previewSvg?: string; // Optional cached SVG preview for fast thumbnail display
 }
 
-export type ViewType = 'folder' | 'shared' | 'starred' | 'favorite' | 'trash' | 'search' | 'timeline';
+export type ViewType = 'folder' | 'starred' | 'trash' | 'search' | 'timeline';
 
 export type SortField = 'createdAt' | 'updatedAt' | 'title';
 export type SortOrder = 'desc' | 'asc';
 
 export interface FilterOptions {
   starredOnly: boolean;
-  favoriteOnly: boolean;
   format: 'all' | 'markdown' | 'mindmap' | 'drawio' | 'text';
   tag?: string;
 }

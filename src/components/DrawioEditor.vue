@@ -4,8 +4,6 @@ import {
   X,
   Save,
   Star,
-  Box,
-  Share2,
   Download,
   Folder as FolderIcon,
   Maximize2,
@@ -28,7 +26,7 @@ import {
   Redo2,
   Sliders,
   FileImage,
-  ArrowLeft
+  FolderOpen
 } from 'lucide-vue-next';
 import { Note, Folder } from '../types';
 import { compareFolders } from '../utils/folderSort';
@@ -46,9 +44,11 @@ const props = withDefaults(
   defineProps<{
     note: Note;
     folders?: Folder[];
+    isActive?: boolean;
   }>(),
   {
     folders: () => [],
+    isActive: true,
   }
 );
 
@@ -56,8 +56,7 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'updateNote', id: string, updates: Partial<Note>): void;
   (e: 'toggleStar', noteId: string): void;
-  (e: 'toggleFavorite', noteId: string): void;
-  (e: 'openShare', note: Note): void;
+  (e: 'navigateFolder', folderId: string): void;
 }>();
 
 const isMac = computed(() => {
@@ -69,7 +68,7 @@ const localTitle = ref(props.note.title || '无标题图表');
 const localFolderId = ref(props.note.folderId);
 const localTags = ref<string[]>([...(props.note.tags || [])]);
 const newTagInput = ref('');
-const isFullscreen = ref(true);
+const isFullscreen = ref(false);
 const saveStatus = ref<'saved' | 'saving' | 'ready'>('saved');
 const lastSavedTime = ref<string>('');
 
@@ -235,6 +234,10 @@ function saveDiagram(newXml?: string) {
 
 // Handle Draw.io postMessage protocol
 function handleWindowMessage(event: MessageEvent) {
+  // Only accept messages from this editor's own Draw.io iframe
+  if (iframeRef.value?.contentWindow && event.source !== iframeRef.value.contentWindow) {
+    return;
+  }
   // Only accept string data from postMessage
   if (typeof event.data !== 'string') return;
 
@@ -472,15 +475,40 @@ function handleClickOutside(e: MouseEvent) {
 
 // Keyboard shortcuts inside Drawio Editor
 function handleKeyDown(e: KeyboardEvent) {
+  if (props.isActive === false) return;
   const isMod = e.metaKey || e.ctrlKey;
   if (isMod && e.key.toLowerCase() === 's') {
     e.preventDefault();
     saveDiagram();
   }
-  if (e.key === 'Escape' && isFullscreen.value && !isTemplateModalOpen.value) {
-    // If modal is open, let modal close first
+  if (e.key === 'Escape') {
+    if (isTemplateModalOpen.value) {
+      e.preventDefault();
+      isTemplateModalOpen.value = false;
+    } else if (isFullscreen.value) {
+      e.preventDefault();
+      isFullscreen.value = false;
+    }
   }
 }
+
+watch(
+  () => props.note.title,
+  (newTitle) => {
+    if (newTitle && newTitle !== localTitle.value) {
+      localTitle.value = newTitle;
+    }
+  }
+);
+
+watch(
+  () => props.note.folderId,
+  (newFolderId) => {
+    if (newFolderId !== localFolderId.value) {
+      localFolderId.value = newFolderId;
+    }
+  }
+);
 
 onMounted(() => {
   window.addEventListener('message', handleWindowMessage);
@@ -500,69 +528,62 @@ onUnmounted(() => {
 
 <template>
   <div
-    id="drawio-editor-container"
     :class="[
-      'fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center transition-all duration-200 select-none',
-      isFullscreen ? 'p-0' : 'p-3 sm:p-6'
+      'flex flex-col bg-white overflow-hidden select-none transition-all duration-150',
+      isFullscreen
+        ? 'fixed inset-0 z-50 w-screen h-screen'
+        : 'w-full h-full'
     ]"
   >
-    <div
-      :class="[
-        'bg-white flex flex-col overflow-hidden shadow-2xl transition-all duration-200 border border-gray-200/80',
-        isFullscreen ? 'w-screen h-screen rounded-none' : 'w-full max-w-[96vw] h-[94vh] rounded-2xl'
-      ]"
-    >
-      <!-- Top Navigation & Action Header -->
-      <header class="h-14 px-4 bg-white border-b border-gray-200 flex items-center justify-between shrink-0 z-20 shadow-2xs">
-        <!-- Left: Back Button + Format Badge + Title Input -->
-        <div class="flex items-center gap-3 min-w-0 flex-1">
-          <!-- Close / Back Button -->
-          <button
-            id="drawio-close-btn"
-            @click="emit('close')"
-            class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer shrink-0"
-            title="保存并返回 (Esc)"
-          >
-            <ArrowLeft class="w-4 h-4 text-gray-500" />
-            <span class="hidden sm:inline">返回</span>
-          </button>
-
-          <div class="h-4 w-px bg-gray-200 shrink-0"></div>
-
+      <!-- Document Tab Header Toolbar -->
+      <header class="h-12 px-4 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 z-20 gap-3">
+        <!-- Left: Format Icon + Badge + Title Input + Folder Location -->
+        <div class="flex items-center gap-2.5 min-w-0 flex-1">
           <!-- Drawio Format Icon -->
           <div class="flex items-center gap-1.5 shrink-0">
-            <DrawioIcon size="xs" />
-            <span class="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200/60 hidden md:inline">
-              Draw.io 流程图
+            <DrawioIcon size="sm" />
+            <span class="text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60 hidden md:inline">
+              Draw.io
             </span>
           </div>
 
           <!-- Note Title Input -->
-          <div class="relative flex-1 max-w-sm sm:max-w-md">
+          <div class="relative flex-1 min-w-[120px] max-w-sm sm:max-w-md">
             <input
               id="drawio-title-input"
               v-model="localTitle"
               @blur="handleTitleBlur"
               @keydown.enter="($event.target as HTMLElement)?.blur()"
               type="text"
-              class="w-full h-8 px-2.5 text-sm font-bold text-gray-800 bg-transparent hover:bg-gray-50 focus:bg-white border border-transparent hover:border-gray-200 focus:border-amber-500 rounded-lg outline-none transition-all truncate"
+              class="w-full h-8 px-2 text-sm sm:text-base font-bold text-gray-900 placeholder-gray-300 bg-transparent hover:bg-gray-50 focus:bg-slate-50/60 border border-transparent hover:border-gray-200 focus:border-amber-400 rounded-md outline-none transition-colors truncate select-text"
               placeholder="请输入图表名称..."
             />
           </div>
 
-          <!-- Folder Select -->
-          <div class="hidden lg:flex items-center gap-1 text-xs text-gray-500 shrink-0">
-            <FolderIcon class="w-3.5 h-3.5 text-amber-500 shrink-0" />
-            <select
-              id="drawio-folder-select"
-              v-model="localFolderId"
-              @change="handleFolderChange"
-              class="h-7 px-2 text-xs bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-md text-gray-700 outline-none focus:border-amber-500 cursor-pointer max-w-[130px] truncate"
+          <!-- Folder Location Picker & Quick Locate -->
+          <div class="hidden lg:flex items-center bg-gray-50 border border-gray-200/80 rounded-md text-xs text-gray-600 shrink-0 overflow-hidden">
+            <div class="flex items-center gap-1 pl-2 pr-1 py-1">
+              <FolderIcon class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <select
+                id="drawio-folder-select"
+                v-model="localFolderId"
+                @change="handleFolderChange"
+                class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer max-w-[130px] truncate"
+                title="更改所属文件夹"
+              >
+                <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
+                  {{ f.prefix }}📁 {{ f.name }}
+                </option>
+              </select>
+            </div>
+            <button
+              type="button"
+              @click="emit('navigateFolder', localFolderId)"
+              class="px-1.5 py-1 border-l border-gray-200/80 text-gray-400 hover:text-amber-600 hover:bg-amber-50/70 transition-colors cursor-pointer"
+              title="在文件列表中定位此目录"
             >
-              <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
-                {{ f.prefix }}📁 {{ f.name }}
-              </option>
-            </select>
+              <FolderOpen class="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
@@ -728,7 +749,7 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- Star & Favorite Buttons -->
+          <!-- Star Button -->
           <button
             id="drawio-star-btn"
             @click="emit('toggleStar', props.note.id)"
@@ -743,30 +764,6 @@ onUnmounted(() => {
             <Star class="w-3.5 h-3.5" :fill="props.note.isStarred ? 'currentColor' : 'none'" />
           </button>
 
-          <button
-            id="drawio-favorite-btn"
-            @click="emit('toggleFavorite', props.note.id)"
-            :class="[
-              'p-2 rounded-lg border transition-colors cursor-pointer',
-              props.note.isFavorite
-                ? 'bg-blue-50 border-blue-300 text-blue-500'
-                : 'border-gray-200 text-gray-400 hover:text-blue-500 hover:bg-gray-50'
-            ]"
-            title="收藏图表"
-          >
-            <Box class="w-3.5 h-3.5" :fill="props.note.isFavorite ? 'currentColor' : 'none'" />
-          </button>
-
-          <!-- Share Button -->
-          <button
-            id="drawio-share-btn"
-            @click="emit('openShare', props.note)"
-            class="p-2 border border-gray-200 text-gray-600 hover:text-blue-600 hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
-            title="分享图表"
-          >
-            <Share2 class="w-3.5 h-3.5" />
-          </button>
-
           <!-- Save Button / Status Indicator -->
           <button
             id="drawio-save-btn"
@@ -777,77 +774,18 @@ onUnmounted(() => {
             <span class="hidden sm:inline">保存</span>
           </button>
 
-          <!-- Fullscreen Toggle Button -->
+          <!-- Focus Fullscreen Toggle Button -->
           <button
             id="drawio-fullscreen-btn"
             @click="isFullscreen = !isFullscreen"
-            class="p-2 border border-gray-200 text-gray-500 hover:text-gray-800 hover:bg-gray-50 rounded-lg transition-colors cursor-pointer hidden md:flex"
-            :title="isFullscreen ? '退出全屏' : '全屏显示'"
+            class="p-1.5 border border-gray-200 text-gray-500 hover:text-gray-800 hover:bg-gray-50 rounded-lg transition-colors cursor-pointer hidden md:flex"
+            :title="isFullscreen ? '退出专注全屏 (Esc)' : '专注全屏模式'"
           >
-            <Minimize2 v-if="isFullscreen" class="w-3.5 h-3.5" />
-            <Maximize2 v-else class="w-3.5 h-3.5" />
-          </button>
-
-          <!-- Close Modal X -->
-          <button
-            id="drawio-modal-close-x"
-            @click="emit('close')"
-            class="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
-            title="关闭 (Esc)"
-          >
-            <X class="w-4 h-4" />
+            <Minimize2 v-if="isFullscreen" class="w-4 h-4" />
+            <Maximize2 v-else class="w-4 h-4" />
           </button>
         </div>
       </header>
-
-      <!-- Sub-Bar: Tags & Real-time Save Status -->
-      <div class="h-9 px-4 bg-gray-50/80 border-b border-gray-200/70 flex items-center justify-between text-xs text-gray-500 shrink-0">
-        <!-- Tags Bar -->
-        <div class="flex items-center gap-1.5 overflow-x-auto py-1">
-          <TagIcon class="w-3.5 h-3.5 text-gray-400 shrink-0" />
-          <span
-            v-for="t in localTags"
-            :key="t"
-            class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 text-[11px] font-medium shrink-0"
-          >
-            {{ t }}
-            <button @click="removeTag(t)" class="hover:text-red-500 cursor-pointer ml-0.5 text-xs">×</button>
-          </span>
-          <input
-            v-model="newTagInput"
-            @keydown.enter.prevent="addTag"
-            @blur="addTag"
-            type="text"
-            placeholder="+ 添加标签 (回车)"
-            class="h-6 px-1.5 text-[11px] bg-transparent hover:bg-white focus:bg-white border border-transparent focus:border-amber-300 rounded outline-none transition-all w-24 focus:w-32"
-          />
-        </div>
-
-        <!-- Save Indicator & Iframe Status -->
-        <div class="flex items-center gap-3 shrink-0">
-          <div class="flex items-center gap-1.5 text-[11px]">
-            <span
-              :class="[
-                'w-2 h-2 rounded-full',
-                saveStatus === 'saving' ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'
-              ]"
-            ></span>
-            <span class="text-gray-500">
-              {{ saveStatus === 'saving' ? '正在同步图表...' : `已自动保存 (${lastSavedTime || '刚刚'})` }}
-            </span>
-          </div>
-
-          <button
-            v-if="activeViewTab === 'editor'"
-            @click="reloadIframe"
-            class="text-[11px] text-gray-400 hover:text-amber-600 flex items-center gap-1 cursor-pointer transition-colors"
-            title="刷新 Draw.io 画布连接"
-          >
-            <RefreshCw class="w-3 h-3" :class="{'animate-spin': !isIframeReady && !iframeError}" />
-            <span class="hidden sm:inline">重新加载</span>
-          </button>
-        </div>
-      </div>
 
       <!-- Main Canvas Workspace -->
       <main class="flex-1 relative bg-slate-50 overflow-hidden">
@@ -980,7 +918,55 @@ onUnmounted(() => {
           ></textarea>
         </div>
       </main>
-    </div>
+
+      <!-- Bottom Document Footer: Tags & Real-time Save Status -->
+      <div class="h-10 px-4 sm:px-6 bg-white border-t border-gray-100 flex items-center justify-between text-xs text-gray-500 shrink-0 select-none gap-3">
+        <!-- Tags Bar -->
+        <div class="flex items-center gap-1.5 overflow-x-auto py-1 mr-4">
+          <TagIcon class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+          <span
+            v-for="t in localTags"
+            :key="t"
+            class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200/70 text-[11px] font-medium shrink-0 select-text"
+          >
+            #{{ t }}
+            <button @click="removeTag(t)" class="hover:text-red-500 cursor-pointer ml-0.5 text-xs">×</button>
+          </span>
+          <input
+            v-model="newTagInput"
+            @keydown.enter.prevent="addTag"
+            @blur="addTag"
+            type="text"
+            placeholder="+ 添加标签 (回车)"
+            class="h-6 px-1.5 text-[11px] bg-transparent hover:bg-gray-50 focus:bg-white border border-transparent focus:border-amber-300 rounded outline-none transition-all w-24 focus:w-32 select-text"
+          />
+        </div>
+
+        <!-- Save Indicator & Iframe Status -->
+        <div class="flex items-center gap-3 shrink-0 text-[11px]">
+          <div class="flex items-center gap-1.5">
+            <span
+              :class="[
+                'w-2 h-2 rounded-full',
+                saveStatus === 'saving' ? 'bg-amber-400 animate-ping' : 'bg-emerald-500'
+              ]"
+            ></span>
+            <span class="text-gray-500">
+              {{ saveStatus === 'saving' ? '正在同步图表...' : `已自动保存 (${lastSavedTime || '刚刚'})` }}
+            </span>
+          </div>
+
+          <button
+            v-if="activeViewTab === 'editor'"
+            @click="reloadIframe"
+            class="text-[11px] text-gray-400 hover:text-amber-600 flex items-center gap-1 cursor-pointer transition-colors"
+            title="刷新 Draw.io 画布连接"
+          >
+            <RefreshCw class="w-3 h-3" :class="{'animate-spin': !isIframeReady && !iframeError}" />
+            <span class="hidden sm:inline">重新加载</span>
+          </button>
+        </div>
+      </div>
 
     <!-- Template Selection Modal -->
     <div

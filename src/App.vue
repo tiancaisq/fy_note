@@ -8,7 +8,6 @@ import NoteEditor from './components/NoteEditor.vue';
 import MindMapEditor from './components/MindMapEditor.vue';
 import DrawioEditor from './components/DrawioEditor.vue';
 import ImportModal from './components/ImportModal.vue';
-import ShareModal from './components/ShareModal.vue';
 import MoveModal from './components/MoveModal.vue';
 import NewFolderModal from './components/NewFolderModal.vue';
 import RenameNoteModal from './components/RenameNoteModal.vue';
@@ -16,6 +15,7 @@ import ShortcutsModal from './components/ShortcutsModal.vue';
 import CloudSyncModal from './components/CloudSyncModal.vue';
 import ConfirmModal from './components/ConfirmModal.vue';
 import TimelineView from './components/TimelineView.vue';
+import WorkspaceTabBar from './components/WorkspaceTabBar.vue';
 import { Folder, Note } from './types';
 
 const {
@@ -26,8 +26,11 @@ const {
   activeFolder,
   activeNoteId,
   activeNote,
+  openTabIds,
+  activeTabId,
+  openTabNotes,
+  activeTabNote,
   searchQuery,
-  isEditorOpen,
   editorMode,
   sortField,
   sortOrder,
@@ -38,8 +41,6 @@ const {
   isImportModalOpen,
   isNewFolderModalOpen,
   targetParentFolderForNew,
-  isShareModalOpen,
-  sharingNote,
   isMoveModalOpen,
   noteToMove,
   notesToMove,
@@ -72,9 +73,7 @@ const {
   getAllDescendantFolderIds,
   getFolderNoteCount,
   getDirectFolderNoteCount,
-  sharedNotesCount,
   starredNotesCount,
-  favoriteNotesCount,
   deletedNotesCount,
   // methods
   showToast,
@@ -84,12 +83,16 @@ const {
   createNewNote,
   createNewMindMap,
   createNewDrawioDiagram,
-  openNoteEditor,
   openNoteInNewTab,
-  closeEditor,
+  openNoteTab,
+  switchTab,
+  closeTab,
+  closeOtherTabs,
+  closeRightTabs,
+  closeAllTabs,
+  reorderTabs,
   updateNote,
   toggleStar,
-  toggleFavorite,
   moveToTrash,
   restoreFromTrash,
   permanentlyDeleteNote,
@@ -99,13 +102,11 @@ const {
   renameFolder,
   moveFolder,
   toggleFolderCollapse,
-  openShareModal,
   openMoveModal,
   openBatchMoveModal,
   moveNoteToFolder,
   batchMoveNotesToFolder,
   batchToggleStar,
-  batchToggleFavorite,
   batchMoveToTrash,
   batchRestoreFromTrash,
   batchPermanentlyDelete,
@@ -370,8 +371,8 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
 
   // 2. Ctrl/Cmd + F: Open & Focus Global Search
   if (isMod && e.key.toLowerCase() === 'f') {
-    // When editing note, do not intercept Ctrl+F so in-editor search functions properly
-    if (editingNote.value) {
+    // When editing note in an active tab, do not intercept Ctrl+F so in-editor search functions properly
+    if (activeTabNote.value) {
       return;
     }
     e.preventDefault();
@@ -414,7 +415,7 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  // 8. Alt + 1-5: Switch views
+  // 8. Alt + 1-4: Switch views
   if (e.altKey && !isMod && !e.shiftKey) {
     if (e.key === '1') {
       e.preventDefault();
@@ -423,25 +424,15 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
     }
     if (e.key === '2') {
       e.preventDefault();
-      selectView('shared');
+      selectView('starred');
       return;
     }
     if (e.key === '3') {
       e.preventDefault();
-      selectView('starred');
-      return;
-    }
-    if (e.key === '4') {
-      e.preventDefault();
-      selectView('favorite');
-      return;
-    }
-    if (e.key === '5') {
-      e.preventDefault();
       selectView('trash');
       return;
     }
-    if (e.key === '6') {
+    if (e.key === '4') {
       e.preventDefault();
       selectView('timeline');
       return;
@@ -454,8 +445,6 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
       isShortcutsModalOpen.value = false;
     } else if (isImportModalOpen.value) {
       isImportModalOpen.value = false;
-    } else if (isShareModalOpen.value) {
-      isShareModalOpen.value = false;
     } else if (isMoveModalOpen.value) {
       isMoveModalOpen.value = false;
     } else if (isNewFolderModalOpen.value) {
@@ -506,9 +495,7 @@ onUnmounted(() => {
         :current-view="currentView"
         :active-folder-id="activeFolderId"
         :get-folder-note-count="getFolderNoteCount"
-        :shared-count="sharedNotesCount"
         :starred-count="starredNotesCount"
-        :favorite-count="favoriteNotesCount"
         :trash-count="deletedNotesCount"
         @select-folder="selectFolder"
         @select-view="selectView"
@@ -528,93 +515,121 @@ onUnmounted(() => {
         @move-note="moveNoteToFolder"
       />
 
-      <!-- Right Main Content Area: Timeline View OR Note Table -->
-      <TimelineView
-        v-if="currentView === 'timeline'"
-        :notes="notes"
-        :folders="folders"
-        :current-view="currentView"
-        :breadcrumb-items="breadcrumbItems"
-        :get-folder-full-path="getFolderFullPath"
-        @open-note="(n) => openNoteInNewTab(n)"
-        @select-folder="selectFolder"
-        @switch-to-table-view="selectView('folder')"
-      />
+      <!-- Right Main Workspace: Tab Bar + Content / Active File Tab -->
+      <div class="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
+        <!-- Workspace Tab Bar (Sits directly above the top operation area) -->
+        <WorkspaceTabBar
+          :open-tabs="openTabNotes"
+          :active-tab-id="activeTabId"
+          :current-view="currentView"
+          :active-folder-name="activeFolder?.name"
+          @switch-tab="switchTab"
+          @close-tab="closeTab"
+          @close-other-tabs="closeOtherTabs"
+          @close-right-tabs="closeRightTabs"
+          @close-all-tabs="closeAllTabs"
+          @reorder-tabs="reorderTabs"
+          @open-in-new-browser-tab="openNoteInNewTab"
+        />
 
-      <NoteList
-        v-else
-        :notes="displayedNotes"
-        :breadcrumb-items="breadcrumbItems"
-        :current-view="currentView"
-        v-model:sort-field="sortField"
-        v-model:sort-order="sortOrder"
-        v-model:filter-options="filterOptions"
-        @breadcrumb-click="handleBreadcrumbClick"
-        @open-note="(n) => openNoteInNewTab(n)"
-        @open-note-in-current-window="(n) => openNoteEditor(n, 'split')"
-        @open-note-in-new-tab="(n) => openNoteInNewTab(n)"
-        @create-new-note="createNewNote()"
-        @create-new-mind-map="createNewMindMap()"
-        @create-new-drawio="createNewDrawioDiagram()"
-        @toggle-star="toggleStar"
-        @toggle-favorite="toggleFavorite"
-        @move-to-trash="handlePromptMoveToTrash"
-        @restore-from-trash="restoreFromTrash"
-        @permanently-delete="handlePromptPermanentlyDelete"
-        @empty-trash="handlePromptEmptyTrash"
-        @open-share-modal="openShareModal"
-        @open-move-modal="openMoveModal"
-        @duplicate-note="duplicateNote"
-        @export-note="exportNoteAsMarkdown"
-        @rename-note="handleRenameNote"
-        @switch-to-timeline="selectView('timeline')"
-        @batch-move="(selectedNotes) => openBatchMoveModal(selectedNotes)"
-        @batch-toggle-star="(ids) => batchToggleStar(ids)"
-        @batch-toggle-favorite="(ids) => batchToggleFavorite(ids)"
-        @batch-move-to-trash="handlePromptBatchMoveToTrash"
-        @batch-restore-from-trash="batchRestoreFromTrash"
-        @batch-permanently-delete="handlePromptBatchPermanentlyDelete"
-        @batch-export="batchExportNotes"
-      />
+        <!-- Active Tab Content Body -->
+        <div class="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+          <!-- Pinned Workspace View (Timeline OR Note Table) -->
+          <div
+            v-show="activeTabId === 'workspace'"
+            class="flex-1 flex flex-col min-h-0 overflow-hidden"
+          >
+            <TimelineView
+              v-if="currentView === 'timeline'"
+              :notes="notes"
+              :folders="folders"
+              :current-view="currentView"
+              :breadcrumb-items="breadcrumbItems"
+              :get-folder-full-path="getFolderFullPath"
+              @open-note="(n) => openNoteTab(n)"
+              @select-folder="selectFolder"
+              @switch-to-table-view="selectView('folder')"
+            />
+
+            <NoteList
+              v-else
+              :notes="displayedNotes"
+              :breadcrumb-items="breadcrumbItems"
+              :current-view="currentView"
+              v-model:sort-field="sortField"
+              v-model:sort-order="sortOrder"
+              v-model:filter-options="filterOptions"
+              @breadcrumb-click="handleBreadcrumbClick"
+              @open-note="(n) => openNoteTab(n)"
+              @open-note-in-current-window="(n) => openNoteTab(n, 'split')"
+              @open-note-in-new-tab="(n) => openNoteInNewTab(n)"
+              @create-new-note="createNewNote()"
+              @create-new-mind-map="createNewMindMap()"
+              @create-new-drawio="createNewDrawioDiagram()"
+              @toggle-star="toggleStar"
+              @move-to-trash="handlePromptMoveToTrash"
+              @restore-from-trash="restoreFromTrash"
+              @permanently-delete="handlePromptPermanentlyDelete"
+              @empty-trash="handlePromptEmptyTrash"
+              @open-move-modal="openMoveModal"
+              @duplicate-note="duplicateNote"
+              @export-note="exportNoteAsMarkdown"
+              @rename-note="handleRenameNote"
+              @switch-to-timeline="selectView('timeline')"
+              @batch-move="(selectedNotes) => openBatchMoveModal(selectedNotes)"
+              @batch-toggle-star="(ids) => batchToggleStar(ids)"
+              @batch-move-to-trash="handlePromptBatchMoveToTrash"
+              @batch-restore-from-trash="batchRestoreFromTrash"
+              @batch-permanently-delete="handlePromptBatchPermanentlyDelete"
+              @batch-export="batchExportNotes"
+            />
+          </div>
+
+          <!-- Open File Tab Windows (Kept alive for instant switching) -->
+          <template v-for="tabNote in openTabNotes" :key="tabNote.id">
+            <div
+              v-show="activeTabId === tabNote.id"
+              class="flex-1 flex flex-col min-h-0 overflow-hidden"
+            >
+              <DrawioEditor
+                v-if="tabNote.format === 'drawio' || tabNote.type === 'drawio'"
+                :is-active="activeTabId === tabNote.id"
+                :note="tabNote"
+                :folders="folders"
+                @close="closeTab(tabNote.id)"
+                @update-note="updateNote"
+                @toggle-star="toggleStar"
+                @navigate-folder="selectFolder"
+              />
+
+              <MindMapEditor
+                v-else-if="tabNote.format === 'mindmap' || tabNote.type === 'mindmap'"
+                :is-active="activeTabId === tabNote.id"
+                :note="tabNote"
+                :folders="folders"
+                @close="closeTab(tabNote.id)"
+                @update-note="updateNote"
+                @toggle-star="toggleStar"
+                @navigate-folder="selectFolder"
+              />
+
+              <NoteEditor
+                v-else
+                :is-active="activeTabId === tabNote.id"
+                :note="tabNote"
+                :folders="folders"
+                :mode="editorMode"
+                @close="closeTab(tabNote.id)"
+                @update-note="updateNote"
+                @toggle-star="toggleStar"
+                @export-note="exportNoteAsMarkdown"
+                @navigate-folder="selectFolder"
+              />
+            </div>
+          </template>
+        </div>
+      </div>
     </div>
-
-    <!-- Draw.io Diagram Editor Modal (For Draw.io Notes) -->
-    <DrawioEditor
-      v-if="isEditorOpen && activeNote && (activeNote.format === 'drawio' || activeNote.type === 'drawio')"
-      :note="activeNote"
-      :folders="folders"
-      @close="closeEditor"
-      @update-note="updateNote"
-      @toggle-star="toggleStar"
-      @toggle-favorite="toggleFavorite"
-      @open-share="openShareModal"
-    />
-
-    <!-- Mind Map Editor Modal (For Mindmap Notes) -->
-    <MindMapEditor
-      v-else-if="isEditorOpen && activeNote && (activeNote.format === 'mindmap' || activeNote.type === 'mindmap')"
-      :note="activeNote"
-      :folders="folders"
-      @close="closeEditor"
-      @update-note="updateNote"
-      @toggle-star="toggleStar"
-      @toggle-favorite="toggleFavorite"
-      @open-share="openShareModal"
-    />
-
-    <!-- Note Editor & Markdown Viewer Modal (For Standard Markdown Notes) -->
-    <NoteEditor
-      v-else-if="isEditorOpen && activeNote"
-      :note="activeNote"
-      :folders="folders"
-      :mode="editorMode"
-      @close="closeEditor"
-      @update-note="updateNote"
-      @toggle-star="toggleStar"
-      @toggle-favorite="toggleFavorite"
-      @open-share="openShareModal"
-      @export-note="exportNoteAsMarkdown"
-    />
 
     <!-- Import Files Modal -->
     <ImportModal
@@ -623,13 +638,6 @@ onUnmounted(() => {
       :active-folder-id="activeFolderId"
       @close="isImportModalOpen = false"
       @import-files="handleBatchImport"
-    />
-
-    <!-- Share Note Modal -->
-    <ShareModal
-      v-if="isShareModalOpen && sharingNote"
-      :note="sharingNote"
-      @close="isShareModalOpen = false"
     />
 
     <!-- Move Note Modal (Supports both single note and batch move) -->

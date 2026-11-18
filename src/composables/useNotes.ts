@@ -45,6 +45,8 @@ const STORAGE_KEY_NOTES = 'fengye_cloud_notes_data_v2';
 const STORAGE_KEY_FOLDERS = 'fengye_cloud_folders_data_v2';
 const STORAGE_KEY_CLOUD_CONFIG = 'fengye_cloud_sync_config_v2';
 const STORAGE_KEY_FREQUENT_FOLDERS = 'fengye_cloud_frequent_folders_v2';
+const STORAGE_KEY_OPEN_TABS = 'fengye_open_tabs_v1';
+const STORAGE_KEY_ACTIVE_TAB = 'fengye_active_tab_v1';
 
 function loadStoredData<T>(key: string, fallback: T): T {
   try {
@@ -140,17 +142,15 @@ export function useNotes() {
       await nextTick();
       isApplyingRemoteSync.value = false;
 
-      // Check URL parameters for noteId to directly open in standalone/new-tab view
+      // Check URL parameters for noteId to directly open in a workspace tab
       try {
         const urlParams = new URLSearchParams(window.location.search);
         const targetNoteId = urlParams.get('noteId') || urlParams.get('note') || (window.location.hash.startsWith('#note-') ? window.location.hash.substring(1) : null);
         if (targetNoteId) {
           const matched = notes.value.find((n) => n.id === targetNoteId);
           if (matched && !matched.isDeleted) {
-            activeNoteId.value = matched.id;
             activeFolderId.value = matched.folderId;
-            isEditorOpen.value = true;
-            editorMode.value = 'split';
+            openNoteTab(matched, 'split');
           }
         }
       } catch (err) {
@@ -201,17 +201,67 @@ export function useNotes() {
   const activeFolderId = ref<string>(folders.value[0]?.id || '');
   const searchQuery = ref<string>('');
 
-  // Active note for editor / viewer modal
+  // Active note and editor mode for workspace tabs
   const activeNoteId = ref<string | null>(null);
-  const isEditorOpen = ref<boolean>(false);
   const editorMode = ref<'split' | 'edit' | 'preview'>('split');
+
+  // In-app Workspace Tab Window Management
+  const openTabIds = ref<string[]>(loadStoredData<string[]>(STORAGE_KEY_OPEN_TABS, []));
+  const activeTabId = ref<string>(loadStoredData<string>(STORAGE_KEY_ACTIVE_TAB, 'workspace'));
+
+  const openTabNotes = computed<Note[]>(() => {
+    const validNotes: Note[] = [];
+    for (const id of openTabIds.value) {
+      const found = notes.value.find((n) => n.id === id && !n.isDeleted);
+      if (found) {
+        validNotes.push(found);
+      }
+    }
+    return validNotes;
+  });
+
+  const activeTabNote = computed<Note | null>(() => {
+    if (!activeTabId.value || activeTabId.value === 'workspace') return null;
+    return openTabNotes.value.find((n) => n.id === activeTabId.value) || null;
+  });
+
+  watch(
+    openTabIds,
+    (ids) => {
+      try {
+        localStorage.setItem(STORAGE_KEY_OPEN_TABS, JSON.stringify(ids));
+      } catch {}
+    },
+    { deep: true }
+  );
+
+  watch(activeTabId, (id) => {
+    try {
+      localStorage.setItem(STORAGE_KEY_ACTIVE_TAB, JSON.stringify(id));
+    } catch {}
+  });
+
+  // Ensure openTabIds and activeTabId remain valid when notes change (e.g. after cloud sync or deletion)
+  watch(
+    notes,
+    (newNotes) => {
+      const validSet = new Set(newNotes.filter((n) => !n.isDeleted).map((n) => n.id));
+      const filtered = openTabIds.value.filter((id) => validSet.has(id));
+      if (filtered.length !== openTabIds.value.length) {
+        openTabIds.value = filtered;
+      }
+      if (activeTabId.value !== 'workspace' && !validSet.has(activeTabId.value)) {
+        activeTabId.value = filtered[filtered.length - 1] || 'workspace';
+      }
+    },
+    { deep: true }
+  );
 
   // Sort & Filter
   const sortField = ref<SortField>('createdAt');
   const sortOrder = ref<SortOrder>('desc');
   const filterOptions = ref<FilterOptions>({
     starredOnly: false,
-    favoriteOnly: false,
     format: 'all',
   });
 
@@ -222,8 +272,6 @@ export function useNotes() {
   const isImportModalOpen = ref<boolean>(false);
   const isNewFolderModalOpen = ref<boolean>(false);
   const targetParentFolderForNew = ref<Folder | null>(null);
-  const isShareModalOpen = ref<boolean>(false);
-  const sharingNote = ref<Note | null>(null);
   const isMoveModalOpen = ref<boolean>(false);
   const noteToMove = ref<Note | null>(null);
   const notesToMove = ref<Note[]>([]);
@@ -562,9 +610,7 @@ export function useNotes() {
   };
 
   // Category counts
-  const sharedNotesCount = computed(() => notes.value.filter((n) => n.isShared && !n.isDeleted).length);
   const starredNotesCount = computed(() => notes.value.filter((n) => n.isStarred && !n.isDeleted).length);
-  const favoriteNotesCount = computed(() => notes.value.filter((n) => n.isFavorite && !n.isDeleted).length);
   const deletedNotesCount = computed(() => notes.value.filter((n) => n.isDeleted).length);
 
   // Root folders (sorted top-to-bottom according to folder.order)
@@ -683,22 +729,10 @@ export function useNotes() {
       ];
     }
 
-    if (currentView.value === 'shared') {
-      return [
-        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
-        { id: 'shared', label: '我的分享', view: 'shared', clickable: false },
-      ];
-    }
     if (currentView.value === 'starred') {
       return [
         { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
         { id: 'starred', label: '我的标星', view: 'starred', clickable: false },
-      ];
-    }
-    if (currentView.value === 'favorite') {
-      return [
-        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
-        { id: 'favorite', label: '我的收藏', view: 'favorite', clickable: false },
       ];
     }
     if (currentView.value === 'trash') {
@@ -766,12 +800,8 @@ export function useNotes() {
             return false;
           });
         }
-      } else if (currentView.value === 'shared') {
-        result = result.filter((n) => n.isShared);
       } else if (currentView.value === 'starred') {
         result = result.filter((n) => n.isStarred);
-      } else if (currentView.value === 'favorite') {
-        result = result.filter((n) => n.isFavorite);
       }
     }
 
@@ -793,9 +823,6 @@ export function useNotes() {
     // Secondary filters
     if (filterOptions.value.starredOnly) {
       result = result.filter((n) => n.isStarred);
-    }
-    if (filterOptions.value.favoriteOnly) {
-      result = result.filter((n) => n.isFavorite);
     }
     if (filterOptions.value.format !== 'all') {
       result = result.filter((n) => n.format === filterOptions.value.format);
@@ -890,12 +917,14 @@ export function useNotes() {
     activeFolderId.value = folderId;
     searchQuery.value = '';
     selectedNoteIds.value = [];
+    activeTabId.value = 'workspace';
   }
 
   function selectView(view: ViewType) {
     currentView.value = view;
     searchQuery.value = '';
     selectedNoteIds.value = [];
+    activeTabId.value = 'workspace';
   }
 
   function handleBreadcrumbClick(item: BreadcrumbItem) {
@@ -957,17 +986,13 @@ export function useNotes() {
       createdAt: now,
       updatedAt: now,
       isStarred: false,
-      isFavorite: false,
-      isShared: false,
       isDeleted: false,
       tags: [],
       format: 'markdown',
     };
 
     notes.value.unshift(newNote);
-    activeNoteId.value = newNote.id;
-    isEditorOpen.value = true;
-    editorMode.value = 'split';
+    openNoteTab(newNote, 'split');
     showToast('新建笔记成功');
     triggerAutoSyncDebounced({ noteId: newNote.id });
     return newNote;
@@ -1013,8 +1038,6 @@ export function useNotes() {
       createdAt: now,
       updatedAt: now,
       isStarred: false,
-      isFavorite: false,
-      isShared: false,
       isDeleted: false,
       tags: ['思维导图'],
       format: 'mindmap',
@@ -1022,8 +1045,7 @@ export function useNotes() {
     };
 
     notes.value.unshift(newNote);
-    activeNoteId.value = newNote.id;
-    isEditorOpen.value = true;
+    openNoteTab(newNote);
     showToast('新建思维导图成功');
     triggerAutoSyncDebounced({ noteId: newNote.id });
     return newNote;
@@ -1042,8 +1064,6 @@ export function useNotes() {
       createdAt: now,
       updatedAt: now,
       isStarred: false,
-      isFavorite: false,
-      isShared: false,
       isDeleted: false,
       tags: ['Draw.io', '流程图'],
       format: 'drawio',
@@ -1051,14 +1071,13 @@ export function useNotes() {
     };
 
     notes.value.unshift(newNote);
-    activeNoteId.value = newNote.id;
-    isEditorOpen.value = true;
+    openNoteTab(newNote);
     showToast('新建 Draw.io 图表成功');
     triggerAutoSyncDebounced({ noteId: newNote.id });
     return newNote;
   }
 
-  function getNoteShareUrl(noteId: string): string {
+  function getNoteOpenUrl(noteId: string): string {
     const origin = window.location.origin;
     const pathname = window.location.pathname;
     return `${origin}${pathname}?noteId=${encodeURIComponent(noteId)}`;
@@ -1071,23 +1090,101 @@ export function useNotes() {
       localStorage.setItem(STORAGE_KEY_FOLDERS, JSON.stringify(folders.value));
     } catch {}
 
-    const targetUrl = getNoteShareUrl(note.id);
+    const targetUrl = getNoteOpenUrl(note.id);
     const newWindow = window.open(targetUrl, '_blank');
     if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
-      // If popup is blocked by browser, fallback to in-app editor and notify user
-      openNoteEditor(note, 'split');
-      showToast('浏览器已拦截弹窗，已在当前页面打开');
+      // If popup is blocked by browser, fallback to workspace tab and notify user
+      openNoteTab(note, 'split');
+      showToast('浏览器已拦截弹窗，已在当前标签页打开');
     }
   }
 
-  function openNoteEditor(note: Note, mode: 'split' | 'edit' | 'preview' = 'split') {
+  function openNoteTab(note: Note, mode: 'split' | 'edit' | 'preview' = 'split') {
+    if (!note || note.isDeleted) return;
+    if (!openTabIds.value.includes(note.id)) {
+      openTabIds.value = [...openTabIds.value, note.id];
+    }
+    activeTabId.value = note.id;
     activeNoteId.value = note.id;
     editorMode.value = mode;
-    isEditorOpen.value = true;
   }
 
-  function closeEditor() {
-    isEditorOpen.value = false;
+  function switchTab(tabId: string) {
+    if (tabId === 'workspace') {
+      activeTabId.value = 'workspace';
+      return;
+    }
+    if (openTabIds.value.includes(tabId)) {
+      activeTabId.value = tabId;
+      activeNoteId.value = tabId;
+    }
+  }
+
+  function closeTab(tabId: string) {
+    const idx = openTabIds.value.indexOf(tabId);
+    if (idx === -1) return;
+    const nextIds = openTabIds.value.filter((id) => id !== tabId);
+    openTabIds.value = nextIds;
+
+    if (activeTabId.value === tabId) {
+      if (nextIds.length === 0) {
+        activeTabId.value = 'workspace';
+        activeNoteId.value = null;
+      } else {
+        const nextActive = nextIds[Math.min(idx, nextIds.length - 1)];
+        activeTabId.value = nextActive;
+        activeNoteId.value = nextActive;
+      }
+    }
+  }
+
+  function closeOtherTabs(tabId: string) {
+    if (tabId === 'workspace') {
+      closeAllTabs();
+      return;
+    }
+    if (openTabIds.value.includes(tabId)) {
+      openTabIds.value = [tabId];
+      activeTabId.value = tabId;
+      activeNoteId.value = tabId;
+    }
+  }
+
+  function closeRightTabs(tabId: string) {
+    if (tabId === 'workspace') {
+      closeAllTabs();
+      return;
+    }
+    const idx = openTabIds.value.indexOf(tabId);
+    if (idx === -1) return;
+    const nextIds = openTabIds.value.slice(0, idx + 1);
+    openTabIds.value = nextIds;
+    if (activeTabId.value !== 'workspace' && !nextIds.includes(activeTabId.value)) {
+      activeTabId.value = tabId;
+      activeNoteId.value = tabId;
+    }
+  }
+
+  function closeAllTabs() {
+    openTabIds.value = [];
+    activeTabId.value = 'workspace';
+    activeNoteId.value = null;
+  }
+
+  function reorderTabs(fromIndex: number, toIndex: number) {
+    if (
+      fromIndex < 0 ||
+      fromIndex >= openTabIds.value.length ||
+      toIndex < 0 ||
+      toIndex >= openTabIds.value.length ||
+      fromIndex === toIndex
+    ) {
+      return;
+    }
+    const next = [...openTabIds.value];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved);
+    openTabIds.value = next;
   }
 
   function updateNote(id: string, updates: Partial<Note>) {
@@ -1111,23 +1208,12 @@ export function useNotes() {
     }
   }
 
-  function toggleFavorite(noteId: string) {
-    const note = notes.value.find((n) => n.id === noteId);
-    if (note) {
-      note.isFavorite = !note.isFavorite;
-      showToast(note.isFavorite ? '已加入收藏' : '已移出收藏');
-      triggerAutoSyncDebounced({ noteId });
-    }
-  }
-
   function moveToTrash(noteId: string) {
     const note = notes.value.find((n) => n.id === noteId);
     if (note) {
       note.isDeleted = true;
       note.deletedAt = formatDateTime();
-      if (activeNoteId.value === noteId) {
-        isEditorOpen.value = false;
-      }
+      closeTab(noteId);
       showToast('已移入回收站');
       triggerAutoSyncDebounced({ noteId });
     }
@@ -1146,6 +1232,7 @@ export function useNotes() {
   async function permanentlyDeleteNote(noteId: string) {
     notes.value = notes.value.filter((n) => n.id !== noteId);
     pendingDeletedNoteIds.add(noteId);
+    closeTab(noteId);
     showToast('笔记已彻底删除');
 
     if (cloudConfig.value.enabled && cloudConfig.value.apiUrl) {
@@ -1344,15 +1431,6 @@ export function useNotes() {
     }
   }
 
-  function openShareModal(note: Note) {
-    sharingNote.value = note;
-    if (!note.shareUrl) {
-      note.shareUrl = `https://maple-note.cloud/s/${Math.random().toString(36).substring(2, 10)}`;
-      note.isShared = true;
-    }
-    isShareModalOpen.value = true;
-  }
-
   function openMoveModal(note: Note) {
     noteToMove.value = note;
     notesToMove.value = [note];
@@ -1410,19 +1488,6 @@ export function useNotes() {
     triggerAutoSyncDebounced();
   }
 
-  function batchToggleFavorite(noteIds: string[], forceState?: boolean) {
-    if (!noteIds.length) return;
-    const targetNotes = notes.value.filter((n) => noteIds.includes(n.id));
-    if (!targetNotes.length) return;
-    const shouldFav = forceState !== undefined ? forceState : targetNotes.some((n) => !n.isFavorite);
-    targetNotes.forEach((n) => {
-      n.isFavorite = shouldFav;
-      pendingModifiedNoteIds.add(n.id);
-    });
-    showToast(shouldFav ? `已将 ${targetNotes.length} 篇笔记加入收藏` : `已将 ${targetNotes.length} 篇笔记移出收藏`);
-    triggerAutoSyncDebounced();
-  }
-
   function batchMoveToTrash(noteIds: string[]) {
     if (!noteIds.length) return;
     const now = formatDateTime();
@@ -1432,9 +1497,6 @@ export function useNotes() {
         note.isDeleted = true;
         note.deletedAt = now;
         pendingModifiedNoteIds.add(note.id);
-        if (activeNoteId.value === note.id) {
-          isEditorOpen.value = false;
-        }
         count++;
       }
     });
@@ -1490,7 +1552,6 @@ export function useNotes() {
       title: `${note.title} (副本)`,
       createdAt: now,
       updatedAt: now,
-      isShared: false,
       shareUrl: undefined,
     };
     notes.value.unshift(copy);
@@ -1553,8 +1614,6 @@ export function useNotes() {
       createdAt: now,
       updatedAt: now,
       isStarred: false,
-      isFavorite: false,
-      isShared: false,
       isDeleted: false,
       tags: ['导入'],
       format: 'markdown',
@@ -1588,8 +1647,6 @@ export function useNotes() {
       createdAt: now,
       updatedAt: now,
       isStarred: false,
-      isFavorite: false,
-      isShared: false,
       isDeleted: false,
       tags: ['思维导图', '导入'],
       format: 'mindmap',
@@ -1611,8 +1668,6 @@ export function useNotes() {
       createdAt: now,
       updatedAt: now,
       isStarred: false,
-      isFavorite: false,
-      isShared: false,
       isDeleted: false,
       tags: ['Draw.io', '导入'],
       format: 'drawio',
@@ -1624,7 +1679,7 @@ export function useNotes() {
 
   function navigateToNoteFromSearch(item: SearchResultItem) {
     selectFolder(item.note.folderId);
-    openNoteInNewTab(item.note);
+    openNoteTab(item.note);
     searchQuery.value = '';
   }
 
@@ -1781,8 +1836,11 @@ export function useNotes() {
     activeFolder,
     activeNoteId,
     activeNote,
+    openTabIds,
+    activeTabId,
+    openTabNotes,
+    activeTabNote,
     searchQuery,
-    isEditorOpen,
     editorMode,
     sortField,
     sortOrder,
@@ -1794,8 +1852,6 @@ export function useNotes() {
     isImportModalOpen,
     isNewFolderModalOpen,
     targetParentFolderForNew,
-    isShareModalOpen,
-    sharingNote,
     isMoveModalOpen,
     noteToMove,
     notesToMove,
@@ -1831,9 +1887,7 @@ export function useNotes() {
     getAllDescendantFolderIds,
     getFolderNoteCount,
     getDirectFolderNoteCount,
-    sharedNotesCount,
     starredNotesCount,
-    favoriteNotesCount,
     deletedNotesCount,
     // methods
     showToast,
@@ -1843,13 +1897,16 @@ export function useNotes() {
     createNewNote,
     createNewMindMap,
     createNewDrawioDiagram,
-    openNoteEditor,
     openNoteInNewTab,
-    getNoteShareUrl,
-    closeEditor,
+    openNoteTab,
+    switchTab,
+    closeTab,
+    closeOtherTabs,
+    closeRightTabs,
+    closeAllTabs,
+    reorderTabs,
     updateNote,
     toggleStar,
-    toggleFavorite,
     moveToTrash,
     restoreFromTrash,
     permanentlyDeleteNote,
@@ -1859,13 +1916,11 @@ export function useNotes() {
     renameFolder,
     moveFolder,
     toggleFolderCollapse,
-    openShareModal,
     openMoveModal,
     openBatchMoveModal,
     moveNoteToFolder,
     batchMoveNotesToFolder,
     batchToggleStar,
-    batchToggleFavorite,
     batchMoveToTrash,
     batchRestoreFromTrash,
     batchPermanentlyDelete,

@@ -6,8 +6,6 @@ import {
   Filter,
   MoreHorizontal,
   Star,
-  Box,
-  Share2,
   Trash2,
   RotateCcw,
   Download,
@@ -46,12 +44,10 @@ const emit = defineEmits<{
   (e: 'createNewDrawio'): void;
   (e: 'breadcrumbClick', item: BreadcrumbItem): void;
   (e: 'toggleStar', noteId: string): void;
-  (e: 'toggleFavorite', noteId: string): void;
   (e: 'moveToTrash', noteId: string): void;
   (e: 'restoreFromTrash', noteId: string): void;
   (e: 'permanentlyDelete', noteId: string): void;
   (e: 'emptyTrash'): void;
-  (e: 'openShareModal', note: Note): void;
   (e: 'openMoveModal', note: Note): void;
   (e: 'duplicateNote', note: Note): void;
   (e: 'exportNote', note: Note): void;
@@ -63,7 +59,6 @@ const emit = defineEmits<{
   // Batch action events
   (e: 'batchMove', notes: Note[]): void;
   (e: 'batchToggleStar', noteIds: string[]): void;
-  (e: 'batchToggleFavorite', noteIds: string[]): void;
   (e: 'batchMoveToTrash', noteIds: string[]): void;
   (e: 'batchRestoreFromTrash', noteIds: string[]): void;
   (e: 'batchPermanentlyDelete', noteIds: string[]): void;
@@ -73,7 +68,6 @@ const emit = defineEmits<{
 const activeDropdownNoteId = ref<string | null>(null);
 const isSortMenuOpen = ref(false);
 const isFilterMenuOpen = ref(false);
-const isHeaderNewMenuOpen = ref(false);
 
 // Context Menu State
 const contextMenu = ref<{
@@ -89,7 +83,6 @@ const contextMenu = ref<{
 });
 
 const contextMenuRef = ref<HTMLElement | null>(null);
-const headerNewMenuRef = ref<HTMLElement | null>(null);
 const sortMenuRef = ref<HTMLElement | null>(null);
 const filterMenuRef = ref<HTMLElement | null>(null);
 
@@ -174,7 +167,6 @@ function toggleRowMenu(e: MouseEvent, noteId: string) {
   e.stopPropagation();
   isSortMenuOpen.value = false;
   isFilterMenuOpen.value = false;
-  isHeaderNewMenuOpen.value = false;
   activeDropdownNoteId.value = activeDropdownNoteId.value === noteId ? null : noteId;
 }
 
@@ -218,7 +210,7 @@ function setSort(field: SortField, order: SortOrder) {
   isSortMenuOpen.value = false;
 }
 
-function toggleFilter(key: 'starredOnly' | 'favoriteOnly') {
+function toggleFilter(key: 'starredOnly') {
   emit('update:filterOptions', {
     ...props.filterOptions,
     [key]: !props.filterOptions[key],
@@ -255,11 +247,10 @@ function handleRowContextMenu(note: Note, e: MouseEvent) {
   activeDropdownNoteId.value = null;
   isSortMenuOpen.value = false;
   isFilterMenuOpen.value = false;
-  isHeaderNewMenuOpen.value = false;
 
   // Viewport bounds calculation
   const menuWidth = 208;
-  const menuHeight = note.isDeleted ? 120 : 420;
+  const menuHeight = note.isDeleted ? 120 : 340;
   let posX = e.clientX;
   let posY = e.clientY;
 
@@ -302,11 +293,6 @@ function handleDocumentClick(e: MouseEvent) {
     }
   }
 
-  // Auto close header new menu
-  if (isHeaderNewMenuOpen.value && headerNewMenuRef.value && !headerNewMenuRef.value.contains(target)) {
-    isHeaderNewMenuOpen.value = false;
-  }
-
   // Auto close sort menu
   if (isSortMenuOpen.value && sortMenuRef.value && !sortMenuRef.value.contains(target)) {
     isSortMenuOpen.value = false;
@@ -330,7 +316,6 @@ function handleDocumentKeyDown(e: KeyboardEvent) {
     }
     isSortMenuOpen.value = false;
     isFilterMenuOpen.value = false;
-    isHeaderNewMenuOpen.value = false;
   }
 }
 
@@ -380,50 +365,8 @@ onUnmounted(() => {
         <span class="text-xs font-normal text-gray-400 ml-2 shrink-0">({{ notes.length }} 篇)</span>
       </div>
 
-      <!-- Right Action Tools: + 新建, ⇅ Sort, Filter -->
+      <!-- Right Action Tools: ⇅ Sort, Filter -->
       <div id="notes-header-tools" class="flex items-center gap-3 relative shrink-0">
-        <!-- "+ 新建" Dropdown Button -->
-        <div v-if="currentView !== 'trash'" ref="headerNewMenuRef" class="relative">
-          <button
-            id="btn-header-new-note"
-            @click="isHeaderNewMenuOpen = !isHeaderNewMenuOpen; isSortMenuOpen = false; isFilterMenuOpen = false; activeDropdownNoteId = null;"
-            class="flex items-center gap-1 text-sm text-gray-700 hover:text-blue-600 font-medium px-2 py-1 rounded hover:bg-gray-50 transition-colors cursor-pointer"
-          >
-            <Plus class="w-4 h-4" />
-            <span>新建</span>
-            <ChevronDown class="w-3 h-3 text-gray-400" />
-          </button>
-
-          <!-- Header New Dropdown Menu -->
-          <div
-            v-if="isHeaderNewMenuOpen"
-            class="absolute right-0 mt-1.5 w-44 bg-white rounded-xl shadow-xl border border-gray-100 py-1.5 z-40 text-xs animate-in fade-in zoom-in-95 duration-100 space-y-0.5"
-            @click.stop
-          >
-            <button
-              @click="emit('createNewNote'); isHeaderNewMenuOpen = false;"
-              class="w-full px-3 py-2 text-left hover:bg-orange-50/60 flex items-center gap-2 text-gray-700 hover:text-orange-600 cursor-pointer"
-            >
-              <FileFormatIcon format="markdown" size="xs" />
-              <span>新建 Markdown 笔记</span>
-            </button>
-            <button
-              @click="emit('createNewMindMap'); isHeaderNewMenuOpen = false;"
-              class="w-full px-3 py-2 text-left hover:bg-emerald-50/60 flex items-center gap-2 text-gray-700 hover:text-emerald-600 cursor-pointer"
-            >
-              <MindmapIcon size="xs" />
-              <span>新建思维导图</span>
-            </button>
-            <button
-              @click="emit('createNewDrawio'); isHeaderNewMenuOpen = false;"
-              class="w-full px-3 py-2 text-left hover:bg-amber-50/60 flex items-center gap-2 text-gray-700 hover:text-amber-700 cursor-pointer"
-            >
-              <DrawioIcon size="xs" />
-              <span>新建 Draw.io 图表</span>
-            </button>
-          </div>
-        </div>
-
         <!-- Empty Trash Button (when in trash view) -->
         <button
           v-if="currentView === 'trash' && notes.length > 0"
@@ -449,7 +392,7 @@ onUnmounted(() => {
         <div ref="sortMenuRef" class="relative">
           <button
             id="btn-sort-menu"
-            @click="isSortMenuOpen = !isSortMenuOpen; isFilterMenuOpen = false; isHeaderNewMenuOpen = false; activeDropdownNoteId = null;"
+            @click="isSortMenuOpen = !isSortMenuOpen; isFilterMenuOpen = false; activeDropdownNoteId = null;"
             class="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors cursor-pointer"
             title="排序方式"
           >
@@ -498,7 +441,7 @@ onUnmounted(() => {
         <div ref="filterMenuRef" class="relative">
           <button
             id="btn-filter-menu"
-            @click="isFilterMenuOpen = !isFilterMenuOpen; isSortMenuOpen = false; isHeaderNewMenuOpen = false; activeDropdownNoteId = null;"
+            @click="isFilterMenuOpen = !isFilterMenuOpen; isSortMenuOpen = false; activeDropdownNoteId = null;"
             class="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors cursor-pointer"
             title="筛选视图"
           >
@@ -518,13 +461,6 @@ onUnmounted(() => {
             >
               <span>仅看标星笔记</span>
               <Check v-if="filterOptions.starredOnly" class="w-3.5 h-3.5 text-blue-600" />
-            </button>
-            <button
-              @click="toggleFilter('favoriteOnly')"
-              class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center justify-between cursor-pointer"
-            >
-              <span>仅看收藏笔记</span>
-              <Check v-if="filterOptions.favoriteOnly" class="w-3.5 h-3.5 text-blue-600" />
             </button>
             <div class="h-px bg-gray-100 my-1"></div>
             <div class="px-3 py-0.5 font-semibold text-gray-400 text-[10px] uppercase">格式筛选</div>
@@ -667,7 +603,7 @@ onUnmounted(() => {
               <FileFormatIcon :format="note.format || note.type" size="sm" />
             </div>
 
-            <!-- Title & Star/Favorite/Shared Indicators -->
+            <!-- Title & Star Indicator -->
             <div class="truncate flex items-center gap-2">
               <span
                 @click.stop="handleTitleClick(note, $event)"
@@ -684,21 +620,6 @@ onUnmounted(() => {
                 class="w-3.5 h-3.5 text-amber-500 fill-amber-500 shrink-0"
                 title="已标星"
               />
-
-              <!-- Favorite badge -->
-              <Box
-                v-if="note.isFavorite"
-                class="w-3.5 h-3.5 text-indigo-500 shrink-0"
-                title="已收藏"
-              />
-
-              <!-- Shared badge -->
-              <span
-                v-if="note.isShared"
-                class="text-[10px] text-blue-600 bg-blue-50 px-1 py-0.2 rounded shrink-0"
-              >
-                已分享
-              </span>
             </div>
           </div>
 
@@ -727,13 +648,13 @@ onUnmounted(() => {
             >
               <!-- If NOT in trash -->
               <template v-if="!note.isDeleted">
-                <!-- Open in Current Window (Requested by User) -->
+                <!-- Open in Workspace Tab -->
                 <button
                   @click="emit('openNoteInCurrentWindow', note); activeDropdownNoteId = null;"
                   class="w-full px-3.5 py-1.5 text-left text-gray-800 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-2 cursor-pointer font-medium"
                 >
                   <AppWindow class="w-3.5 h-3.5 text-blue-600" />
-                  <span>当前窗口打开</span>
+                  <span>在标签页中打开</span>
                 </button>
 
                 <!-- Open in New Tab (Requested by User) -->
@@ -753,20 +674,6 @@ onUnmounted(() => {
                 >
                   <Star class="w-3.5 h-3.5" :class="note.isStarred ? 'text-amber-500 fill-amber-500' : 'text-gray-400'" />
                   <span>{{ note.isStarred ? '取消标星' : '标星笔记' }}</span>
-                </button>
-                <button
-                  @click="emit('toggleFavorite', note.id); activeDropdownNoteId = null;"
-                  class="w-full px-3.5 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer"
-                >
-                  <Box class="w-3.5 h-3.5" :class="note.isFavorite ? 'text-indigo-600' : 'text-gray-400'" />
-                  <span>{{ note.isFavorite ? '移出收藏' : '加入收藏' }}</span>
-                </button>
-                <button
-                  @click="emit('openShareModal', note); activeDropdownNoteId = null;"
-                  class="w-full px-3.5 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer"
-                >
-                  <Share2 class="w-3.5 h-3.5 text-gray-400" />
-                  <span>分享笔记链接</span>
                 </button>
                 <button
                   @click="emit('openMoveModal', note); activeDropdownNoteId = null;"
@@ -876,16 +783,6 @@ onUnmounted(() => {
             <span class="hidden md:inline">标星/取消</span>
           </button>
 
-          <!-- Batch Favorite / Unfavorite -->
-          <button
-            @click="emit('batchToggleFavorite', selectedNoteIds)"
-            class="px-2.5 py-1.5 bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-md font-medium transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs"
-            title="批量收藏/移出收藏"
-          >
-            <Box class="w-3.5 h-3.5 text-indigo-600" />
-            <span class="hidden md:inline">收藏/取消</span>
-          </button>
-
           <!-- Batch Export -->
           <button
             @click="emit('batchExport', selectedNotes)"
@@ -962,14 +859,14 @@ onUnmounted(() => {
 
       <!-- Normal State Menu Actions -->
       <div v-if="!contextMenu.note.isDeleted" class="py-1">
-        <!-- Open in Current Window -->
+        <!-- Open in Workspace Tab -->
         <button
           @click="emit('openNoteInCurrentWindow', contextMenu.note!); closeContextMenu();"
           class="w-full px-3 py-1.5 text-left text-gray-800 hover:bg-blue-50 hover:text-blue-600 flex items-center justify-between gap-2 cursor-pointer font-medium transition-colors"
         >
           <div class="flex items-center gap-2">
             <AppWindow class="w-3.5 h-3.5 text-blue-600" />
-            <span>当前窗口打开</span>
+            <span>在标签页中打开</span>
           </div>
           <span class="text-[10px] text-gray-400">Enter</span>
         </button>
@@ -992,24 +889,6 @@ onUnmounted(() => {
         >
           <Star class="w-3.5 h-3.5" :class="contextMenu.note.isStarred ? 'text-amber-500 fill-amber-500' : 'text-gray-400'" />
           <span>{{ contextMenu.note.isStarred ? '取消标星' : '标星文件' }}</span>
-        </button>
-
-        <!-- Favorite Toggle -->
-        <button
-          @click="emit('toggleFavorite', contextMenu.note!.id); closeContextMenu();"
-          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
-        >
-          <Box class="w-3.5 h-3.5" :class="contextMenu.note.isFavorite ? 'text-indigo-600' : 'text-gray-400'" />
-          <span>{{ contextMenu.note.isFavorite ? '移出收藏' : '加入收藏' }}</span>
-        </button>
-
-        <!-- Share Link -->
-        <button
-          @click="emit('openShareModal', contextMenu.note!); closeContextMenu();"
-          class="w-full px-3 py-1.5 text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer transition-colors"
-        >
-          <Share2 class="w-3.5 h-3.5 text-gray-400" />
-          <span>分享链接</span>
         </button>
       </div>
 

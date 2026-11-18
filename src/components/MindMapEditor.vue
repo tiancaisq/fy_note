@@ -4,8 +4,6 @@ import {
   X,
   Save,
   Star,
-  Box,
-  Share2,
   Download,
   Folder as FolderIcon,
   Plus,
@@ -49,7 +47,8 @@ import {
   WrapText,
   ArrowLeftRight,
   ArrowLeft,
-  Navigation
+  Navigation,
+  FolderOpen
 } from 'lucide-vue-next';
 import { Note, Folder } from '../types';
 import { compareFolders } from '../utils/folderSort';
@@ -78,9 +77,11 @@ const props = withDefaults(
   defineProps<{
     note: Note;
     folders?: Folder[];
+    isActive?: boolean;
   }>(),
   {
     folders: () => [],
+    isActive: true,
   }
 );
 
@@ -88,8 +89,7 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'updateNote', id: string, updates: Partial<Note>): void;
   (e: 'toggleStar', noteId: string): void;
-  (e: 'toggleFavorite', noteId: string): void;
-  (e: 'openShare', note: Note): void;
+  (e: 'navigateFolder', folderId: string): void;
 }>();
 
 const isMac = computed(() => {
@@ -152,7 +152,7 @@ function toggleTab(tab: 'common' | 'idea' | 'appearance' | 'data' | 'view') {
   activeTab.value = activeTab.value === tab ? null : tab;
 }
 
-const isFullscreen = ref(true);
+const isFullscreen = ref(false);
 const saveStatus = ref('已自动同步');
 const searchKeyword = ref('');
 const isSearching = ref(false);
@@ -2521,6 +2521,7 @@ function handleApplyMarkdown(mindJson: any) {
 
 // Keyboard shortcuts for Mind Map Editor
 function handleKeyDown(e: KeyboardEvent) {
+  if (props.isActive === false) return;
   const isMod = e.metaKey || e.ctrlKey;
 
   // Global Search shortcut (Cmd+F / Ctrl+F) - highest priority everywhere
@@ -2554,6 +2555,14 @@ function handleKeyDown(e: KeyboardEvent) {
     }
   }
 
+  // Exit Focus Fullscreen when pressing Escape outside node editing & sub-modals
+  if (e.key === 'Escape' && !isEditingNode.value && isFullscreen.value) {
+    e.preventDefault();
+    e.stopPropagation();
+    isFullscreen.value = false;
+    return;
+  }
+
   // If in text editing mode (inline floating input)
   if (isEditingNode.value) {
     if (e.key === 'Enter') {
@@ -2579,7 +2588,7 @@ function handleKeyDown(e: KeyboardEvent) {
 
   // Ignore general map manipulation keystrokes when typing in actual form inputs
   const activeEl = document.activeElement;
-  const isKmReceiver = activeEl?.classList?.contains('km-receiver') || activeEl?.closest?.('#minder-view-container');
+  const isKmReceiver = activeEl?.classList?.contains('km-receiver') || activeEl?.closest?.('.km-minder-view');
   const activeTag = (activeEl?.tagName || '').toLowerCase();
   if (!isKmReceiver && (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select')) {
     return;
@@ -2813,21 +2822,58 @@ watch(
   }
 );
 
+watch(
+  () => props.note.title,
+  (newTitle) => {
+    if (newTitle !== localTitle.value) {
+      localTitle.value = newTitle;
+    }
+  }
+);
+
+watch(
+  () => props.note.folderId,
+  (newFolderId) => {
+    if (newFolderId !== localFolderId.value) {
+      localFolderId.value = newFolderId;
+    }
+  }
+);
+
+watch(
+  () => props.isActive,
+  (active) => {
+    if (active && minder) {
+      (window as any).currentMinder = minder;
+      nextTick(() => {
+        setTimeout(() => {
+          try {
+            if (typeof minder.layout === 'function') {
+              minder.layout();
+            }
+          } catch {}
+        }, 50);
+      });
+    }
+  }
+);
+
 watch(isFullscreen, () => {
   nextTick(() => {
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       if (minder) {
         try {
           if (typeof minder.layout === 'function') {
             minder.layout();
           }
-          const root = minder.getRoot();
-          if (root) {
-            centerNodeInCanvas(root, 200);
+          const targetNode = minder.getSelectedNode() || minder.getRoot();
+          if (targetNode) {
+            centerNodeInCanvas(targetNode, 180);
           }
         } catch {}
       }
-    }, 100);
+      window.dispatchEvent(new Event('resize'));
+    });
   });
 });
 
@@ -2851,61 +2897,56 @@ onUnmounted(() => {
 
 <template>
   <div
-    id="mindmap-editor-modal-container"
-    class="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 animate-in fade-in duration-150"
+    :class="[
+      'flex flex-col bg-white overflow-hidden',
+      isFullscreen
+        ? 'fixed inset-0 z-50 w-screen h-screen'
+        : 'relative w-full h-full'
+    ]"
   >
-    <div
-      id="mindmap-editor-dialog"
-      :class="[
-        'bg-white w-full rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-gray-200 transition-all',
-        isFullscreen ? 'fixed inset-0 rounded-none h-full' : 'max-w-7xl h-[94vh]'
-      ]"
-    >
-      <!-- Top Title & Global Controls Bar -->
-      <div class="h-14 px-3 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none z-30">
-        <!-- Close button, Title & Folder info -->
-        <div class="flex items-center gap-2.5 sm:gap-3 flex-1 mr-3 sm:mr-4 min-w-0">
-          <!-- Close Editor Button at top-left corner -->
-          <button
-            id="btn-close-mindmap"
-            @click="emit('close')"
-            class="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer shrink-0"
-            title="关闭思维导图"
-          >
-            <X class="w-5 h-5" />
-          </button>
-
-          <div class="h-4 w-px bg-gray-200 shrink-0"></div>
-
-          <!-- Green Mindmap File Icon matching image.png -->
-          <MindmapIcon size="sm" />
+      <!-- Document Tab Header Toolbar -->
+      <div class="h-12 px-4 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none z-30 gap-3">
+        <!-- Left: Mindmap Icon + Title + Folder Location -->
+        <div class="flex items-center gap-2.5 flex-1 min-w-0">
+          <MindmapIcon size="sm" class="shrink-0" />
 
           <input
             id="mindmap-title-input"
             v-model="localTitle"
             @input="handleContentChange"
             placeholder="输入思维导图标题..."
-            class="text-base sm:text-lg font-bold text-gray-900 placeholder-gray-300 border-none outline-none focus:ring-0 bg-transparent flex-1 truncate"
+            class="text-sm sm:text-base font-bold text-gray-900 placeholder-gray-300 border border-transparent hover:border-gray-200 focus:border-emerald-300 focus:bg-slate-50/60 rounded-md px-2 py-1 outline-none bg-transparent flex-1 min-w-[120px] truncate transition-colors"
           />
 
-          <!-- Folder Picker -->
-          <div class="hidden md:flex items-center gap-1.5 bg-gray-50 border border-gray-200 px-2.5 py-1 rounded-md text-xs text-gray-600">
-            <FolderIcon class="w-3.5 h-3.5 text-amber-500" />
-            <select
-              v-model="localFolderId"
-              @change="handleContentChange"
-              class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer"
+          <!-- Folder Location Picker & Quick Locate -->
+          <div class="hidden md:flex items-center bg-gray-50 border border-gray-200/80 rounded-md text-xs text-gray-600 shrink-0 overflow-hidden">
+            <div class="flex items-center gap-1 pl-2 pr-1 py-1">
+              <FolderIcon class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <select
+                v-model="localFolderId"
+                @change="handleContentChange"
+                class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer max-w-[140px] truncate"
+                title="更改所属文件夹"
+              >
+                <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
+                  {{ f.prefix }}📁 {{ f.name }}
+                </option>
+              </select>
+            </div>
+            <button
+              type="button"
+              @click="emit('navigateFolder', localFolderId)"
+              class="px-1.5 py-1 border-l border-gray-200/80 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50/70 transition-colors cursor-pointer"
+              title="在文件列表中定位此目录"
             >
-              <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
-                {{ f.prefix }}📁 {{ f.name }}
-              </option>
-            </select>
+              <FolderOpen class="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
 
         <!-- Mode Switches & Actions -->
         <div class="flex items-center gap-2 shrink-0">
-          <!-- Star & Favorite Buttons -->
+          <!-- Star Button -->
           <button
             @click="emit('toggleStar', note.id)"
             class="p-1.5 text-gray-400 hover:text-amber-500 hover:bg-gray-50 rounded-md transition-colors cursor-pointer"
@@ -2914,29 +2955,11 @@ onUnmounted(() => {
             <Star class="w-4 h-4" :class="note.isStarred ? 'text-amber-500 fill-amber-500' : ''" />
           </button>
 
-          <button
-            @click="emit('toggleFavorite', note.id)"
-            class="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-gray-50 rounded-md transition-colors cursor-pointer"
-            title="收藏"
-          >
-            <Box class="w-4 h-4" :class="note.isFavorite ? 'text-indigo-600' : ''" />
-          </button>
-
-          <!-- Share Button -->
-          <button
-            @click="emit('openShare', note)"
-            class="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors text-xs flex items-center gap-1 font-medium cursor-pointer"
-            title="分享导图"
-          >
-            <Share2 class="w-4 h-4 text-blue-600" />
-            <span class="hidden sm:inline text-blue-600">分享</span>
-          </button>
-
           <!-- Fullscreen Toggle -->
           <button
             @click="isFullscreen = !isFullscreen"
             class="p-1.5 text-gray-500 hover:text-gray-800 hover:bg-gray-50 rounded-md transition-colors cursor-pointer"
-            :title="isFullscreen ? '退出全屏' : '全屏模式'"
+            :title="isFullscreen ? '退出专注全屏 (Esc)' : '专注全屏模式'"
           >
             <Minimize2 v-if="isFullscreen" class="w-4 h-4" />
             <Maximize2 v-else class="w-4 h-4" />
@@ -3816,7 +3839,6 @@ onUnmounted(() => {
         <!-- Mind Map Interactive Canvas Container -->
         <div id="mindmap-canvas-wrapper" class="flex-1 relative bg-slate-50/50 overflow-hidden w-full h-full flex flex-col">
           <div
-            id="minder-view-container"
             ref="minderContainerRef"
             class="km-minder-view w-full flex-1 cursor-grab active:cursor-grabbing outline-none relative"
             style="min-height: 0;"
@@ -4079,7 +4101,6 @@ onUnmounted(() => {
           </span>
         </div>
       </div>
-    </div>
 
     <!-- Mind Map Search & Tree Navigation Window (搜索导航窗口) -->
     <div
@@ -4552,8 +4573,7 @@ onUnmounted(() => {
 
 <style>
 /* KityMinder Core SVG Layout & text editor */
-.km-minder-view,
-#minder-view-container {
+.km-minder-view {
   position: absolute !important;
   inset: 0 !important;
   width: 100% !important;
@@ -4562,15 +4582,15 @@ onUnmounted(() => {
   outline: none;
 }
 
-#minder-view-container svg {
+.km-minder-view svg {
   width: 100% !important;
   height: 100% !important;
   display: block !important;
   outline: none;
 }
 
-#minder-view-container .km-editor,
-#minder-view-container .km-receiver {
+.km-minder-view .km-editor,
+.km-minder-view .km-receiver {
   font-family: inherit;
 }
 </style>
