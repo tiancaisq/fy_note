@@ -575,7 +575,6 @@ onUnmounted(() => {
               @duplicate-note="duplicateNote"
               @export-note="exportNoteAsMarkdown"
               @rename-note="handleRenameNote"
-              @switch-to-timeline="selectView('timeline')"
               @batch-move="(selectedNotes) => openBatchMoveModal(selectedNotes)"
               @batch-toggle-star="(ids) => batchToggleStar(ids)"
               @batch-move-to-trash="handlePromptBatchMoveToTrash"
@@ -595,35 +594,26 @@ onUnmounted(() => {
                 v-if="tabNote.format === 'drawio' || tabNote.type === 'drawio'"
                 :is-active="activeTabId === tabNote.id"
                 :note="tabNote"
-                :folders="folders"
                 @close="closeTab(tabNote.id)"
                 @update-note="updateNote"
-                @toggle-star="toggleStar"
-                @navigate-folder="selectFolder"
               />
 
               <MindMapEditor
                 v-else-if="tabNote.format === 'mindmap' || tabNote.type === 'mindmap'"
                 :is-active="activeTabId === tabNote.id"
                 :note="tabNote"
-                :folders="folders"
                 @close="closeTab(tabNote.id)"
                 @update-note="updateNote"
-                @toggle-star="toggleStar"
-                @navigate-folder="selectFolder"
               />
 
               <NoteEditor
                 v-else
                 :is-active="activeTabId === tabNote.id"
                 :note="tabNote"
-                :folders="folders"
                 :mode="editorMode"
                 @close="closeTab(tabNote.id)"
                 @update-note="updateNote"
-                @toggle-star="toggleStar"
                 @export-note="exportNoteAsMarkdown"
-                @navigate-folder="selectFolder"
               />
             </div>
           </template>

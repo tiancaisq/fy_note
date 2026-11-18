@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Activity,
   Sparkles,
-  Layers,
   Folder as FolderIcon,
   Search,
   X,
@@ -170,22 +169,22 @@ function getFolderName(folderId: string): string {
   <div id="timeline-view-container" class="flex-1 flex flex-col bg-slate-50/50 overflow-hidden select-none">
     <!-- Top Compact Header Bar (Read-only view) -->
     <div id="timeline-header" class="bg-white px-5 py-3 border-b border-gray-100 shrink-0">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2.5">
         <!-- Title & Breadcrumb -->
-        <div class="flex items-center gap-2 text-xs sm:text-sm">
+        <div class="flex items-center gap-2 text-xs sm:text-sm shrink-0 whitespace-nowrap">
           <button
             id="btn-nav-back-folder"
             @click="emit('switchToTableView')"
-            class="text-gray-500 hover:text-blue-600 font-medium transition-colors cursor-pointer"
+            class="text-gray-500 hover:text-blue-600 font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0"
           >
             我的笔记
           </button>
-          <ChevronRight class="w-3.5 h-3.5 text-gray-400" />
-          <div class="flex items-center gap-1.5 font-bold text-gray-900">
-            <Clock class="w-4 h-4 text-blue-600" />
+          <ChevronRight class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+          <div class="flex items-center gap-1.5 font-bold text-gray-900 whitespace-nowrap shrink-0">
+            <Clock class="w-4 h-4 text-blue-600 shrink-0" />
             <span>时间线</span>
           </div>
-          <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium ml-1">
+          <span class="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-medium ml-1 whitespace-nowrap shrink-0">
             共 {{ filteredTimelineNotes.length }} 条记录
           </span>
         </div>
@@ -193,60 +192,60 @@ function getFolderName(folderId: string): string {
         <!-- Mode & Format Controls -->
         <div class="flex flex-wrap items-center gap-2">
           <!-- Mode Tabs (最近修改 vs 最近创建) -->
-          <div class="bg-gray-100 p-0.5 rounded-lg flex items-center text-xs font-medium">
+          <div class="bg-gray-100 p-0.5 rounded-lg flex items-center text-xs font-medium shrink-0 whitespace-nowrap">
             <button
               id="tab-mode-updated"
               @click="timelineMode = 'updated'"
               :class="[
-                'flex items-center gap-1 px-2.5 py-1 rounded-md transition-all cursor-pointer',
+                'flex items-center gap-1 px-2.5 py-1 rounded-md transition-all cursor-pointer whitespace-nowrap',
                 timelineMode === 'updated'
                   ? 'bg-white text-blue-600 font-bold shadow-xs'
                   : 'text-gray-600 hover:text-gray-900'
               ]"
             >
-              <Activity class="w-3 h-3 text-blue-500" />
+              <Activity class="w-3 h-3 text-blue-500 shrink-0" />
               <span>按修改时间</span>
             </button>
             <button
               id="tab-mode-created"
               @click="timelineMode = 'created'"
               :class="[
-                'flex items-center gap-1 px-2.5 py-1 rounded-md transition-all cursor-pointer',
+                'flex items-center gap-1 px-2.5 py-1 rounded-md transition-all cursor-pointer whitespace-nowrap',
                 timelineMode === 'created'
                   ? 'bg-white text-emerald-600 font-bold shadow-xs'
                   : 'text-gray-600 hover:text-gray-900'
               ]"
             >
-              <Sparkles class="w-3 h-3 text-emerald-500" />
+              <Sparkles class="w-3 h-3 text-emerald-500 shrink-0" />
               <span>按创建时间</span>
             </button>
           </div>
 
           <!-- Format Filter -->
-          <div class="flex items-center bg-gray-100 p-0.5 rounded-lg text-xs">
+          <div class="flex items-center bg-gray-100 p-0.5 rounded-lg text-xs shrink-0 whitespace-nowrap">
             <button
               @click="selectedFormat = 'all'"
-              :class="['px-2 py-1 rounded-md transition-colors cursor-pointer', selectedFormat === 'all' ? 'bg-white text-gray-800 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
+              :class="['px-2 py-1 rounded-md transition-colors cursor-pointer whitespace-nowrap', selectedFormat === 'all' ? 'bg-white text-gray-800 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
             >
               全部
             </button>
             <button
               @click="selectedFormat = 'markdown'"
-              :class="['px-2 py-1 rounded-md flex items-center gap-1 transition-colors cursor-pointer', selectedFormat === 'markdown' ? 'bg-white text-orange-600 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
+              :class="['px-2 py-1 rounded-md flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap', selectedFormat === 'markdown' ? 'bg-white text-orange-600 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
             >
               <FileFormatIcon format="markdown" size="xs" />
               <span>MD</span>
             </button>
             <button
               @click="selectedFormat = 'mindmap'"
-              :class="['px-2 py-1 rounded-md flex items-center gap-1 transition-colors cursor-pointer', selectedFormat === 'mindmap' ? 'bg-white text-emerald-600 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
+              :class="['px-2 py-1 rounded-md flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap', selectedFormat === 'mindmap' ? 'bg-white text-emerald-600 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
             >
               <MindmapIcon size="xs" />
               <span>导图</span>
             </button>
             <button
               @click="selectedFormat = 'drawio'"
-              :class="['px-2 py-1 rounded-md flex items-center gap-1 transition-colors cursor-pointer', selectedFormat === 'drawio' ? 'bg-white text-amber-600 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
+              :class="['px-2 py-1 rounded-md flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap', selectedFormat === 'drawio' ? 'bg-white text-amber-600 font-medium shadow-xs' : 'text-gray-500 hover:text-gray-800']"
             >
               <DrawioIcon size="xs" />
               <span>图表</span>
@@ -282,16 +281,6 @@ function getFolderName(folderId: string): string {
             </button>
           </div>
 
-          <!-- Back to Table View Button -->
-          <button
-            id="btn-switch-table-view"
-            @click="emit('switchToTableView')"
-            class="px-2.5 py-1 bg-gray-50 hover:bg-gray-100 text-gray-700 rounded-lg text-xs font-medium border border-gray-200 flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-            title="返回常规笔记列表"
-          >
-            <Layers class="w-3.5 h-3.5 text-gray-500" />
-            <span>返回列表</span>
-          </button>
         </div>
       </div>
     </div>

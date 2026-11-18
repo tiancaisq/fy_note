@@ -33,7 +33,6 @@ const shortcutGroups = computed(() => [
   {
     title: 'Draw.io 图表快捷键 (流程图/工程图)',
     shortcuts: [
-      { keys: [modKey.value, 'S'], desc: '保存图表到本地与云端' },
       { keys: [modKey.value, 'Z'], desc: '撤销上一步形状绘制' },
       { keys: [modKey.value, 'Y'], desc: '重做下一步形状绘制' },
       { keys: ['Space', '+拖拽'], desc: '平移平滑移动画布' },
@@ -59,13 +58,11 @@ const shortcutGroups = computed(() => [
   {
     title: 'Markdown 编辑器快捷键',
     shortcuts: [
-      { keys: [modKey.value, 'S'], desc: '即时保存笔记' },
       { keys: [modKey.value, 'B'], desc: '粗体文本 (**text**)' },
       { keys: [modKey.value, 'I'], desc: '斜体文本 (*text*)' },
       { keys: [modKey.value, 'K'], desc: '插入超链接' },
       { keys: [modKey.value, shiftKey.value, 'C'], desc: '插入代码块' },
       { keys: [modKey.value, 'P'], desc: '切换分屏 / 预览模式' },
-      { keys: [modKey.value, shiftKey.value, 'S'], desc: '标星 / 取消标星' },
       { keys: ['Esc'], desc: '退出全屏编辑' },
     ],
   },

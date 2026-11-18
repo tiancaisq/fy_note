@@ -2,10 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import {
   X,
-  Save,
-  Star,
   Download,
-  Folder as FolderIcon,
   Maximize2,
   Minimize2,
   Sparkles,
@@ -25,11 +22,9 @@ import {
   Undo2,
   Redo2,
   Sliders,
-  FileImage,
-  FolderOpen
+  FileImage
 } from 'lucide-vue-next';
-import { Note, Folder } from '../types';
-import { compareFolders } from '../utils/folderSort';
+import { Note } from '../types';
 import DrawioIcon from './icons/DrawioIcon.vue';
 import {
   DRAWIO_TEMPLATES,
@@ -43,11 +38,9 @@ import {
 const props = withDefaults(
   defineProps<{
     note: Note;
-    folders?: Folder[];
     isActive?: boolean;
   }>(),
   {
-    folders: () => [],
     isActive: true,
   }
 );
@@ -55,17 +48,10 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'updateNote', id: string, updates: Partial<Note>): void;
-  (e: 'toggleStar', noteId: string): void;
-  (e: 'navigateFolder', folderId: string): void;
 }>();
-
-const isMac = computed(() => {
-  return typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-});
 
 // Local state
 const localTitle = ref(props.note.title || '无标题图表');
-const localFolderId = ref(props.note.folderId);
 const localTags = ref<string[]>([...(props.note.tags || [])]);
 const newTagInput = ref('');
 const isFullscreen = ref(false);
@@ -117,51 +103,6 @@ let iframeInitTimeout: any = null;
 const currentXml = ref<string>(extractDrawioXml(props.note.content));
 const rawXmlDraft = ref<string>(currentXml.value);
 
-// Hierarchical folders
-const hierarchicalFolders = computed(() => {
-  const result: { id: string; name: string; level: number; fullPath: string; prefix: string }[] = [];
-  const list = props.folders || [];
-  const validIds = new Set(list.map((f) => f.id));
-  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
-
-  function getChildren(pId: string | null = null) {
-    if (!pId) {
-      return list.filter((f) => !f.parentId).sort(compareFolders);
-    }
-    return list
-      .filter((f) => {
-        if (f.parentId === pId) return true;
-        if (pId === firstId && f.parentId && !validIds.has(f.parentId) && f.id !== firstId) {
-          return true;
-        }
-        return false;
-      })
-      .sort(compareFolders);
-  }
-
-  function traverse(parentId: string | null = null, level = 0, parentPath = '', visited = new Set<string>()) {
-    const children = getChildren(parentId);
-
-    for (const child of children) {
-      if (visited.has(child.id)) continue;
-      visited.add(child.id);
-      const currentPath = parentPath ? `${parentPath} / ${child.name}` : child.name;
-      const indent = level === 0 ? '' : '　'.repeat(level) + '└ ';
-      result.push({
-        id: child.id,
-        name: child.name,
-        level,
-        fullPath: currentPath,
-        prefix: indent,
-      });
-      traverse(child.id, level + 1, currentPath, visited);
-    }
-  }
-
-  traverse(null, 0, '');
-  return result;
-});
-
 // Build Draw.io Embed URL
 const drawioEmbedUrl = computed(() => {
   const params = new URLSearchParams({
@@ -170,7 +111,7 @@ const drawioEmbedUrl = computed(() => {
     spin: '1',
     proto: 'json',
     configure: '1',
-    noSaveBtn: '0',
+    noSaveBtn: '1',
     saveAndExit: '0',
     lang: 'zh',
     libraries: '1',
@@ -216,7 +157,6 @@ function saveDiagram(newXml?: string) {
   emit('updateNote', props.note.id, {
     title: localTitle.value,
     content: xmlToSave,
-    folderId: localFolderId.value,
     tags: localTags.value,
     updatedAt: nowStr,
     previewSvg: props.note.previewSvg || fallbackSvg,
@@ -395,16 +335,25 @@ function handleApplyTemplate(template: DrawioTemplateInfo) {
   isTemplateModalOpen.value = false;
 }
 
-// Update title on blur / enter
+// Instant save title on input/blur
+let titleSaveTimer: any = null;
+function handleTitleInput() {
+  saveStatus.value = 'saving';
+  if (titleSaveTimer) clearTimeout(titleSaveTimer);
+  titleSaveTimer = setTimeout(() => {
+    titleSaveTimer = null;
+    saveDiagram();
+  }, 200);
+}
+
 function handleTitleBlur() {
+  if (titleSaveTimer) {
+    clearTimeout(titleSaveTimer);
+    titleSaveTimer = null;
+  }
   if (!localTitle.value.trim()) {
     localTitle.value = '无标题图表';
   }
-  saveDiagram();
-}
-
-// Folder change
-function handleFolderChange() {
   saveDiagram();
 }
 
@@ -501,15 +450,6 @@ watch(
   }
 );
 
-watch(
-  () => props.note.folderId,
-  (newFolderId) => {
-    if (newFolderId !== localFolderId.value) {
-      localFolderId.value = newFolderId;
-    }
-  }
-);
-
 onMounted(() => {
   window.addEventListener('message', handleWindowMessage);
   window.addEventListener('click', handleClickOutside);
@@ -519,6 +459,11 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (titleSaveTimer) {
+    clearTimeout(titleSaveTimer);
+    titleSaveTimer = null;
+    saveDiagram();
+  }
   window.removeEventListener('message', handleWindowMessage);
   window.removeEventListener('click', handleClickOutside);
   window.removeEventListener('keydown', handleKeyDown);
@@ -537,7 +482,7 @@ onUnmounted(() => {
   >
       <!-- Document Tab Header Toolbar -->
       <header class="h-12 px-4 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 z-20 gap-3">
-        <!-- Left: Format Icon + Badge + Title Input + Folder Location -->
+        <!-- Left: Format Icon + Badge + Title Input -->
         <div class="flex items-center gap-2.5 min-w-0 flex-1">
           <!-- Drawio Format Icon -->
           <div class="flex items-center gap-1.5 shrink-0">
@@ -552,38 +497,13 @@ onUnmounted(() => {
             <input
               id="drawio-title-input"
               v-model="localTitle"
+              @input="handleTitleInput"
               @blur="handleTitleBlur"
               @keydown.enter="($event.target as HTMLElement)?.blur()"
               type="text"
               class="w-full h-8 px-2 text-sm sm:text-base font-bold text-gray-900 placeholder-gray-300 bg-transparent hover:bg-gray-50 focus:bg-slate-50/60 border border-transparent hover:border-gray-200 focus:border-amber-400 rounded-md outline-none transition-colors truncate select-text"
               placeholder="请输入图表名称..."
             />
-          </div>
-
-          <!-- Folder Location Picker & Quick Locate -->
-          <div class="hidden lg:flex items-center bg-gray-50 border border-gray-200/80 rounded-md text-xs text-gray-600 shrink-0 overflow-hidden">
-            <div class="flex items-center gap-1 pl-2 pr-1 py-1">
-              <FolderIcon class="w-3.5 h-3.5 text-amber-500 shrink-0" />
-              <select
-                id="drawio-folder-select"
-                v-model="localFolderId"
-                @change="handleFolderChange"
-                class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer max-w-[130px] truncate"
-                title="更改所属文件夹"
-              >
-                <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
-                  {{ f.prefix }}📁 {{ f.name }}
-                </option>
-              </select>
-            </div>
-            <button
-              type="button"
-              @click="emit('navigateFolder', localFolderId)"
-              class="px-1.5 py-1 border-l border-gray-200/80 text-gray-400 hover:text-amber-600 hover:bg-amber-50/70 transition-colors cursor-pointer"
-              title="在文件列表中定位此目录"
-            >
-              <FolderOpen class="w-3.5 h-3.5" />
-            </button>
           </div>
         </div>
 
@@ -748,31 +668,6 @@ onUnmounted(() => {
               </button>
             </div>
           </div>
-
-          <!-- Star Button -->
-          <button
-            id="drawio-star-btn"
-            @click="emit('toggleStar', props.note.id)"
-            :class="[
-              'p-2 rounded-lg border transition-colors cursor-pointer',
-              props.note.isStarred
-                ? 'bg-amber-50 border-amber-300 text-amber-500'
-                : 'border-gray-200 text-gray-400 hover:text-amber-500 hover:bg-gray-50'
-            ]"
-            title="标星图表"
-          >
-            <Star class="w-3.5 h-3.5" :fill="props.note.isStarred ? 'currentColor' : 'none'" />
-          </button>
-
-          <!-- Save Button / Status Indicator -->
-          <button
-            id="drawio-save-btn"
-            @click="saveDiagram()"
-            class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg shadow-2xs transition-all cursor-pointer"
-          >
-            <Save class="w-3.5 h-3.5" />
-            <span class="hidden sm:inline">保存</span>
-          </button>
 
           <!-- Focus Fullscreen Toggle Button -->
           <button

@@ -2,10 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, toRaw } from 'vue';
 import {
   X,
-  Save,
-  Star,
   Download,
-  Folder as FolderIcon,
   Plus,
   ArrowUp,
   ArrowDown,
@@ -47,11 +44,9 @@ import {
   WrapText,
   ArrowLeftRight,
   ArrowLeft,
-  Navigation,
-  FolderOpen
+  Navigation
 } from 'lucide-vue-next';
-import { Note, Folder } from '../types';
-import { compareFolders } from '../utils/folderSort';
+import { Note } from '../types';
 import MindmapIcon from './icons/MindmapIcon.vue';
 import MindMapSearchTreeItem, { SearchTreeNode } from './MindMapSearchTreeItem.vue';
 import MindMapOutlineTreeItem, { OutlineTreeNode } from './MindMapOutlineTreeItem.vue';
@@ -76,11 +71,9 @@ import {
 const props = withDefaults(
   defineProps<{
     note: Note;
-    folders?: Folder[];
     isActive?: boolean;
   }>(),
   {
-    folders: () => [],
     isActive: true,
   }
 );
@@ -88,8 +81,6 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'updateNote', id: string, updates: Partial<Note>): void;
-  (e: 'toggleStar', noteId: string): void;
-  (e: 'navigateFolder', folderId: string): void;
 }>();
 
 const isMac = computed(() => {
@@ -98,53 +89,7 @@ const isMac = computed(() => {
 
 // Local reactive state
 const localTitle = ref(props.note.title);
-const localFolderId = ref(props.note.folderId);
 const localTags = ref<string[]>([...props.note.tags]);
-
-// Hierarchical folders formatted with level indentation
-const hierarchicalFolders = computed(() => {
-  const result: { id: string; name: string; level: number; fullPath: string; prefix: string }[] = [];
-  const list = props.folders || [];
-  const validIds = new Set(list.map((f) => f.id));
-  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
-
-  function getChildren(pId: string | null = null) {
-    if (!pId) {
-      return list.filter((f) => !f.parentId).sort(compareFolders);
-    }
-    return list
-      .filter((f) => {
-        if (f.parentId === pId) return true;
-        if (pId === firstId && f.parentId && !validIds.has(f.parentId) && f.id !== firstId) {
-          return true;
-        }
-        return false;
-      })
-      .sort(compareFolders);
-  }
-
-  function traverse(parentId: string | null = null, level = 0, parentPath = '', visited = new Set<string>()) {
-    const children = getChildren(parentId);
-
-    for (const child of children) {
-      if (visited.has(child.id)) continue;
-      visited.add(child.id);
-      const currentPath = parentPath ? `${parentPath} / ${child.name}` : child.name;
-      const indent = level === 0 ? '' : '　'.repeat(level) + '└ ';
-      result.push({
-        id: child.id,
-        name: child.name,
-        level,
-        fullPath: currentPath,
-        prefix: indent,
-      });
-      traverse(child.id, level + 1, currentPath, visited);
-    }
-  }
-
-  traverse(null, 0, '');
-  return result;
-});
 const newTagInput = ref('');
 const activeTab = ref<'common' | 'idea' | 'appearance' | 'data' | 'view' | null>(null);
 
@@ -1084,15 +1029,15 @@ function applySnapshot(index: number) {
     outlineTreeVersion.value++;
     
     // Trigger note synchronization
-    saveStatus.value = '保存中...';
+    saveStatus.value = '同步中...';
     if (saveTimeout) clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => {
+      saveTimeout = null;
       try {
         const exported = minder.exportJson();
         emit('updateNote', props.note.id, {
           title: localTitle.value || '未命名思维导图',
           content: JSON.stringify(exported, null, 2),
-          folderId: localFolderId.value,
           tags: localTags.value,
           format: 'mindmap',
           type: 'mindmap'
@@ -1101,7 +1046,7 @@ function applySnapshot(index: number) {
       } catch (e) {
         console.error('Failed to auto-save mindmap', e);
       }
-    }, 400);
+    }, 150);
 
     setTimeout(() => {
       isHistoryNavigating.value = false;
@@ -1124,15 +1069,15 @@ function handleContentChange() {
   if (!isHistoryNavigating.value) {
     recordSnapshot();
   }
-  saveStatus.value = '保存中...';
+  saveStatus.value = '同步中...';
   if (saveTimeout) clearTimeout(saveTimeout);
   saveTimeout = setTimeout(() => {
+    saveTimeout = null;
     try {
       const exported = minder.exportJson();
       emit('updateNote', props.note.id, {
         title: localTitle.value || '未命名思维导图',
         content: JSON.stringify(exported, null, 2),
-        folderId: localFolderId.value,
         tags: localTags.value,
         format: 'mindmap',
         type: 'mindmap'
@@ -1141,7 +1086,7 @@ function handleContentChange() {
     } catch (e) {
       console.error('Failed to auto-save mindmap', e);
     }
-  }, 500);
+  }, 150);
 }
 
 function handleSelectionChange() {
@@ -1165,23 +1110,22 @@ function handleSelectionChange() {
   outlineTreeVersion.value++;
 }
 
-function handleManualSave() {
+function flushSaveNow() {
   if (!minder) return;
-  if (saveTimeout) clearTimeout(saveTimeout);
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
   try {
     const exported = minder.exportJson();
     emit('updateNote', props.note.id, {
       title: localTitle.value || '未命名思维导图',
       content: JSON.stringify(exported, null, 2),
-      folderId: localFolderId.value,
       tags: localTags.value,
       format: 'mindmap',
       type: 'mindmap'
     });
-    saveStatus.value = '已即时保存 ✓';
-    setTimeout(() => {
-      saveStatus.value = '已自动同步';
-    }, 2000);
+    saveStatus.value = '已自动同步';
   } catch (e) {
     console.error('Save failed', e);
   }
@@ -2594,10 +2538,10 @@ function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  // Save shortcut (Cmd+S / Ctrl+S)
+  // Flush auto-save quietly & block browser save dialog (Cmd+S / Ctrl+S)
   if (isMod && e.key.toLowerCase() === 's' && !e.shiftKey) {
     e.preventDefault();
-    handleManualSave();
+    flushSaveNow();
     return;
   }
 
@@ -2814,7 +2758,6 @@ watch(
   () => props.note.id,
   () => {
     localTitle.value = props.note.title;
-    localFolderId.value = props.note.folderId;
     localTags.value = [...props.note.tags];
     nextTick(() => {
       initKityMinder();
@@ -2827,15 +2770,6 @@ watch(
   (newTitle) => {
     if (newTitle !== localTitle.value) {
       localTitle.value = newTitle;
-    }
-  }
-);
-
-watch(
-  () => props.note.folderId,
-  (newFolderId) => {
-    if (newFolderId !== localFolderId.value) {
-      localFolderId.value = newFolderId;
     }
   }
 );
@@ -2887,10 +2821,12 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (saveTimeout) {
+    flushSaveNow();
+  }
   window.removeEventListener('keydown', handleKeyDown, true);
   window.removeEventListener('resize', handleWindowResize);
   document.removeEventListener('mousedown', handleDocumentClick);
-  if (saveTimeout) clearTimeout(saveTimeout);
   minderInstance.value = null;
 });
 </script>
@@ -2906,7 +2842,7 @@ onUnmounted(() => {
   >
       <!-- Document Tab Header Toolbar -->
       <div class="h-12 px-4 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none z-30 gap-3">
-        <!-- Left: Mindmap Icon + Title + Folder Location -->
+        <!-- Left: Mindmap Icon + Title -->
         <div class="flex items-center gap-2.5 flex-1 min-w-0">
           <MindmapIcon size="sm" class="shrink-0" />
 
@@ -2914,47 +2850,14 @@ onUnmounted(() => {
             id="mindmap-title-input"
             v-model="localTitle"
             @input="handleContentChange"
+            @blur="flushSaveNow"
             placeholder="输入思维导图标题..."
             class="text-sm sm:text-base font-bold text-gray-900 placeholder-gray-300 border border-transparent hover:border-gray-200 focus:border-emerald-300 focus:bg-slate-50/60 rounded-md px-2 py-1 outline-none bg-transparent flex-1 min-w-[120px] truncate transition-colors"
           />
-
-          <!-- Folder Location Picker & Quick Locate -->
-          <div class="hidden md:flex items-center bg-gray-50 border border-gray-200/80 rounded-md text-xs text-gray-600 shrink-0 overflow-hidden">
-            <div class="flex items-center gap-1 pl-2 pr-1 py-1">
-              <FolderIcon class="w-3.5 h-3.5 text-amber-500 shrink-0" />
-              <select
-                v-model="localFolderId"
-                @change="handleContentChange"
-                class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer max-w-[140px] truncate"
-                title="更改所属文件夹"
-              >
-                <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
-                  {{ f.prefix }}📁 {{ f.name }}
-                </option>
-              </select>
-            </div>
-            <button
-              type="button"
-              @click="emit('navigateFolder', localFolderId)"
-              class="px-1.5 py-1 border-l border-gray-200/80 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50/70 transition-colors cursor-pointer"
-              title="在文件列表中定位此目录"
-            >
-              <FolderOpen class="w-3.5 h-3.5" />
-            </button>
-          </div>
         </div>
 
         <!-- Mode Switches & Actions -->
         <div class="flex items-center gap-2 shrink-0">
-          <!-- Star Button -->
-          <button
-            @click="emit('toggleStar', note.id)"
-            class="p-1.5 text-gray-400 hover:text-amber-500 hover:bg-gray-50 rounded-md transition-colors cursor-pointer"
-            title="标星"
-          >
-            <Star class="w-4 h-4" :class="note.isStarred ? 'text-amber-500 fill-amber-500' : ''" />
-          </button>
-
           <!-- Fullscreen Toggle -->
           <button
             @click="isFullscreen = !isFullscreen"
@@ -2963,17 +2866,6 @@ onUnmounted(() => {
           >
             <Minimize2 v-if="isFullscreen" class="w-4 h-4" />
             <Maximize2 v-else class="w-4 h-4" />
-          </button>
-
-          <!-- Manual Save Button -->
-          <button
-            @click="handleManualSave"
-            :title="'即时保存 (' + (isMac ? '⌘S' : 'Ctrl+S') + ')'"
-            class="px-2.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors flex items-center gap-1 border border-emerald-200 cursor-pointer"
-          >
-            <Save class="w-3.5 h-3.5" />
-            <span class="hidden sm:inline">保存</span>
-            <kbd class="text-[9px] font-mono text-emerald-500 hidden sm:inline">{{ isMac ? '⌘S' : 'Ctrl+S' }}</kbd>
           </button>
         </div>
       </div>

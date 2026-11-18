@@ -4,11 +4,8 @@ import Vditor from 'vditor';
 import 'vditor/dist/index.css';
 import {
   X,
-  Save,
-  Star,
   Download,
   Tag as TagIcon,
-  Folder as FolderIcon,
   Copy,
   Check,
   CheckCheck,
@@ -23,17 +20,14 @@ import {
   ChevronDown,
   ChevronUp,
   Replace,
-  CaseSensitive,
-  FolderOpen
+  CaseSensitive
 } from 'lucide-vue-next';
-import { Note, Folder } from '../types';
-import { compareFolders } from '../utils/folderSort';
+import { Note } from '../types';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
 
 const props = withDefaults(
   defineProps<{
     note: Note;
-    folders: Folder[];
     mode?: 'split' | 'edit' | 'preview';
     isActive?: boolean;
   }>(),
@@ -45,9 +39,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'updateNote', id: string, updates: Partial<Note>): void;
-  (e: 'toggleStar', noteId: string): void;
   (e: 'exportNote', note: Note): void;
-  (e: 'navigateFolder', folderId: string): void;
 }>();
 
 const isMac = computed(() => {
@@ -56,7 +48,6 @@ const isMac = computed(() => {
 
 const localTitle = ref(props.note.title);
 const localContent = ref(props.note.content || '');
-const localFolderId = ref(props.note.folderId);
 const localTags = ref<string[]>([...props.note.tags]);
 const newTagInput = ref('');
 const isFullscreen = ref(false);
@@ -80,88 +71,36 @@ const currentMatchIndex = ref(0);
 const totalMatchesCount = ref(0);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 
-// Hierarchical folders formatted with level indentation
-const hierarchicalFolders = computed(() => {
-  const result: { id: string; name: string; level: number; fullPath: string; prefix: string }[] = [];
-  const list = props.folders || [];
-  const validIds = new Set(list.map((f) => f.id));
-  const firstId = list.find((f) => !f.parentId)?.id || list[0]?.id || '';
-
-  function getChildren(pId: string | null = null) {
-    if (!pId) {
-      return list.filter((f) => !f.parentId).sort(compareFolders);
-    }
-    return list
-      .filter((f) => {
-        if (f.parentId === pId) return true;
-        if (pId === firstId && f.parentId && !validIds.has(f.parentId) && f.id !== firstId) {
-          return true;
-        }
-        return false;
-      })
-      .sort(compareFolders);
-  }
-
-  function traverse(parentId: string | null = null, level = 0, parentPath = '', visited = new Set<string>()) {
-    const children = getChildren(parentId);
-
-    for (const child of children) {
-      if (visited.has(child.id)) continue;
-      visited.add(child.id);
-      const currentPath = parentPath ? `${parentPath} / ${child.name}` : child.name;
-      const indent = level === 0 ? '' : '　'.repeat(level) + '└ ';
-      result.push({
-        id: child.id,
-        name: child.name,
-        level,
-        fullPath: currentPath,
-        prefix: indent,
-      });
-      traverse(child.id, level + 1, currentPath, visited);
-    }
-  }
-
-  traverse(null, 0, '');
-  return result;
-});
-
-// Auto-save debounce
+// Auto-save (instantaneous with minimal typing debounce & flush on unmount)
 let saveTimeout: any = null;
-function triggerAutoSave() {
-  saveStatus.value = '保存中...';
-  if (saveTimeout) clearTimeout(saveTimeout);
-  saveTimeout = setTimeout(() => {
-    emit('updateNote', props.note.id, {
-      title: localTitle.value || '未命名笔记',
-      content: localContent.value,
-      folderId: localFolderId.value,
-      tags: localTags.value,
-    });
-    saveStatus.value = '已自动同步';
-  }, 400);
-}
-
-function handleManualSave() {
-  if (saveTimeout) clearTimeout(saveTimeout);
+function flushSaveNow() {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
   emit('updateNote', props.note.id, {
     title: localTitle.value || '未命名笔记',
     content: localContent.value,
-    folderId: localFolderId.value,
     tags: localTags.value,
   });
-  saveStatus.value = '已即时保存 ✓';
-  setTimeout(() => {
+  saveStatus.value = '已自动同步';
+}
+
+function triggerAutoSave() {
+  saveStatus.value = '同步中...';
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    saveTimeout = null;
+    emit('updateNote', props.note.id, {
+      title: localTitle.value || '未命名笔记',
+      content: localContent.value,
+      tags: localTags.value,
+    });
     saveStatus.value = '已自动同步';
-  }, 2000);
+  }, 150);
 }
 
 function handleTitleChange() {
-  triggerAutoSave();
-}
-
-function handleFolderChange(e: Event) {
-  const target = e.target as HTMLSelectElement;
-  localFolderId.value = target.value;
   triggerAutoSave();
 }
 
@@ -581,7 +520,6 @@ watch(
   () => {
     localTitle.value = props.note.title;
     localContent.value = props.note.content || '';
-    localFolderId.value = props.note.folderId;
     localTags.value = [...props.note.tags];
 
     if (vditorInstance && isVditorReady.value) {
@@ -595,15 +533,6 @@ watch(
   (newTitle) => {
     if (newTitle !== localTitle.value) {
       localTitle.value = newTitle;
-    }
-  }
-);
-
-watch(
-  () => props.note.folderId,
-  (newFolderId) => {
-    if (newFolderId !== localFolderId.value) {
-      localFolderId.value = newFolderId;
     }
   }
 );
@@ -635,17 +564,10 @@ function handleEditorKeyDown(e: KeyboardEvent) {
     }
   }
 
-  // Ctrl/Cmd + S: Save
+  // Ctrl/Cmd + S: Flush auto-save quietly & block browser save dialog
   if (isMod && e.key.toLowerCase() === 's' && !e.shiftKey) {
     e.preventDefault();
-    handleManualSave();
-    return;
-  }
-
-  // Ctrl/Cmd + Shift + S: Star
-  if (isMod && e.shiftKey && e.key.toLowerCase() === 's') {
-    e.preventDefault();
-    emit('toggleStar', props.note.id);
+    flushSaveNow();
     return;
   }
 }
@@ -658,6 +580,9 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (saveTimeout) {
+    flushSaveNow();
+  }
   window.removeEventListener('keydown', handleEditorKeyDown, true);
   clearHighlights();
   if (vditorInstance) {
@@ -682,7 +607,7 @@ onUnmounted(() => {
   >
     <!-- Document Tab Header Toolbar -->
     <div class="h-12 px-4 sm:px-5 bg-white border-b border-gray-100 flex items-center justify-between shrink-0 select-none gap-3">
-      <!-- Left: Format Icon + Document Title + Folder Location -->
+      <!-- Left: Format Icon + Document Title -->
       <div class="flex items-center gap-2.5 flex-1 min-w-0">
         <FileFormatIcon format="markdown" size="sm" class="shrink-0" />
 
@@ -690,34 +615,10 @@ onUnmounted(() => {
           id="editor-note-title-input"
           v-model="localTitle"
           @input="handleTitleChange"
+          @blur="flushSaveNow"
           placeholder="输入笔记标题..."
           class="text-sm sm:text-base font-bold text-gray-900 placeholder-gray-300 border border-transparent hover:border-gray-200 focus:border-blue-300 focus:bg-slate-50/60 rounded-md px-2 py-1 outline-none bg-transparent flex-1 min-w-[120px] truncate select-text transition-colors"
         />
-
-        <!-- Folder Location Picker & Quick Locate -->
-        <div class="hidden md:flex items-center bg-gray-50 border border-gray-200/80 rounded-md text-xs text-gray-600 shrink-0 overflow-hidden">
-          <div class="flex items-center gap-1 pl-2 pr-1 py-1">
-            <FolderIcon class="w-3.5 h-3.5 text-amber-500 shrink-0" />
-            <select
-              :value="localFolderId"
-              @change="handleFolderChange"
-              class="bg-transparent border-none outline-none text-xs text-gray-700 cursor-pointer max-w-[140px] truncate"
-              title="更改所属文件夹"
-            >
-              <option v-for="f in hierarchicalFolders" :key="f.id" :value="f.id">
-                {{ f.prefix }}📁 {{ f.name }}
-              </option>
-            </select>
-          </div>
-          <button
-            type="button"
-            @click="emit('navigateFolder', localFolderId)"
-            class="px-1.5 py-1 border-l border-gray-200/80 text-gray-400 hover:text-blue-600 hover:bg-blue-50/70 transition-colors cursor-pointer"
-            title="在文件列表中定位此目录"
-          >
-            <FolderOpen class="w-3.5 h-3.5" />
-          </button>
-        </div>
       </div>
 
         <!-- Mode Switches & Actions -->
@@ -786,15 +687,6 @@ onUnmounted(() => {
 
           <div class="h-4 w-px bg-gray-200 mx-0.5"></div>
 
-          <!-- Star Button -->
-          <button
-            @click="emit('toggleStar', note.id)"
-            class="p-1.5 text-gray-400 hover:text-amber-500 hover:bg-gray-50 rounded-md transition-colors cursor-pointer"
-            title="标星"
-          >
-            <Star class="w-4 h-4" :class="note.isStarred ? 'text-amber-500 fill-amber-500' : ''" />
-          </button>
-
           <!-- Top Bar Universal Copy Content Button -->
           <button
             @click="copyContent"
@@ -813,17 +705,6 @@ onUnmounted(() => {
             title="导出 Markdown"
           >
             <Download class="w-4 h-4" />
-          </button>
-
-          <!-- Manual Save Button -->
-          <button
-            @click="handleManualSave"
-            :title="'即时保存 (' + (isMac ? '⌘S' : 'Ctrl+S') + ')'"
-            class="px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 rounded-md transition-colors flex items-center gap-1 border border-emerald-200 cursor-pointer"
-          >
-            <Save class="w-3.5 h-3.5 text-emerald-600" />
-            <span class="hidden sm:inline">保存</span>
-            <kbd class="text-[9px] font-mono text-emerald-500 hidden sm:inline">{{ isMac ? '⌘S' : 'Ctrl+S' }}</kbd>
           </button>
 
           <!-- Focus Fullscreen Toggle Button -->

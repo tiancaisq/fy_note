@@ -16,7 +16,6 @@ import {
   ChevronDown,
   Check,
   Minus,
-  Clock,
   ExternalLink,
   AppWindow,
   X
@@ -52,7 +51,6 @@ const emit = defineEmits<{
   (e: 'duplicateNote', note: Note): void;
   (e: 'exportNote', note: Note): void;
   (e: 'renameNote', note: Note): void;
-  (e: 'switchToTimeline'): void;
   (e: 'update:sortField', val: SortField): void;
   (e: 'update:sortOrder', val: SortOrder): void;
   (e: 'update:filterOptions', val: FilterOptions): void;
@@ -375,17 +373,6 @@ onUnmounted(() => {
         >
           <Trash2 class="w-3.5 h-3.5" />
           <span>清空回收站</span>
-        </button>
-
-        <!-- Timeline View Button -->
-        <button
-          id="btn-goto-timeline"
-          @click="emit('switchToTimeline')"
-          class="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors cursor-pointer flex items-center gap-1"
-          title="切换至文件时间线视图"
-        >
-          <Clock class="w-4 h-4" />
-          <span class="text-xs hidden sm:inline">时间线</span>
         </button>
 
         <!-- Sort Icon Button: ⇅ -->
