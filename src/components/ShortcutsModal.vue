@@ -26,6 +26,7 @@ const shortcutGroups = computed(() => [
       { keys: [modKey.value, shiftKey.value, 'N'], desc: '新建文件夹' },
       { keys: [modKey.value, shiftKey.value, 'I'], desc: '打开导入弹窗' },
       { keys: [modKey.value, shiftKey.value, 'E'], desc: '导出全量备份' },
+      { keys: [modKey.value, '\\'], desc: '展开 / 收起左侧导航栏' },
       { keys: [modKey.value, '/'], desc: '查看快捷键帮助' },
       { keys: ['Esc'], desc: '关闭弹窗 / 搜索下拉' },
     ],

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   Plus,
   FileDown,
   Folder as FolderIcon,
   FolderOpen,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Star,
   Trash2,
@@ -35,6 +36,7 @@ const props = defineProps<{
   getFolderNoteCount: (id: string) => number;
   starredCount: number;
   trashCount: number;
+  collapsed?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -54,6 +56,7 @@ const emit = defineEmits<{
   (e: 'reorderFrequentFolders', fromIndex: number, toIndex: number): void;
   (e: 'moveFolder', draggedFolderId: string, targetParentId: string | null, position?: 'inside' | 'before' | 'after', targetFolderId?: string): void;
   (e: 'moveNote', draggedNoteId: string, targetFolderId: string): void;
+  (e: 'toggleSidebar'): void;
 }>();
 
 const isMyNotesExpanded = ref(true);
@@ -71,6 +74,16 @@ const isFrequentDropOver = ref(false);
 const draggedFrequentFolderId = ref<string | null>(null);
 const draggedOverFrequentFolderId = ref<string | null>(null);
 const draggedFrequentDropPosition = ref<'before' | 'after' | null>(null);
+
+watch(
+  () => props.collapsed,
+  (isCollapsed) => {
+    if (isCollapsed) {
+      isNewDropdownOpen.value = false;
+      isAddFrequentMenuOpen.value = false;
+    }
+  }
+);
 
 function handleNewNoteClick() {
   isNewDropdownOpen.value = false;
@@ -400,8 +413,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <aside id="app-sidebar" class="w-64 bg-white border-r border-gray-100 flex flex-col justify-between h-full select-none shrink-0 z-20">
-    <div class="p-3.5 space-y-4 overflow-y-auto flex-1">
+  <div class="relative flex h-full shrink-0 z-20">
+    <aside
+      id="app-sidebar"
+      :class="[
+        'bg-white flex flex-col justify-between h-full select-none shrink-0 transition-[width,opacity] duration-200 ease-out overflow-hidden',
+        collapsed ? 'w-0 opacity-0 border-r-0 pointer-events-none' : 'w-64 opacity-100 border-r border-gray-100'
+      ]"
+      :aria-hidden="Boolean(collapsed)"
+    >
+      <div class="w-64 h-full flex flex-col justify-between shrink-0">
+        <div class="p-3.5 space-y-4 overflow-y-auto flex-1">
       <!-- Top Action Buttons (Matches screenshot with split/dropdown selection) -->
       <div id="sidebar-top-actions" class="space-y-2">
         <!-- "+ 新建" Button with Dropdown selection for Note vs Mindmap -->
@@ -798,6 +820,32 @@ onUnmounted(() => {
           <span v-if="trashCount > 0" class="text-xs text-gray-400">{{ trashCount }}</span>
         </div>
       </div>
-    </div>
-  </aside>
+      </div>
+      </div>
+    </aside>
+
+    <!-- Right-Edge Collapse / Expand Arrow Handle -->
+    <button
+      id="btn-sidebar-edge-toggle"
+      type="button"
+      @click="emit('toggleSidebar')"
+      :title="(collapsed ? '展开左侧导航栏' : '收起左侧导航栏') + ' (' + (isMac ? '⌘\\' : 'Ctrl+\\') + ')'"
+      :aria-label="collapsed ? '展开左侧导航栏' : '收起左侧导航栏'"
+      :class="[
+        'absolute top-1/2 -translate-y-1/2 z-30 flex items-center justify-center bg-white border border-gray-200/90 text-gray-400 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50/90 shadow-sm hover:shadow transition-all duration-200 cursor-pointer group',
+        collapsed
+          ? 'left-0 w-5 h-12 rounded-r-lg border-l-0'
+          : '-right-3 w-6 h-11 rounded-full'
+      ]"
+    >
+      <ChevronRight
+        v-if="collapsed"
+        class="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5"
+      />
+      <ChevronLeft
+        v-else
+        class="w-3.5 h-3.5 transition-transform group-hover:-translate-x-0.5"
+      />
+    </button>
+  </div>
 </template>

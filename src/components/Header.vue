@@ -126,12 +126,12 @@ function highlightMatch(text: string, query: string): string {
   <header id="app-header" class="h-14 bg-white border-b border-gray-100 px-4 flex items-center justify-between shrink-0 select-none z-30 relative">
     <!-- Brand Logo and Title -->
     <div id="brand-logo-container" class="flex items-center gap-2.5 w-60 shrink-0">
-      <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-sm text-white">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-sm text-white shrink-0">
         <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 2C11.5 4.5 9 6.5 6.5 7C7 9.5 5 12 2 12C4.5 12.5 6.5 15 7 17.5C9.5 17 12 19 12 22C12.5 19.5 15 17.5 17.5 17C17 14.5 19 12 22 12C19.5 11.5 17.5 9 17 6.5C14.5 7 12 5 12 2Z" />
         </svg>
       </div>
-      <h1 class="text-base font-bold text-gray-900 tracking-tight flex items-center gap-1.5">
+      <h1 class="text-base font-bold text-gray-900 tracking-tight flex items-center gap-1.5 whitespace-nowrap">
         枫叶云笔记
         <span class="text-[10px] font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">v3.0</span>
       </h1>

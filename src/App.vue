@@ -119,6 +119,22 @@ const {
   navigateToNoteFromSearch,
 } = useNotes();
 
+const STORAGE_KEY_SIDEBAR_COLLAPSED = 'fengye_sidebar_collapsed_v1';
+const isSidebarCollapsed = ref<boolean>((() => {
+  try {
+    return localStorage.getItem(STORAGE_KEY_SIDEBAR_COLLAPSED) === 'true';
+  } catch {
+    return false;
+  }
+})());
+
+function toggleSidebar() {
+  isSidebarCollapsed.value = !isSidebarCollapsed.value;
+  try {
+    localStorage.setItem(STORAGE_KEY_SIDEBAR_COLLAPSED, String(isSidebarCollapsed.value));
+  } catch {}
+}
+
 // Confirmation Modal State for Secondary Confirmations
 interface ConfirmDialogState {
   isOpen: boolean;
@@ -408,6 +424,13 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
     return;
   }
 
+  // 6.5 Ctrl/Cmd + \: Toggle Left Navigation Sidebar
+  if (isMod && e.key === '\\') {
+    e.preventDefault();
+    toggleSidebar();
+    return;
+  }
+
   // 7. Ctrl/Cmd + / or "?" : Open Shortcuts Guide
   if ((isMod && e.key === '/') || (e.key === '?' && !isTyping)) {
     e.preventDefault();
@@ -497,6 +520,7 @@ onUnmounted(() => {
         :get-folder-note-count="getFolderNoteCount"
         :starred-count="starredNotesCount"
         :trash-count="deletedNotesCount"
+        :collapsed="isSidebarCollapsed"
         @select-folder="selectFolder"
         @select-view="selectView"
         @create-new-note="createNewNote()"
@@ -513,6 +537,7 @@ onUnmounted(() => {
         @reorder-frequent-folders="reorderFrequentFolders"
         @move-folder="moveFolder"
         @move-note="moveNoteToFolder"
+        @toggle-sidebar="toggleSidebar"
       />
 
       <!-- Right Main Workspace: Tab Bar + Content / Active File Tab -->
