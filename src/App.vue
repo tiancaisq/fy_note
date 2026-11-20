@@ -129,6 +129,7 @@ const {
   batchMoveBookmarks,
   batchToggleBookmarkPin,
   moveBookmarkToCategory,
+  reorderBookmarks,
   toggleBookmarkCategoryCollapse,
   createBookmarkCategory,
   updateBookmarkCategory,
@@ -702,6 +703,7 @@ onUnmounted(() => {
               @update-bookmark="updateBookmark"
               @toggle-pin="toggleBookmarkPin"
               @move-bookmark="moveBookmarkToCategory"
+              @reorder-bookmarks="reorderBookmarks"
               @request-delete-bookmark="handlePromptDeleteBookmark"
               @request-batch-delete-bookmarks="handlePromptBatchDeleteBookmarks"
               @batch-move-bookmarks="batchMoveBookmarks"

@@ -301,6 +301,7 @@ function ensureBookmarkTables(PDO $pdo): void {
         `description` TEXT DEFAULT NULL,
         `tags` TEXT DEFAULT NULL,
         `is_pinned` TINYINT(1) NOT NULL DEFAULT 0,
+        `order_num` INT NOT NULL DEFAULT 0,
         `icon_url` TEXT DEFAULT NULL,
         `created_at` VARCHAR(32) NOT NULL DEFAULT '',
         `updated_at` VARCHAR(32) NOT NULL DEFAULT '',
@@ -308,6 +309,14 @@ function ensureBookmarkTables(PDO $pdo): void {
         KEY `idx_user_category` (`user_id`, `category_id`),
         KEY `idx_user_pinned_updated` (`user_id`, `is_pinned`, `updated_at`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网站书签主表'");
+
+    // 兼容已存在的旧版 bookmarks 表，自动补齐 order_num 字段
+    try {
+        $bmColCheck = $pdo->query("SHOW COLUMNS FROM `bookmarks` LIKE 'order_num'");
+        if (!$bmColCheck || !$bmColCheck->fetch()) {
+            $pdo->exec("ALTER TABLE `bookmarks` ADD COLUMN `order_num` INT NOT NULL DEFAULT 0 AFTER `is_pinned`");
+        }
+    } catch (Exception $ignored) {}
     $ensured = true;
 }
 
@@ -329,7 +338,7 @@ function fetchUserBookmarkData(PDO $pdo, string $userId): array {
         ];
     }, $catStmt->fetchAll());
 
-    $bmStmt = $pdo->prepare("SELECT * FROM bookmarks WHERE user_id = :userId ORDER BY is_pinned DESC, updated_at DESC");
+    $bmStmt = $pdo->prepare("SELECT * FROM bookmarks WHERE user_id = :userId ORDER BY is_pinned DESC, order_num ASC, updated_at DESC");
     $bmStmt->execute([':userId' => $userId]);
     $bookmarks = array_map(function($b) {
         $tags = [];
@@ -345,6 +354,7 @@ function fetchUserBookmarkData(PDO $pdo, string $userId): array {
             'categoryId'  => (string)($b['category_id'] ?? ''),
             'tags'        => $tags,
             'isPinned'    => (bool)($b['is_pinned'] ?? false),
+            'order'       => (int)($b['order_num'] ?? 0),
             'createdAt'   => $b['created_at'],
             'updatedAt'   => $b['updated_at'],
         ];
@@ -1160,8 +1170,8 @@ switch ($action) {
             }
 
             $upsertBm = $pdo->prepare("INSERT INTO bookmarks
-                (id, user_id, category_id, title, url, description, tags, is_pinned, icon_url, created_at, updated_at)
-                VALUES (:id, :userId, :categoryId, :title, :url, :description, :tags, :isPinned, :iconUrl, :createdAt, :updatedAt)
+                (id, user_id, category_id, title, url, description, tags, is_pinned, order_num, icon_url, created_at, updated_at)
+                VALUES (:id, :userId, :categoryId, :title, :url, :description, :tags, :isPinned, :orderNum, :iconUrl, :createdAt, :updatedAt)
                 ON DUPLICATE KEY UPDATE
                     category_id = :uCategoryId,
                     title = :uTitle,
@@ -1169,6 +1179,7 @@ switch ($action) {
                     description = :uDescription,
                     tags = :uTags,
                     is_pinned = :uIsPinned,
+                    order_num = :uOrderNum,
                     icon_url = :uIconUrl,
                     updated_at = :uUpdatedAt");
 
@@ -1196,6 +1207,7 @@ switch ($action) {
                     if ($catId !== '' && isset($deletedBookmarkCatSet[$catId])) {
                         $catId = '';
                     }
+                    $orderNum = isset($cb['order']) ? (int)$cb['order'] : (isset($cb['order_num']) ? (int)$cb['order_num'] : 0);
                     $upsertBm->execute([
                         ':id'           => $bid,
                         ':userId'       => $userId,
@@ -1205,6 +1217,7 @@ switch ($action) {
                         ':description'  => (string)($cb['description'] ?? ''),
                         ':tags'         => json_encode($cb['tags'] ?? [], JSON_UNESCAPED_UNICODE),
                         ':isPinned'     => !empty($cb['isPinned']) ? 1 : 0,
+                        ':orderNum'     => $orderNum,
                         ':iconUrl'      => !empty($cb['iconUrl']) ? (string)$cb['iconUrl'] : null,
                         ':createdAt'    => $cb['createdAt'] ?? date('Y-m-d H:i:s'),
                         ':updatedAt'    => $cb['updatedAt'] ?? date('Y-m-d H:i:s'),
@@ -1214,6 +1227,7 @@ switch ($action) {
                         ':uDescription' => (string)($cb['description'] ?? ''),
                         ':uTags'        => json_encode($cb['tags'] ?? [], JSON_UNESCAPED_UNICODE),
                         ':uIsPinned'    => !empty($cb['isPinned']) ? 1 : 0,
+                        ':uOrderNum'    => $orderNum,
                         ':uIconUrl'     => !empty($cb['iconUrl']) ? (string)$cb['iconUrl'] : null,
                         ':uUpdatedAt'   => $cb['updatedAt'] ?? date('Y-m-d H:i:s'),
                     ]);
@@ -1480,8 +1494,8 @@ switch ($action) {
             ensureBookmarkTables($pdo);
             $pdo->beginTransaction();
             $stmt = $pdo->prepare("INSERT INTO bookmarks
-                (id, user_id, category_id, title, url, description, tags, is_pinned, icon_url, created_at, updated_at)
-                VALUES (:id, :userId, :categoryId, :title, :url, :description, :tags, :isPinned, :iconUrl, :createdAt, :updatedAt)
+                (id, user_id, category_id, title, url, description, tags, is_pinned, order_num, icon_url, created_at, updated_at)
+                VALUES (:id, :userId, :categoryId, :title, :url, :description, :tags, :isPinned, :orderNum, :iconUrl, :createdAt, :updatedAt)
                 ON DUPLICATE KEY UPDATE
                     category_id = :uCategoryId,
                     title = :uTitle,
@@ -1489,6 +1503,7 @@ switch ($action) {
                     description = :uDescription,
                     tags = :uTags,
                     is_pinned = :uIsPinned,
+                    order_num = :uOrderNum,
                     icon_url = :uIconUrl,
                     updated_at = :uUpdatedAt");
 
@@ -1502,6 +1517,7 @@ switch ($action) {
                 $desc = (string)($bm['description'] ?? '');
                 $tags = json_encode($bm['tags'] ?? [], JSON_UNESCAPED_UNICODE);
                 $isPinned = !empty($bm['isPinned']) ? 1 : 0;
+                $orderNum = isset($bm['order']) ? (int)$bm['order'] : (isset($bm['order_num']) ? (int)$bm['order_num'] : 0);
                 $iconUrl = !empty($bm['iconUrl']) ? (string)$bm['iconUrl'] : null;
                 $createdAt = $bm['createdAt'] ?? date('Y-m-d H:i:s');
                 $updatedAt = $bm['updatedAt'] ?? date('Y-m-d H:i:s');
@@ -1515,6 +1531,7 @@ switch ($action) {
                     ':description'  => $desc,
                     ':tags'         => $tags,
                     ':isPinned'     => $isPinned,
+                    ':orderNum'     => $orderNum,
                     ':iconUrl'      => $iconUrl,
                     ':createdAt'    => $createdAt,
                     ':updatedAt'    => $updatedAt,
@@ -1524,6 +1541,7 @@ switch ($action) {
                     ':uDescription' => $desc,
                     ':uTags'        => $tags,
                     ':uIsPinned'    => $isPinned,
+                    ':uOrderNum'    => $orderNum,
                     ':uIconUrl'     => $iconUrl,
                     ':uUpdatedAt'   => $updatedAt,
                 ]);

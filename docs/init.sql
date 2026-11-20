@@ -143,12 +143,13 @@ CREATE TABLE `bookmarks` (
   `description` TEXT DEFAULT NULL COMMENT '简短备注说明',
   `tags` TEXT DEFAULT NULL COMMENT 'JSON标签数组',
   `is_pinned` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否置顶收藏(0否,1是)',
+  `order_num` INT NOT NULL DEFAULT 0 COMMENT '自定义排序序号(升序)',
   `icon_url` TEXT DEFAULT NULL COMMENT '自定义站点图标地址',
   `created_at` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '创建时间字符串',
   `updated_at` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '更新时间字符串',
   PRIMARY KEY (`id`),
   KEY `idx_user_category` (`user_id`, `category_id`),
-  KEY `idx_user_pinned_updated` (`user_id`, `is_pinned`, `updated_at`)
+  KEY `idx_user_pinned_order` (`user_id`, `is_pinned`, `order_num`, `updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网站书签主表';
 
 INSERT INTO `bookmark_categories` (`id`, `user_id`, `parent_id`, `name`, `order_num`, `is_collapsed`, `color`, `created_at`, `updated_at`) VALUES
@@ -157,10 +158,10 @@ INSERT INTO `bookmark_categories` (`id`, `user_id`, `parent_id`, `name`, `order_
 ('bcat-tools', 'default_user', NULL, '效率工具', 1, 0, '#0d9488', '2026-03-27 18:05:00', '2026-03-27 18:05:00'),
 ('bcat-community', 'default_user', NULL, '技术社区', 2, 0, '#d97706', '2026-03-27 18:10:00', '2026-03-27 18:10:00');
 
-INSERT INTO `bookmarks` (`id`, `user_id`, `category_id`, `title`, `url`, `description`, `tags`, `is_pinned`, `icon_url`, `created_at`, `updated_at`) VALUES
-('bm-vuejs', 'default_user', 'bcat-frontend', 'Vue.js 官方文档', 'https://cn.vuejs.org/', '', '[]', 1, NULL, '2026-03-27 18:15:00', '2026-03-27 18:15:00'),
-('bm-mdn', 'default_user', 'bcat-dev-docs', 'MDN Web Docs', 'https://developer.mozilla.org/zh-CN/', '', '[]', 1, NULL, '2026-03-27 18:16:00', '2026-03-27 18:16:00'),
-('bm-github', 'default_user', 'bcat-community', 'GitHub', 'https://github.com/', '', '[]', 1, NULL, '2026-03-27 18:17:00', '2026-03-27 18:17:00');
+INSERT INTO `bookmarks` (`id`, `user_id`, `category_id`, `title`, `url`, `description`, `tags`, `is_pinned`, `order_num`, `icon_url`, `created_at`, `updated_at`) VALUES
+('bm-vuejs', 'default_user', 'bcat-frontend', 'Vue.js 官方文档', 'https://cn.vuejs.org/', '', '[]', 1, 1, NULL, '2026-03-27 18:15:00', '2026-03-27 18:15:00'),
+('bm-mdn', 'default_user', 'bcat-dev-docs', 'MDN Web Docs', 'https://developer.mozilla.org/zh-CN/', '', '[]', 1, 2, NULL, '2026-03-27 18:16:00', '2026-03-27 18:16:00'),
+('bm-github', 'default_user', 'bcat-community', 'GitHub', 'https://github.com/', '', '[]', 1, 3, NULL, '2026-03-27 18:17:00', '2026-03-27 18:17:00');
 
 SET FOREIGN_KEY_CHECKS = 1;
 

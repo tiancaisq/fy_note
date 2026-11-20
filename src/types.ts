@@ -51,6 +51,7 @@ export interface Bookmark {
   categoryId: string; // Empty string means uncategorized
   tags: string[];
   isPinned: boolean;
+  order?: number;
   iconUrl?: string;
   createdAt: string;
   updatedAt: string;

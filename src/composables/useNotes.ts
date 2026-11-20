@@ -2477,6 +2477,11 @@ export function useNotes() {
         : '';
     const resolvedIcon = (input.iconUrl || '').trim() || getDefaultFaviconUrl(normalized.url) || undefined;
 
+    const minOrder = bookmarks.value.reduce(
+      (min, b) => (typeof b.order === 'number' ? Math.min(min, b.order) : min),
+      0
+    );
+
     const newBookmark: Bookmark = {
       id: 'bm-' + nowMs + '-' + Math.random().toString(36).substring(2, 6),
       title: (input.title || '').trim() || deriveTitleFromUrl(normalized.url),
@@ -2485,6 +2490,7 @@ export function useNotes() {
       categoryId: validCatId,
       tags: cleanTags,
       isPinned: Boolean(input.isPinned),
+      order: bookmarks.value.length > 0 ? minOrder - 1 : 0,
       iconUrl: resolvedIcon,
       createdAt: now,
       updatedAt: now,
@@ -2652,6 +2658,70 @@ export function useNotes() {
     stampBookmarkMutation(bm);
     showToast(`已将「${bm.title}」移至「${validCatId ? getBookmarkCategoryName(validCatId) : '根目录'}」`);
     triggerAutoSyncDebounced({ bookmarkId: bm.id });
+  }
+
+  function reorderBookmarks(
+    orderedIds: string[],
+    options?: { draggedId?: string; targetPinned?: boolean }
+  ) {
+    if (!orderedIds.length) return;
+    const bmMap = new Map<string, Bookmark>();
+    bookmarks.value.forEach((b) => bmMap.set(b.id, b));
+
+    // Filter to valid existing IDs in the target visual order
+    const validOrdered = orderedIds
+      .map((id) => bmMap.get(id))
+      .filter((b): b is Bookmark => Boolean(b));
+    if (validOrdered.length < 2) return;
+
+    // Sort all bookmarks by current custom order so we can preserve non-displayed items' relative positions
+    const allSorted = [...bookmarks.value].sort((a, b) => {
+      const orderA = typeof a.order === 'number' ? a.order : Number.MAX_SAFE_INTEGER;
+      const orderB = typeof b.order === 'number' ? b.order : Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      return (b.updatedAtMs || 0) - (a.updatedAtMs || 0);
+    });
+
+    const displayedIdSet = new Set(validOrdered.map((b) => b.id));
+    let replaceCursor = 0;
+    const nextGlobalList = allSorted.map((b) => {
+      if (displayedIdSet.has(b.id)) {
+        return validOrdered[replaceCursor++];
+      }
+      return b;
+    });
+
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const modifiedIds: string[] = [];
+
+    nextGlobalList.forEach((bm, index) => {
+      const nextOrder = index + 1;
+      let changed = false;
+      if (bm.order !== nextOrder) {
+        bm.order = nextOrder;
+        changed = true;
+      }
+      if (
+        options?.draggedId &&
+        bm.id === options.draggedId &&
+        options.targetPinned !== undefined &&
+        bm.isPinned !== options.targetPinned
+      ) {
+        bm.isPinned = options.targetPinned;
+        changed = true;
+      }
+      if (changed) {
+        bm.updatedAt = now;
+        bm.updatedAtMs = nowMs;
+        modifiedIds.push(bm.id);
+      }
+    });
+
+    if (modifiedIds.length > 0) {
+      bookmarks.value = [...nextGlobalList];
+      triggerAutoSyncDebounced({ bookmarkIds: modifiedIds });
+    }
   }
 
   function toggleBookmarkCategoryCollapse(id: string) {
@@ -3256,6 +3326,7 @@ export function useNotes() {
     toggleBookmarkPin,
     deleteBookmark,
     moveBookmarkToCategory,
+    reorderBookmarks,
     batchDeleteBookmarks,
     batchMoveBookmarks,
     batchToggleBookmarkPin,

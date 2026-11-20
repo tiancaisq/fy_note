@@ -14,6 +14,9 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   X,
+  ArrowUpDown,
+  GripVertical,
+  Check,
 } from 'lucide-vue-next';
 import { Bookmark, BookmarkCategory } from '../types';
 import { extractBookmarkHost } from '../utils/bookmarkHelpers';
@@ -21,6 +24,16 @@ import BookmarkFolderTreeItem from './BookmarkFolderTreeItem.vue';
 import BookmarkIconBadge from './BookmarkIconBadge.vue';
 import BookmarkModal from './BookmarkModal.vue';
 import BookmarkCategoryModal from './BookmarkCategoryModal.vue';
+
+type BookmarkSortMode = 'custom' | 'updatedDesc' | 'titleAsc' | 'titleDesc';
+const STORAGE_KEY_BOOKMARK_SORT = 'fengye_bookmarks_sort_mode_v1';
+
+const SORT_OPTIONS: { value: BookmarkSortMode; label: string; shortLabel: string }[] = [
+  { value: 'custom', label: '自定义排序（支持拖拽）', shortLabel: '自定义排序' },
+  { value: 'updatedDesc', label: '按最近更新', shortLabel: '最近更新' },
+  { value: 'titleAsc', label: '按名称 A → Z', shortLabel: '名称升序' },
+  { value: 'titleDesc', label: '按名称 Z → A', shortLabel: '名称降序' },
+];
 
 const props = defineProps<{
   bookmarks: Bookmark[];
@@ -45,6 +58,11 @@ const emit = defineEmits<{
   (e: 'update-bookmark', id: string, updates: Partial<Bookmark>): void;
   (e: 'toggle-pin', id: string): void;
   (e: 'move-bookmark', bookmarkId: string, targetCategoryId: string): void;
+  (
+    e: 'reorder-bookmarks',
+    orderedIds: string[],
+    options?: { draggedId?: string; targetPinned?: boolean }
+  ): void;
   (e: 'request-delete-bookmark', bookmark: Bookmark): void;
   (e: 'request-batch-delete-bookmarks', ids: string[]): void;
   (e: 'batch-move-bookmarks', ids: string[], targetCategoryId: string): void;
@@ -69,6 +87,37 @@ const emit = defineEmits<{
 const activeCategoryId = ref<string>(props.initialCategoryId || 'all');
 const isTreeOpen = ref<boolean>(true);
 const draggedOverCategoryId = ref<string | null>(null);
+
+// Sort mode & drag-and-drop reorder state
+const sortMode = ref<BookmarkSortMode>(
+  (() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_BOOKMARK_SORT) as BookmarkSortMode | null;
+      if (saved && ['custom', 'updatedDesc', 'titleAsc', 'titleDesc'].includes(saved)) {
+        return saved;
+      }
+    } catch {}
+    return 'custom';
+  })()
+);
+const isSortMenuOpen = ref<boolean>(false);
+const sortDropdownRef = ref<HTMLElement | null>(null);
+
+const draggingBookmarkId = ref<string | null>(null);
+const dragOverBookmarkId = ref<string | null>(null);
+const dragDropPosition = ref<'before' | 'after' | null>(null);
+
+const currentSortShortLabel = computed(
+  () => SORT_OPTIONS.find((o) => o.value === sortMode.value)?.shortLabel || '自定义排序'
+);
+
+function setSortMode(mode: BookmarkSortMode) {
+  sortMode.value = mode;
+  isSortMenuOpen.value = false;
+  try {
+    localStorage.setItem(STORAGE_KEY_BOOKMARK_SORT, mode);
+  } catch {}
+}
 
 // Batch selection state
 const selectedIds = ref<Set<string>>(new Set());
@@ -208,7 +257,7 @@ function getCategoryLabel(categoryId: string): string {
   return categoryMap.value.get(categoryId)?.name || '';
 }
 
-// Filtered & sorted bookmarks (pinned float to top, then latest updated)
+// Filtered & sorted bookmarks (pinned float to top, then by selected sortMode)
 const displayedBookmarks = computed<Bookmark[]>(() => {
   let list = props.bookmarks;
 
@@ -222,6 +271,21 @@ const displayedBookmarks = computed<Bookmark[]>(() => {
 
   return [...list].sort((a, b) => {
     if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+
+    if (sortMode.value === 'titleAsc') {
+      return a.title.localeCompare(b.title, 'zh-CN');
+    }
+    if (sortMode.value === 'titleDesc') {
+      return b.title.localeCompare(a.title, 'zh-CN');
+    }
+    if (sortMode.value === 'updatedDesc') {
+      return (b.updatedAtMs || 0) - (a.updatedAtMs || 0);
+    }
+
+    // Default: custom drag-and-drop order
+    const orderA = typeof a.order === 'number' ? a.order : Number.MAX_SAFE_INTEGER;
+    const orderB = typeof b.order === 'number' ? b.order : Number.MAX_SAFE_INTEGER;
+    if (orderA !== orderB) return orderA - orderB;
     return (b.updatedAtMs || 0) - (a.updatedAtMs || 0);
   });
 });
@@ -345,20 +409,30 @@ function handleBatchDelete() {
   emit('request-batch-delete-bookmarks', ids);
 }
 
-// Close batch move dropdown on outside click or Escape
+// Close dropdowns on outside click or Escape
 function handleDocumentClick(e: MouseEvent) {
+  const target = e.target as Node;
   if (
     isBatchMoveMenuOpen.value &&
     batchMoveDropdownRef.value &&
-    !batchMoveDropdownRef.value.contains(e.target as Node)
+    !batchMoveDropdownRef.value.contains(target)
   ) {
     isBatchMoveMenuOpen.value = false;
+  }
+  if (
+    isSortMenuOpen.value &&
+    sortDropdownRef.value &&
+    !sortDropdownRef.value.contains(target)
+  ) {
+    isSortMenuOpen.value = false;
   }
 }
 
 function handleDocumentKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
-    if (isBatchMoveMenuOpen.value) {
+    if (isSortMenuOpen.value) {
+      isSortMenuOpen.value = false;
+    } else if (isBatchMoveMenuOpen.value) {
       isBatchMoveMenuOpen.value = false;
     } else if (selectedIds.value.size > 0) {
       clearSelection();
@@ -458,15 +532,83 @@ function handleDeleteCategory(cat: BookmarkCategory) {
   emit('request-delete-category', cat, count, descendantIds.length);
 }
 
-// Drag-and-drop single or batch selected bookmarks into tree folders
+// Drag-and-drop bookmarks: supports BOTH reordering rows AND moving into tree folders
 function handleBookmarkDragStart(e: DragEvent, bm: Bookmark) {
   if (!e.dataTransfer) return;
+  draggingBookmarkId.value = bm.id;
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('application/json', JSON.stringify({ type: 'bookmark', id: bm.id }));
 }
 
 function handleBookmarkDragEnd() {
+  draggingBookmarkId.value = null;
+  dragOverBookmarkId.value = null;
+  dragDropPosition.value = null;
   draggedOverCategoryId.value = null;
+}
+
+function handleBookmarkRowDragOver(e: DragEvent, targetBm: Bookmark) {
+  if (!draggingBookmarkId.value || draggingBookmarkId.value === targetBm.id) return;
+  e.preventDefault();
+  if (e.dataTransfer) {
+    e.dataTransfer.dropEffect = 'move';
+  }
+  const el = e.currentTarget as HTMLElement | null;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const isUpperHalf = e.clientY < rect.top + rect.height / 2;
+  dragOverBookmarkId.value = targetBm.id;
+  dragDropPosition.value = isUpperHalf ? 'before' : 'after';
+}
+
+function handleBookmarkRowDragLeave(e: DragEvent, targetBm: Bookmark) {
+  const el = e.currentTarget as HTMLElement | null;
+  const related = e.relatedTarget as Node | null;
+  if (el && related && el.contains(related)) return;
+  if (dragOverBookmarkId.value === targetBm.id) {
+    dragOverBookmarkId.value = null;
+    dragDropPosition.value = null;
+  }
+}
+
+function handleBookmarkRowDrop(e: DragEvent, targetBm: Bookmark) {
+  e.preventDefault();
+  const pos = dragDropPosition.value || 'after';
+  let draggedId = draggingBookmarkId.value;
+  if (!draggedId) {
+    const raw = e.dataTransfer?.getData('application/json');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed?.type === 'bookmark' && parsed?.id) {
+          draggedId = parsed.id;
+        }
+      } catch {}
+    }
+  }
+
+  handleBookmarkDragEnd();
+  if (!draggedId || draggedId === targetBm.id) return;
+
+  const currentIds = displayedBookmarks.value.map((b) => b.id);
+  const fromIdx = currentIds.indexOf(draggedId);
+  if (fromIdx === -1) return;
+
+  currentIds.splice(fromIdx, 1);
+  const targetIdx = currentIds.indexOf(targetBm.id);
+  if (targetIdx === -1) return;
+
+  const insertIdx = pos === 'before' ? targetIdx : targetIdx + 1;
+  currentIds.splice(insertIdx, 0, draggedId);
+
+  if (sortMode.value !== 'custom') {
+    setSortMode('custom');
+  }
+
+  emit('reorder-bookmarks', currentIds, {
+    draggedId,
+    targetPinned: targetBm.isPinned,
+  });
 }
 
 function moveDraggedBookmark(bookmarkId: string, targetCategoryId: string) {
@@ -767,16 +909,55 @@ const showFolderColumn = computed(() => {
           </span>
         </div>
 
-        <!-- Right: Primary Add CTA -->
-        <button
-          id="btn-add-bookmark"
-          type="button"
-          @click="openCreateBookmark"
-          class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg transition-colors shadow-2xs cursor-pointer shrink-0 whitespace-nowrap"
-        >
-          <Plus class="w-3.5 h-3.5 shrink-0" />
-          <span>添加书签</span>
-        </button>
+        <!-- Right: Sort Dropdown + Primary Add CTA -->
+        <div class="flex items-center gap-2 shrink-0">
+          <!-- Sort Mode Dropdown -->
+          <div ref="sortDropdownRef" class="relative">
+            <button
+              id="btn-bookmarks-sort"
+              type="button"
+              @click.stop="isSortMenuOpen = !isSortMenuOpen"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-white hover:bg-slate-50 border border-gray-200/90 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+              :title="`当前排序：${currentSortShortLabel}（支持直接拖拽书签行排序）`"
+            >
+              <ArrowUpDown class="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <span class="hidden @[460px]:inline">{{ currentSortShortLabel }}</span>
+              <ChevronDown class="w-3 h-3 text-slate-400 shrink-0" />
+            </button>
+
+            <div
+              v-if="isSortMenuOpen"
+              id="bookmarks-sort-menu"
+              class="absolute right-0 mt-1.5 w-48 bg-white rounded-xl shadow-lg border border-gray-200/90 py-1 z-30"
+            >
+              <button
+                v-for="opt in SORT_OPTIONS"
+                :key="opt.value"
+                type="button"
+                @click="setSortMode(opt.value)"
+                class="w-full px-3 py-1.5 text-left text-xs flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                :class="
+                  sortMode === opt.value
+                    ? 'bg-blue-50/80 text-blue-700 font-medium'
+                    : 'text-slate-700 hover:bg-slate-50'
+                "
+              >
+                <span class="truncate">{{ opt.label }}</span>
+                <Check v-if="sortMode === opt.value" class="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              </button>
+            </div>
+          </div>
+
+          <button
+            id="btn-add-bookmark"
+            type="button"
+            @click="openCreateBookmark"
+            class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg transition-colors shadow-2xs cursor-pointer shrink-0 whitespace-nowrap"
+          >
+            <Plus class="w-3.5 h-3.5 shrink-0" />
+            <span>添加书签</span>
+          </button>
+        </div>
       </div>
 
       <!-- Bookmarks List Body -->
@@ -807,8 +988,9 @@ const showFolderColumn = computed(() => {
         <div v-else id="bookmarks-list-container" class="flex flex-col min-w-[320px]">
           <!-- Sticky List Header -->
           <div
-            class="sticky top-0 z-10 h-9 px-4 bg-slate-50/95 backdrop-blur-xs border-b border-gray-200/80 flex items-center gap-3 text-[11px] font-medium text-slate-500 select-none"
+            class="sticky top-0 z-10 h-9 px-3.5 bg-slate-50/95 backdrop-blur-xs border-b border-gray-200/80 flex items-center gap-2.5 text-[11px] font-medium text-slate-500 select-none"
           >
+            <span class="w-3.5 shrink-0" aria-hidden="true"></span>
             <input
               ref="selectAllCheckboxRef"
               id="checkbox-bookmarks-select-all"
@@ -839,9 +1021,19 @@ const showFolderColumn = computed(() => {
               :id="`bookmark-row-${bm.id}`"
               draggable="true"
               @dragstart="(e) => handleBookmarkDragStart(e, bm)"
+              @dragover="(e) => handleBookmarkRowDragOver(e, bm)"
+              @dragleave="(e) => handleBookmarkRowDragLeave(e, bm)"
+              @drop="(e) => handleBookmarkRowDrop(e, bm)"
               @dragend="handleBookmarkDragEnd"
               :class="[
-                'group h-11 px-4 flex items-center gap-3 transition-colors',
+                'group h-11 px-3.5 flex items-center gap-2.5 transition-colors',
+                draggingBookmarkId === bm.id ? 'opacity-45' : '',
+                dragOverBookmarkId === bm.id && dragDropPosition === 'before'
+                  ? 'shadow-[inset_0_2px_0_0_#2563eb]'
+                  : '',
+                dragOverBookmarkId === bm.id && dragDropPosition === 'after'
+                  ? 'shadow-[inset_0_-2px_0_0_#2563eb]'
+                  : '',
                 selectedIds.has(bm.id)
                   ? 'bg-blue-50/60 hover:bg-blue-50/80'
                   : highlightedBookmarkId === bm.id
@@ -849,6 +1041,12 @@ const showFolderColumn = computed(() => {
                     : 'hover:bg-slate-50/85',
               ]"
             >
+              <!-- Drag Handle -->
+              <GripVertical
+                class="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 cursor-grab active:cursor-grabbing shrink-0 transition-colors"
+                title="拖拽排序或拖入左侧目录"
+              />
+
               <!-- Row Checkbox -->
               <input
                 type="checkbox"

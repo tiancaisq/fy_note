@@ -327,6 +327,12 @@ export function normalizeRemoteBookmark(raw: any): Bookmark {
       ? raw.updated_at_ms
       : undefined;
 
+  const rawOrder = raw.order ?? raw.order_num;
+  const parsedOrder =
+    rawOrder !== undefined && rawOrder !== null && !isNaN(Number(rawOrder))
+      ? Number(rawOrder)
+      : undefined;
+
   return {
     id: String(raw.id || raw.bookmarkId || 'bm-' + Date.now()),
     title: String(raw.title !== undefined && raw.title !== null ? raw.title : '未命名书签'),
@@ -335,6 +341,7 @@ export function normalizeRemoteBookmark(raw: any): Bookmark {
     categoryId: String(raw.categoryId ?? raw.category_id ?? ''),
     tags,
     isPinned: Boolean(raw.isPinned ?? raw.is_pinned ?? raw.pinned),
+    ...(parsedOrder !== undefined ? { order: parsedOrder } : {}),
     ...(raw.iconUrl || raw.icon_url ? { iconUrl: String(raw.iconUrl || raw.icon_url) } : {}),
     createdAt,
     updatedAt,
@@ -1092,6 +1099,7 @@ export function calculateSyncDiff(
           (localB.description || '') !== (remoteB.description || '') ||
           (localB.categoryId || '') !== (remoteB.categoryId || '') ||
           Boolean(localB.isPinned) !== Boolean(remoteB.isPinned) ||
+          (localB.order ?? 0) !== (remoteB.order ?? 0) ||
           (localB.iconUrl || '') !== (remoteB.iconUrl || '') ||
           !areTagsEqual(localB.tags, remoteB.tags);
         const threshold =
