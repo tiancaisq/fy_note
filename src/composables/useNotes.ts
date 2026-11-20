@@ -2,26 +2,41 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import {
   Folder,
   Note,
+  Bookmark,
+  BookmarkCategory,
   ViewType,
   SortField,
   SortOrder,
   FilterOptions,
   BreadcrumbItem,
   SearchResultItem,
+  BookmarkSearchResultItem,
   CloudConfig,
   SyncStatus,
   SyncDiffResult,
 } from '../types';
-import { INITIAL_FOLDERS, INITIAL_NOTES } from '../data/initialData';
+import {
+  INITIAL_FOLDERS,
+  INITIAL_NOTES,
+  INITIAL_BOOKMARKS,
+  INITIAL_BOOKMARK_CATEGORIES,
+} from '../data/initialData';
 import { exportToXMind } from '../utils/xmind';
 import { parseFreeMindXml } from '../utils/freemind';
 import { createDefaultDrawioXml, extractDrawioTextNodes } from '../utils/drawioTemplates';
 import { compareFolders, normalizeFolderOrders, reorderFolder } from '../utils/folderSort';
 import {
+  normalizeBookmarkUrl,
+  extractBookmarkHost,
+  deriveTitleFromUrl,
+} from '../utils/bookmarkHelpers';
+import {
   initStorageAndMigrate,
   saveNotesToIDB,
   saveFoldersToIDB,
   saveFrequentFoldersToIDB,
+  saveBookmarksToIDB,
+  saveBookmarkCategoriesToIDB,
   saveCloudConfigToIDB,
   loadPendingDeletionsFromIDB,
   savePendingDeletionsToIDB,
@@ -39,6 +54,10 @@ import {
   deleteSingleFolderFromCloud,
   saveFrequentFoldersToCloud,
   deleteFrequentFolderFromCloud,
+  saveBookmarksToCloud,
+  deleteSingleBookmarkFromCloud,
+  saveBookmarkCategoriesToCloud,
+  deleteSingleBookmarkCategoryFromCloud,
   clearApiEndpointCache,
 } from '../utils/cloudApi';
 
@@ -46,8 +65,36 @@ const STORAGE_KEY_NOTES = 'fengye_cloud_notes_data_v2';
 const STORAGE_KEY_FOLDERS = 'fengye_cloud_folders_data_v2';
 const STORAGE_KEY_CLOUD_CONFIG = 'fengye_cloud_sync_config_v2';
 const STORAGE_KEY_FREQUENT_FOLDERS = 'fengye_cloud_frequent_folders_v2';
+const STORAGE_KEY_BOOKMARKS = 'fengye_cloud_bookmarks_data_v1';
+const STORAGE_KEY_BOOKMARK_CATEGORIES = 'fengye_cloud_bookmark_categories_v1';
 const STORAGE_KEY_OPEN_TABS = 'fengye_open_tabs_v1';
 const STORAGE_KEY_ACTIVE_TAB = 'fengye_active_tab_v1';
+
+function normalizeBookmarkCategoryOrders(list: BookmarkCategory[]): BookmarkCategory[] {
+  const validIds = new Set(list.map((c) => c.id));
+  const grouped = new Map<string, BookmarkCategory[]>();
+
+  list.forEach((raw) => {
+    const parentId = raw.parentId && validIds.has(raw.parentId) && raw.parentId !== raw.id ? raw.parentId : null;
+    const key = parentId || '__root__';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push({
+      ...raw,
+      parentId,
+      isOpen: raw.isOpen !== undefined ? Boolean(raw.isOpen) : true,
+    });
+  });
+
+  const result: BookmarkCategory[] = [];
+  grouped.forEach((siblings) => {
+    siblings
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || (a.createdAt || '').localeCompare(b.createdAt || ''))
+      .forEach((cat, idx) => {
+        result.push({ ...cat, order: idx + 1 });
+      });
+  });
+  return result;
+}
 
 function loadStoredData<T>(key: string, fallback: T): T {
   try {
@@ -65,6 +112,12 @@ export function useNotes() {
   const isStorageReady = ref<boolean>(false);
   const folders = ref<Folder[]>(normalizeFolderOrders(loadStoredData(STORAGE_KEY_FOLDERS, INITIAL_FOLDERS)));
   const notes = ref<Note[]>(loadStoredData(STORAGE_KEY_NOTES, INITIAL_NOTES));
+  const bookmarks = ref<Bookmark[]>(loadStoredData(STORAGE_KEY_BOOKMARKS, INITIAL_BOOKMARKS));
+  const bookmarkCategories = ref<BookmarkCategory[]>(
+    normalizeBookmarkCategoryOrders(
+      loadStoredData(STORAGE_KEY_BOOKMARK_CATEGORIES, INITIAL_BOOKMARK_CATEGORIES)
+    )
+  );
 
   // Frequent / Pinned Folders
   const frequentFolderIds = ref<string[]>(
@@ -149,7 +202,14 @@ export function useNotes() {
     try {
       isApplyingRemoteSync.value = true;
       const [
-        { notes: idbNotes, folders: idbFolders, frequentFolderIds: idbFrequentFolders, cloudConfig: idbConfig },
+        {
+          notes: idbNotes,
+          folders: idbFolders,
+          frequentFolderIds: idbFrequentFolders,
+          bookmarks: idbBookmarks,
+          bookmarkCategories: idbBookmarkCategories,
+          cloudConfig: idbConfig,
+        },
         storedDeletions,
       ] = await Promise.all([initStorageAndMigrate(), loadPendingDeletionsFromIDB()]);
 
@@ -160,11 +220,19 @@ export function useNotes() {
       if (Array.isArray(idbFrequentFolders) && idbFrequentFolders.length > 0) {
         frequentFolderIds.value = idbFrequentFolders;
       }
+      if (Array.isArray(idbBookmarks)) {
+        bookmarks.value = idbBookmarks;
+      }
+      if (Array.isArray(idbBookmarkCategories)) {
+        bookmarkCategories.value = normalizeBookmarkCategoryOrders(idbBookmarkCategories);
+      }
       if (idbConfig) cloudConfig.value = idbConfig;
 
       // Restore pending deletions from durable storage before initial merge
       storedDeletions.noteIds.forEach((id) => pendingDeletedNoteIds.add(id));
       storedDeletions.folderIds.forEach((id) => pendingDeletedFolderIds.add(id));
+      storedDeletions.bookmarkIds.forEach((id) => pendingDeletedBookmarkIds.add(id));
+      storedDeletions.bookmarkCategoryIds.forEach((id) => pendingDeletedBookmarkCategoryIds.add(id));
 
       isStorageReady.value = true;
       await updateStorageEstimate();
@@ -220,6 +288,26 @@ export function useNotes() {
           if (Array.isArray(parsed)) {
             isApplyingRemoteSync.value = true;
             folders.value = normalizeFolderOrders(parsed);
+            await nextTick();
+            isApplyingRemoteSync.value = false;
+          }
+        } catch {}
+      } else if (e.key === STORAGE_KEY_BOOKMARKS && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) {
+            isApplyingRemoteSync.value = true;
+            bookmarks.value = parsed;
+            await nextTick();
+            isApplyingRemoteSync.value = false;
+          }
+        } catch {}
+      } else if (e.key === STORAGE_KEY_BOOKMARK_CATEGORIES && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) {
+            isApplyingRemoteSync.value = true;
+            bookmarkCategories.value = normalizeBookmarkCategoryOrders(parsed);
             await nextTick();
             isApplyingRemoteSync.value = false;
           }
@@ -390,6 +478,40 @@ export function useNotes() {
   );
 
   watch(
+    bookmarks,
+    (newBookmarks) => {
+      saveBookmarksToIDB(newBookmarks);
+      try {
+        localStorage.setItem(STORAGE_KEY_BOOKMARKS, JSON.stringify(newBookmarks));
+      } catch (e) {
+        console.warn('LocalStorage backup skipped:', e);
+      }
+      if (!isApplyingRemoteSync.value) {
+        triggerAutoSyncDebounced();
+      }
+      updateStorageEstimate();
+    },
+    { deep: true }
+  );
+
+  watch(
+    bookmarkCategories,
+    (newCategories) => {
+      saveBookmarkCategoriesToIDB(newCategories);
+      try {
+        localStorage.setItem(STORAGE_KEY_BOOKMARK_CATEGORIES, JSON.stringify(newCategories));
+      } catch (e) {
+        console.warn('LocalStorage backup skipped:', e);
+      }
+      if (!isApplyingRemoteSync.value) {
+        triggerAutoSyncDebounced();
+      }
+      updateStorageEstimate();
+    },
+    { deep: true }
+  );
+
+  watch(
     cloudConfig,
     (newConfig) => {
       saveCloudConfigToIDB(newConfig);
@@ -405,18 +527,28 @@ export function useNotes() {
   // Queue of modified/deleted entity IDs & mutation sequence tracking for race-free incremental sync
   const pendingModifiedNoteIds = new Set<string>();
   const pendingModifiedFolderIds = new Set<string>();
+  const pendingModifiedBookmarkIds = new Set<string>();
+  const pendingModifiedBookmarkCategoryIds = new Set<string>();
   const pendingDeletedNoteIds = new Set<string>();
   const pendingDeletedFolderIds = new Set<string>();
+  const pendingDeletedBookmarkIds = new Set<string>();
+  const pendingDeletedBookmarkCategoryIds = new Set<string>();
   const noteDirtySeq = new Map<string, number>();
   const folderDirtySeq = new Map<string, number>();
+  const bookmarkDirtySeq = new Map<string, number>();
+  const bookmarkCategoryDirtySeq = new Map<string, number>();
   const noteDeletedSeq = new Map<string, number>();
   const folderDeletedSeq = new Map<string, number>();
+  const bookmarkDeletedSeq = new Map<string, number>();
+  const bookmarkCategoryDeletedSeq = new Map<string, number>();
   let globalDirtySeq = 0;
 
   function persistPendingDeletions() {
     savePendingDeletionsToIDB({
       noteIds: Array.from(pendingDeletedNoteIds),
       folderIds: Array.from(pendingDeletedFolderIds),
+      bookmarkIds: Array.from(pendingDeletedBookmarkIds),
+      bookmarkCategoryIds: Array.from(pendingDeletedBookmarkCategoryIds),
     }).catch(console.error);
   }
 
@@ -424,8 +556,12 @@ export function useNotes() {
     return (
       pendingModifiedNoteIds.size > 0 ||
       pendingModifiedFolderIds.size > 0 ||
+      pendingModifiedBookmarkIds.size > 0 ||
+      pendingModifiedBookmarkCategoryIds.size > 0 ||
       pendingDeletedNoteIds.size > 0 ||
-      pendingDeletedFolderIds.size > 0
+      pendingDeletedFolderIds.size > 0 ||
+      pendingDeletedBookmarkIds.size > 0 ||
+      pendingDeletedBookmarkCategoryIds.size > 0
     );
   }
 
@@ -450,19 +586,33 @@ export function useNotes() {
       const syncStartSeq = globalDirtySeq;
       const batchNoteIds = Array.from(pendingModifiedNoteIds);
       const batchFolderIds = Array.from(pendingModifiedFolderIds);
+      const batchBookmarkIds = Array.from(pendingModifiedBookmarkIds);
+      const batchBookmarkCategoryIds = Array.from(pendingModifiedBookmarkCategoryIds);
       const batchDelNoteIds = Array.from(pendingDeletedNoteIds);
       const batchDelFolderIds = Array.from(pendingDeletedFolderIds);
+      const batchDelBookmarkIds = Array.from(pendingDeletedBookmarkIds);
+      const batchDelBookmarkCategoryIds = Array.from(pendingDeletedBookmarkCategoryIds);
 
       const noteSeqSnapshot = new Map<string, number>();
       batchNoteIds.forEach((id) => noteSeqSnapshot.set(id, noteDirtySeq.get(id) || 0));
       const folderSeqSnapshot = new Map<string, number>();
       batchFolderIds.forEach((id) => folderSeqSnapshot.set(id, folderDirtySeq.get(id) || 0));
+      const bookmarkSeqSnapshot = new Map<string, number>();
+      batchBookmarkIds.forEach((id) => bookmarkSeqSnapshot.set(id, bookmarkDirtySeq.get(id) || 0));
+      const bookmarkCategorySeqSnapshot = new Map<string, number>();
+      batchBookmarkCategoryIds.forEach((id) =>
+        bookmarkCategorySeqSnapshot.set(id, bookmarkCategoryDirtySeq.get(id) || 0)
+      );
 
       const totalPending =
         batchNoteIds.length +
         batchFolderIds.length +
+        batchBookmarkIds.length +
+        batchBookmarkCategoryIds.length +
         batchDelNoteIds.length +
-        batchDelFolderIds.length;
+        batchDelFolderIds.length +
+        batchDelBookmarkIds.length +
+        batchDelBookmarkCategoryIds.length;
 
       // 1. Lightweight incremental sync when pending item count is small
       if (totalPending > 0 && totalPending <= 15) {
@@ -473,7 +623,6 @@ export function useNotes() {
         for (const nid of batchNoteIds) {
           const note = notes.value.find((n) => n.id === nid);
           if (!note) {
-            // Note was subsequently deleted
             if ((noteDirtySeq.get(nid) || 0) <= (noteSeqSnapshot.get(nid) || 0)) {
               pendingModifiedNoteIds.delete(nid);
             }
@@ -534,6 +683,76 @@ export function useNotes() {
           }
         }
 
+        // Sync modified bookmark categories in batch
+        if (batchBookmarkCategoryIds.length > 0) {
+          const modifiedCategories = bookmarkCategories.value.filter((c) =>
+            batchBookmarkCategoryIds.includes(c.id)
+          );
+          if (modifiedCategories.length > 0) {
+            const res = await saveBookmarkCategoriesToCloud(cloudConfig.value, modifiedCategories);
+            if (res.success) {
+              batchBookmarkCategoryIds.forEach((cid) => {
+                if ((bookmarkCategoryDirtySeq.get(cid) || 0) <= (bookmarkCategorySeqSnapshot.get(cid) || 0)) {
+                  pendingModifiedBookmarkCategoryIds.delete(cid);
+                }
+              });
+            } else {
+              allOk = false;
+            }
+          } else {
+            batchBookmarkCategoryIds.forEach((cid) => {
+              if ((bookmarkCategoryDirtySeq.get(cid) || 0) <= (bookmarkCategorySeqSnapshot.get(cid) || 0)) {
+                pendingModifiedBookmarkCategoryIds.delete(cid);
+              }
+            });
+          }
+        }
+
+        // Sync deleted bookmark categories
+        for (const cid of batchDelBookmarkCategoryIds) {
+          const res = await deleteSingleBookmarkCategoryFromCloud(cloudConfig.value, cid);
+          if (res.success) {
+            pendingDeletedBookmarkCategoryIds.delete(cid);
+            deletionsChanged = true;
+          } else {
+            allOk = false;
+          }
+        }
+
+        // Sync modified bookmarks in batch
+        if (batchBookmarkIds.length > 0) {
+          const modifiedBookmarks = bookmarks.value.filter((b) => batchBookmarkIds.includes(b.id));
+          if (modifiedBookmarks.length > 0) {
+            const res = await saveBookmarksToCloud(cloudConfig.value, modifiedBookmarks);
+            if (res.success) {
+              batchBookmarkIds.forEach((bid) => {
+                if ((bookmarkDirtySeq.get(bid) || 0) <= (bookmarkSeqSnapshot.get(bid) || 0)) {
+                  pendingModifiedBookmarkIds.delete(bid);
+                }
+              });
+            } else {
+              allOk = false;
+            }
+          } else {
+            batchBookmarkIds.forEach((bid) => {
+              if ((bookmarkDirtySeq.get(bid) || 0) <= (bookmarkSeqSnapshot.get(bid) || 0)) {
+                pendingModifiedBookmarkIds.delete(bid);
+              }
+            });
+          }
+        }
+
+        // Sync directly deleted bookmarks (tombstones)
+        for (const bid of batchDelBookmarkIds) {
+          const res = await deleteSingleBookmarkFromCloud(cloudConfig.value, bid);
+          if (res.success) {
+            pendingDeletedBookmarkIds.delete(bid);
+            deletionsChanged = true;
+          } else {
+            allOk = false;
+          }
+        }
+
         if (deletionsChanged) {
           persistPendingDeletions();
         }
@@ -549,8 +768,6 @@ export function useNotes() {
           }
           return;
         }
-        // If incremental failed (e.g. network error or unsupported route), only keep error if nothing changed;
-        // fallback to full merge only if we still have items, preserving failures on error.
       }
 
       // 2. Full two-way smart merge (for large batches, generic watch triggers, or incremental fallback)
@@ -558,6 +775,10 @@ export function useNotes() {
         deletedNoteIds: batchDelNoteIds,
         deletedFolderIds: batchDelFolderIds,
         frequentFolderIds: frequentFolderIds.value,
+        bookmarks: bookmarks.value,
+        bookmarkCategories: bookmarkCategories.value,
+        deletedBookmarkIds: batchDelBookmarkIds,
+        deletedBookmarkCategoryIds: batchDelBookmarkCategoryIds,
       });
 
       if (res.success) {
@@ -574,8 +795,20 @@ export function useNotes() {
             pendingModifiedFolderIds.delete(fid);
           }
         });
+        batchBookmarkIds.forEach((bid) => {
+          if ((bookmarkDirtySeq.get(bid) || 0) <= (bookmarkSeqSnapshot.get(bid) || 0)) {
+            pendingModifiedBookmarkIds.delete(bid);
+          }
+        });
+        batchBookmarkCategoryIds.forEach((cid) => {
+          if ((bookmarkCategoryDirtySeq.get(cid) || 0) <= (bookmarkCategorySeqSnapshot.get(cid) || 0)) {
+            pendingModifiedBookmarkCategoryIds.delete(cid);
+          }
+        });
         batchDelNoteIds.forEach((nid) => pendingDeletedNoteIds.delete(nid));
         batchDelFolderIds.forEach((fid) => pendingDeletedFolderIds.delete(fid));
+        batchDelBookmarkIds.forEach((bid) => pendingDeletedBookmarkIds.delete(bid));
+        batchDelBookmarkCategoryIds.forEach((cid) => pendingDeletedBookmarkCategoryIds.delete(cid));
         persistPendingDeletions();
 
         if (res.mergedNotes) {
@@ -633,6 +866,56 @@ export function useNotes() {
           folders.value = normalizeFolderOrders(nextFolders);
         }
 
+        if (res.mergedBookmarkCategories) {
+          const deletedCatSet = new Set(pendingDeletedBookmarkCategoryIds);
+          const inFlightCats = new Map<string, BookmarkCategory>();
+          bookmarkCategories.value.forEach((localC) => {
+            const dirtySeq = bookmarkCategoryDirtySeq.get(localC.id) || 0;
+            const deletedSeq = bookmarkCategoryDeletedSeq.get(localC.id) || 0;
+            if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
+              inFlightCats.set(localC.id, localC);
+            }
+          });
+          const mergedCatIds = new Set<string>();
+          const nextCats = res.mergedBookmarkCategories
+            .filter((c) => !deletedCatSet.has(c.id) && (bookmarkCategoryDeletedSeq.get(c.id) || 0) <= syncStartSeq)
+            .map((c) => {
+              mergedCatIds.add(c.id);
+              return inFlightCats.get(c.id) || c;
+            });
+          inFlightCats.forEach((localC, id) => {
+            if (!mergedCatIds.has(id) && !deletedCatSet.has(id) && (bookmarkCategoryDeletedSeq.get(id) || 0) <= syncStartSeq) {
+              nextCats.push(localC);
+            }
+          });
+          bookmarkCategories.value = normalizeBookmarkCategoryOrders(nextCats);
+        }
+
+        if (res.mergedBookmarks) {
+          const deletedBmSet = new Set(pendingDeletedBookmarkIds);
+          const inFlightBms = new Map<string, Bookmark>();
+          bookmarks.value.forEach((localB) => {
+            const dirtySeq = bookmarkDirtySeq.get(localB.id) || 0;
+            const deletedSeq = bookmarkDeletedSeq.get(localB.id) || 0;
+            if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
+              inFlightBms.set(localB.id, localB);
+            }
+          });
+          const mergedBmIds = new Set<string>();
+          const nextBms = res.mergedBookmarks
+            .filter((b) => !deletedBmSet.has(b.id) && (bookmarkDeletedSeq.get(b.id) || 0) <= syncStartSeq)
+            .map((b) => {
+              mergedBmIds.add(b.id);
+              return inFlightBms.get(b.id) || b;
+            });
+          inFlightBms.forEach((localB, id) => {
+            if (!mergedBmIds.has(id) && !deletedBmSet.has(id) && (bookmarkDeletedSeq.get(id) || 0) <= syncStartSeq) {
+              nextBms.unshift(localB);
+            }
+          });
+          bookmarks.value = nextBms;
+        }
+
         cloudConfig.value.lastSyncedAt = res.serverTime || Date.now();
         lastVisibilitySyncAt = Date.now();
         await nextTick();
@@ -666,10 +949,18 @@ export function useNotes() {
     noteIds?: string[];
     folderId?: string;
     folderIds?: string[];
+    bookmarkId?: string;
+    bookmarkIds?: string[];
+    bookmarkCategoryId?: string;
+    bookmarkCategoryIds?: string[];
     deletedNoteId?: string;
     deletedNoteIds?: string[];
     deletedFolderId?: string;
     deletedFolderIds?: string[];
+    deletedBookmarkId?: string;
+    deletedBookmarkIds?: string[];
+    deletedBookmarkCategoryId?: string;
+    deletedBookmarkCategoryIds?: string[];
   }) {
     let deletionsUpdated = false;
     if (options?.noteId) {
@@ -690,6 +981,26 @@ export function useNotes() {
       options.folderIds.forEach((id) => {
         pendingModifiedFolderIds.add(id);
         folderDirtySeq.set(id, ++globalDirtySeq);
+      });
+    }
+    if (options?.bookmarkId) {
+      pendingModifiedBookmarkIds.add(options.bookmarkId);
+      bookmarkDirtySeq.set(options.bookmarkId, ++globalDirtySeq);
+    }
+    if (options?.bookmarkIds && Array.isArray(options.bookmarkIds)) {
+      options.bookmarkIds.forEach((id) => {
+        pendingModifiedBookmarkIds.add(id);
+        bookmarkDirtySeq.set(id, ++globalDirtySeq);
+      });
+    }
+    if (options?.bookmarkCategoryId) {
+      pendingModifiedBookmarkCategoryIds.add(options.bookmarkCategoryId);
+      bookmarkCategoryDirtySeq.set(options.bookmarkCategoryId, ++globalDirtySeq);
+    }
+    if (options?.bookmarkCategoryIds && Array.isArray(options.bookmarkCategoryIds)) {
+      options.bookmarkCategoryIds.forEach((id) => {
+        pendingModifiedBookmarkCategoryIds.add(id);
+        bookmarkCategoryDirtySeq.set(id, ++globalDirtySeq);
       });
     }
     if (options?.deletedNoteId) {
@@ -717,6 +1028,34 @@ export function useNotes() {
         pendingDeletedFolderIds.add(id);
         pendingModifiedFolderIds.delete(id);
         folderDeletedSeq.set(id, ++globalDirtySeq);
+      });
+      deletionsUpdated = true;
+    }
+    if (options?.deletedBookmarkId) {
+      pendingDeletedBookmarkIds.add(options.deletedBookmarkId);
+      pendingModifiedBookmarkIds.delete(options.deletedBookmarkId);
+      bookmarkDeletedSeq.set(options.deletedBookmarkId, ++globalDirtySeq);
+      deletionsUpdated = true;
+    }
+    if (options?.deletedBookmarkIds && Array.isArray(options.deletedBookmarkIds)) {
+      options.deletedBookmarkIds.forEach((id) => {
+        pendingDeletedBookmarkIds.add(id);
+        pendingModifiedBookmarkIds.delete(id);
+        bookmarkDeletedSeq.set(id, ++globalDirtySeq);
+      });
+      deletionsUpdated = true;
+    }
+    if (options?.deletedBookmarkCategoryId) {
+      pendingDeletedBookmarkCategoryIds.add(options.deletedBookmarkCategoryId);
+      pendingModifiedBookmarkCategoryIds.delete(options.deletedBookmarkCategoryId);
+      bookmarkCategoryDeletedSeq.set(options.deletedBookmarkCategoryId, ++globalDirtySeq);
+      deletionsUpdated = true;
+    }
+    if (options?.deletedBookmarkCategoryIds && Array.isArray(options.deletedBookmarkCategoryIds)) {
+      options.deletedBookmarkCategoryIds.forEach((id) => {
+        pendingDeletedBookmarkCategoryIds.add(id);
+        pendingModifiedBookmarkCategoryIds.delete(id);
+        bookmarkCategoryDeletedSeq.set(id, ++globalDirtySeq);
       });
       deletionsUpdated = true;
     }
@@ -896,6 +1235,13 @@ export function useNotes() {
   // Category counts
   const starredNotesCount = computed(() => notes.value.filter((n) => n.isStarred && !n.isDeleted).length);
   const deletedNotesCount = computed(() => notes.value.filter((n) => n.isDeleted).length);
+  const bookmarksCount = computed(() => bookmarks.value.length);
+
+  function getBookmarkCategoryName(categoryId: string): string {
+    if (!categoryId) return '未分类';
+    const found = bookmarkCategories.value.find((c) => c.id === categoryId);
+    return found ? found.name : '未分类';
+  }
 
   // Root folders (sorted top-to-bottom according to folder.order)
   const rootFolders = computed<Folder[]>(() => {
@@ -1033,6 +1379,12 @@ export function useNotes() {
         { id: 'timeline', label: '文件时间线', view: 'timeline', clickable: false },
       ];
     }
+    if (currentView.value === 'bookmarks') {
+      return [
+        { id: 'root', label: '我的笔记', view: 'folder', folderId: defaultRootFolderId, clickable: true },
+        { id: 'bookmarks', label: '网站书签', view: 'bookmarks', clickable: false },
+      ];
+    }
 
     // Folder view hierarchy
     const items: BreadcrumbItem[] = [
@@ -1131,15 +1483,16 @@ export function useNotes() {
     });
   });
 
-  // Global Search grouped with priority for current folder & path display
+  // Global Search grouped with priority for current folder, other folders & bookmarks
   const globalSearchResults = computed<{
     currentFolderMatches: SearchResultItem[];
     otherMatches: SearchResultItem[];
+    bookmarkMatches: BookmarkSearchResultItem[];
     totalCount: number;
   }>(() => {
     const q = searchQuery.value.trim().toLowerCase();
     if (!q) {
-      return { currentFolderMatches: [], otherMatches: [], totalCount: 0 };
+      return { currentFolderMatches: [], otherMatches: [], bookmarkMatches: [], totalCount: 0 };
     }
 
     const availableNotes = notes.value.filter((n) => !n.isDeleted);
@@ -1190,10 +1543,27 @@ export function useNotes() {
       }
     });
 
+    const bookmarkMatches: BookmarkSearchResultItem[] = [];
+    bookmarks.value.forEach((bm) => {
+      const host = extractBookmarkHost(bm.url);
+      const titleMatch = (bm.title || '').toLowerCase().includes(q);
+      const urlMatch = (bm.url || '').toLowerCase().includes(q) || host.toLowerCase().includes(q);
+      const descMatch = (bm.description || '').toLowerCase().includes(q);
+      const tagMatch = (bm.tags || []).some((t) => t.toLowerCase().includes(q));
+      if (titleMatch || urlMatch || descMatch || tagMatch) {
+        bookmarkMatches.push({
+          bookmark: bm,
+          categoryName: getBookmarkCategoryName(bm.categoryId),
+          host,
+        });
+      }
+    });
+
     return {
       currentFolderMatches: currentMatches,
       otherMatches: otherMatches,
-      totalCount: currentMatches.length + otherMatches.length,
+      bookmarkMatches,
+      totalCount: currentMatches.length + otherMatches.length + bookmarkMatches.length,
     };
   });
 
@@ -2049,6 +2419,348 @@ export function useNotes() {
     searchQuery.value = '';
   }
 
+  // ==================== Website Bookmarks & Categories CRUD ====================
+  function stampBookmarkMutation(bm: Bookmark) {
+    bm.updatedAt = formatDateTime();
+    bm.updatedAtMs = Date.now();
+  }
+
+  function stampBookmarkCategoryMutation(cat: BookmarkCategory) {
+    cat.updatedAt = formatDateTime();
+    cat.updatedAtMs = Date.now();
+  }
+
+  function createBookmark(input: {
+    title?: string;
+    url: string;
+    description?: string;
+    categoryId?: string;
+    tags?: string[];
+    isPinned?: boolean;
+    iconUrl?: string;
+  }): { success: boolean; bookmark?: Bookmark; error?: string } {
+    const normalized = normalizeBookmarkUrl(input.url);
+    if (!normalized.valid) {
+      showToast(normalized.error || '网址格式无效');
+      return { success: false, error: normalized.error };
+    }
+
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const cleanTags = Array.from(
+      new Set((input.tags || []).map((t) => t.trim()).filter(Boolean))
+    );
+    const validCatId =
+      input.categoryId && bookmarkCategories.value.some((c) => c.id === input.categoryId)
+        ? input.categoryId
+        : '';
+
+    const newBookmark: Bookmark = {
+      id: 'bm-' + nowMs + '-' + Math.random().toString(36).substring(2, 6),
+      title: (input.title || '').trim() || deriveTitleFromUrl(normalized.url),
+      url: normalized.url,
+      description: (input.description || '').trim(),
+      categoryId: validCatId,
+      tags: cleanTags,
+      isPinned: Boolean(input.isPinned),
+      iconUrl: (input.iconUrl || '').trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+      updatedAtMs: nowMs,
+    };
+
+    bookmarks.value.unshift(newBookmark);
+    showToast(`书签「${newBookmark.title}」已添加`);
+    triggerAutoSyncDebounced({ bookmarkId: newBookmark.id });
+    return { success: true, bookmark: newBookmark };
+  }
+
+  function updateBookmark(
+    id: string,
+    updates: Partial<Bookmark>
+  ): { success: boolean; error?: string } {
+    const bm = bookmarks.value.find((b) => b.id === id);
+    if (!bm) return { success: false, error: '书签不存在' };
+
+    if (updates.url !== undefined) {
+      const normalized = normalizeBookmarkUrl(updates.url);
+      if (!normalized.valid) {
+        showToast(normalized.error || '网址格式无效');
+        return { success: false, error: normalized.error };
+      }
+      bm.url = normalized.url;
+    }
+
+    if (updates.title !== undefined) {
+      bm.title = updates.title.trim() || deriveTitleFromUrl(bm.url);
+    }
+    if (updates.description !== undefined) {
+      bm.description = updates.description.trim();
+    }
+    if (updates.categoryId !== undefined) {
+      bm.categoryId =
+        updates.categoryId && bookmarkCategories.value.some((c) => c.id === updates.categoryId)
+          ? updates.categoryId
+          : '';
+    }
+    if (updates.tags !== undefined) {
+      bm.tags = Array.from(new Set(updates.tags.map((t) => t.trim()).filter(Boolean)));
+    }
+    if (updates.isPinned !== undefined) {
+      bm.isPinned = Boolean(updates.isPinned);
+    }
+    if (updates.iconUrl !== undefined) {
+      bm.iconUrl = updates.iconUrl.trim() || undefined;
+    }
+
+    stampBookmarkMutation(bm);
+    showToast('书签已更新');
+    triggerAutoSyncDebounced({ bookmarkId: bm.id });
+    return { success: true };
+  }
+
+  function toggleBookmarkPin(id: string) {
+    const bm = bookmarks.value.find((b) => b.id === id);
+    if (!bm) return;
+    bm.isPinned = !bm.isPinned;
+    stampBookmarkMutation(bm);
+    showToast(bm.isPinned ? `已置顶「${bm.title}」` : `已取消置顶「${bm.title}」`);
+    triggerAutoSyncDebounced({ bookmarkId: bm.id });
+  }
+
+  // Direct permanent deletion for bookmarks (bypasses Trash; uses deletion tombstone for multi-window sync)
+  function deleteBookmark(id: string) {
+    const idx = bookmarks.value.findIndex((b) => b.id === id);
+    if (idx === -1) return;
+    const title = bookmarks.value[idx].title;
+    bookmarks.value = bookmarks.value.filter((b) => b.id !== id);
+    showToast(`书签「${title}」已彻底删除`);
+    triggerAutoSyncDebounced({ deletedBookmarkId: id });
+  }
+
+  function batchDeleteBookmarks(ids: string[]) {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    const existingIds = bookmarks.value.filter((b) => idSet.has(b.id)).map((b) => b.id);
+    if (!existingIds.length) return;
+    bookmarks.value = bookmarks.value.filter((b) => !idSet.has(b.id));
+    showToast(`已彻底删除 ${existingIds.length} 条书签`);
+    triggerAutoSyncDebounced({ deletedBookmarkIds: existingIds });
+  }
+
+  function batchMoveBookmarks(ids: string[], targetCategoryId: string) {
+    if (!ids.length) return;
+    const validCatId =
+      targetCategoryId && bookmarkCategories.value.some((c) => c.id === targetCategoryId)
+        ? targetCategoryId
+        : '';
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const modifiedIds: string[] = [];
+    const idSet = new Set(ids);
+    bookmarks.value.forEach((bm) => {
+      if (idSet.has(bm.id)) {
+        bm.categoryId = validCatId;
+        bm.updatedAt = now;
+        bm.updatedAtMs = nowMs;
+        modifiedIds.push(bm.id);
+      }
+    });
+    if (modifiedIds.length) {
+      showToast(`已将 ${modifiedIds.length} 条书签移至「${getBookmarkCategoryName(validCatId)}」`);
+      triggerAutoSyncDebounced({ bookmarkIds: modifiedIds });
+    }
+  }
+
+  function batchToggleBookmarkPin(ids: string[], forcePinned?: boolean) {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    const targets = bookmarks.value.filter((b) => idSet.has(b.id));
+    if (!targets.length) return;
+    const nextPinned = forcePinned !== undefined ? forcePinned : targets.some((b) => !b.isPinned);
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const modifiedIds: string[] = [];
+    targets.forEach((bm) => {
+      bm.isPinned = nextPinned;
+      bm.updatedAt = now;
+      bm.updatedAtMs = nowMs;
+      modifiedIds.push(bm.id);
+    });
+    showToast(nextPinned ? `已置顶 ${targets.length} 条书签` : `已取消 ${targets.length} 条书签的置顶`);
+    triggerAutoSyncDebounced({ bookmarkIds: modifiedIds });
+  }
+
+  function getAllDescendantBookmarkCategoryIds(categoryId: string): string[] {
+    const result: string[] = [];
+    const visited = new Set<string>([categoryId]);
+    const queue: string[] = [categoryId];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const c of bookmarkCategories.value) {
+        if (c.parentId === current && !visited.has(c.id)) {
+          visited.add(c.id);
+          result.push(c.id);
+          queue.push(c.id);
+        }
+      }
+    }
+    return result;
+  }
+
+  function moveBookmarkToCategory(bookmarkId: string, targetCategoryId: string) {
+    const bm = bookmarks.value.find((b) => b.id === bookmarkId);
+    if (!bm) return;
+    const validCatId =
+      targetCategoryId && bookmarkCategories.value.some((c) => c.id === targetCategoryId)
+        ? targetCategoryId
+        : '';
+    if (bm.categoryId === validCatId) return;
+    bm.categoryId = validCatId;
+    stampBookmarkMutation(bm);
+    showToast(`已将「${bm.title}」移至「${validCatId ? getBookmarkCategoryName(validCatId) : '根目录'}」`);
+    triggerAutoSyncDebounced({ bookmarkId: bm.id });
+  }
+
+  function toggleBookmarkCategoryCollapse(id: string) {
+    const cat = bookmarkCategories.value.find((c) => c.id === id);
+    if (!cat) return;
+    cat.isOpen = cat.isOpen === false ? true : false;
+  }
+
+  function createBookmarkCategory(
+    name: string,
+    color?: string | null,
+    parentId?: string | null
+  ): BookmarkCategory | null {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return null;
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const validParentId =
+      parentId && bookmarkCategories.value.some((c) => c.id === parentId) ? parentId : null;
+    const siblings = bookmarkCategories.value.filter((c) => (c.parentId || null) === validParentId);
+    const maxOrder = siblings.reduce((m, c) => Math.max(m, c.order || 0), 0);
+    const newCat: BookmarkCategory = {
+      id: 'bm-cat-' + nowMs + '-' + Math.random().toString(36).substring(2, 5),
+      name: trimmed,
+      parentId: validParentId,
+      isOpen: true,
+      order: maxOrder + 1,
+      color: color || '#2563eb',
+      createdAt: now,
+      updatedAt: now,
+      updatedAtMs: nowMs,
+    };
+    const nextList = [...bookmarkCategories.value];
+    if (validParentId) {
+      const parent = nextList.find((c) => c.id === validParentId);
+      if (parent) parent.isOpen = true;
+    }
+    bookmarkCategories.value = normalizeBookmarkCategoryOrders([...nextList, newCat]);
+    showToast(`书签目录「${trimmed}」已创建`);
+    triggerAutoSyncDebounced({ bookmarkCategoryId: newCat.id });
+    return newCat;
+  }
+
+  function updateBookmarkCategory(
+    id: string,
+    updates: { name?: string; color?: string | null; parentId?: string | null }
+  ) {
+    const cat = bookmarkCategories.value.find((c) => c.id === id);
+    if (!cat) return;
+    if (updates.name !== undefined && updates.name.trim()) {
+      cat.name = updates.name.trim();
+    }
+    if (updates.color !== undefined) {
+      cat.color = updates.color;
+    }
+    if (updates.parentId !== undefined) {
+      const descendants = new Set([id, ...getAllDescendantBookmarkCategoryIds(id)]);
+      const nextParent =
+        updates.parentId && !descendants.has(updates.parentId) && bookmarkCategories.value.some((c) => c.id === updates.parentId)
+          ? updates.parentId
+          : null;
+      cat.parentId = nextParent;
+    }
+    stampBookmarkCategoryMutation(cat);
+    bookmarkCategories.value = normalizeBookmarkCategoryOrders(bookmarkCategories.value);
+    showToast('书签目录已更新');
+    triggerAutoSyncDebounced({ bookmarkCategoryId: cat.id });
+  }
+
+  function reorderBookmarkCategory(id: string, direction: 'up' | 'down') {
+    const target = bookmarkCategories.value.find((c) => c.id === id);
+    if (!target) return;
+    const parentKey = target.parentId || null;
+    const siblings = bookmarkCategories.value
+      .filter((c) => (c.parentId || null) === parentKey)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const idx = siblings.findIndex((c) => c.id === id);
+    if (idx === -1) return;
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= siblings.length) return;
+
+    const [moved] = siblings.splice(idx, 1);
+    siblings.splice(targetIdx, 0, moved);
+
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const orderMap = new Map<string, number>();
+    siblings.forEach((c, i) => orderMap.set(c.id, i + 1));
+
+    const updated = bookmarkCategories.value.map((c) => {
+      if (orderMap.has(c.id)) {
+        return {
+          ...c,
+          order: orderMap.get(c.id)!,
+          updatedAt: now,
+          updatedAtMs: nowMs,
+        };
+      }
+      return c;
+    });
+    bookmarkCategories.value = normalizeBookmarkCategoryOrders(updated);
+    triggerAutoSyncDebounced({ bookmarkCategoryIds: siblings.map((c) => c.id) });
+  }
+
+  function deleteBookmarkCategory(id: string) {
+    const cat = bookmarkCategories.value.find((c) => c.id === id);
+    if (!cat) return;
+
+    const descendantIds = getAllDescendantBookmarkCategoryIds(id);
+    const idsToDelete = new Set<string>([id, ...descendantIds]);
+    const fallbackCategoryId = cat.parentId && !idsToDelete.has(cat.parentId) ? cat.parentId : '';
+
+    const now = formatDateTime();
+    const nowMs = Date.now();
+    const affectedBookmarkIds: string[] = [];
+    bookmarks.value.forEach((bm) => {
+      if (idsToDelete.has(bm.categoryId)) {
+        bm.categoryId = fallbackCategoryId;
+        bm.updatedAt = now;
+        bm.updatedAtMs = nowMs;
+        affectedBookmarkIds.push(bm.id);
+      }
+    });
+
+    const remaining = normalizeBookmarkCategoryOrders(
+      bookmarkCategories.value.filter((c) => !idsToDelete.has(c.id))
+    );
+    bookmarkCategories.value = remaining;
+
+    const targetLabel = fallbackCategoryId ? getBookmarkCategoryName(fallbackCategoryId) : '根目录';
+    showToast(
+      affectedBookmarkIds.length > 0
+        ? `目录「${cat.name}」已删除，${affectedBookmarkIds.length} 条书签已移至「${targetLabel}」`
+        : `目录「${cat.name}」已删除`
+    );
+    triggerAutoSyncDebounced({
+      deletedBookmarkCategoryIds: Array.from(idsToDelete),
+      bookmarkIds: affectedBookmarkIds,
+    });
+  }
+
   // Cloud API Actions
   function openCloudSyncModal() {
     isCloudSyncModalOpen.value = true;
@@ -2076,7 +2788,15 @@ export function useNotes() {
       res.data.notes,
       res.data.folders,
       res.data.deletedNotes,
-      res.data.deletedFolders
+      res.data.deletedFolders,
+      {
+        localBookmarks: bookmarks.value,
+        localBookmarkCategories: bookmarkCategories.value,
+        remoteBookmarks: res.data.bookmarks,
+        remoteBookmarkCategories: res.data.bookmarkCategories,
+        remoteDeletedBookmarks: res.data.deletedBookmarks,
+        remoteDeletedBookmarkCategories: res.data.deletedBookmarkCategories,
+      }
     );
     syncDiff.value = diff;
     return { success: true, message: '差异检测完成', diff };
@@ -2109,18 +2829,32 @@ export function useNotes() {
       const syncStartSeq = globalDirtySeq;
       const modifiedNotesSnapshot = Array.from(pendingModifiedNoteIds);
       const modifiedFoldersSnapshot = Array.from(pendingModifiedFolderIds);
+      const modifiedBookmarksSnapshot = Array.from(pendingModifiedBookmarkIds);
+      const modifiedBookmarkCategoriesSnapshot = Array.from(pendingModifiedBookmarkCategoryIds);
       const deletedNotesToSync = Array.from(pendingDeletedNoteIds);
       const deletedFoldersToSync = Array.from(pendingDeletedFolderIds);
+      const deletedBookmarksToSync = Array.from(pendingDeletedBookmarkIds);
+      const deletedBookmarkCategoriesToSync = Array.from(pendingDeletedBookmarkCategoryIds);
 
       const noteSeqSnapshot = new Map<string, number>();
       modifiedNotesSnapshot.forEach((id) => noteSeqSnapshot.set(id, noteDirtySeq.get(id) || 0));
       const folderSeqSnapshot = new Map<string, number>();
       modifiedFoldersSnapshot.forEach((id) => folderSeqSnapshot.set(id, folderDirtySeq.get(id) || 0));
+      const bookmarkSeqSnapshot = new Map<string, number>();
+      modifiedBookmarksSnapshot.forEach((id) => bookmarkSeqSnapshot.set(id, bookmarkDirtySeq.get(id) || 0));
+      const bookmarkCategorySeqSnapshot = new Map<string, number>();
+      modifiedBookmarkCategoriesSnapshot.forEach((id) =>
+        bookmarkCategorySeqSnapshot.set(id, bookmarkCategoryDirtySeq.get(id) || 0)
+      );
 
       const res = await pushSyncToCloud(config, notes.value, folders.value, mode, {
         deletedNoteIds: deletedNotesToSync,
         deletedFolderIds: deletedFoldersToSync,
         frequentFolderIds: frequentFolderIds.value,
+        bookmarks: bookmarks.value,
+        bookmarkCategories: bookmarkCategories.value,
+        deletedBookmarkIds: deletedBookmarksToSync,
+        deletedBookmarkCategoryIds: deletedBookmarkCategoriesToSync,
       });
 
       if (res.success) {
@@ -2129,8 +2863,12 @@ export function useNotes() {
         if (mode === 'pull_all') {
           pendingModifiedNoteIds.clear();
           pendingModifiedFolderIds.clear();
+          pendingModifiedBookmarkIds.clear();
+          pendingModifiedBookmarkCategoryIds.clear();
           pendingDeletedNoteIds.clear();
           pendingDeletedFolderIds.clear();
+          pendingDeletedBookmarkIds.clear();
+          pendingDeletedBookmarkCategoryIds.clear();
           persistPendingDeletions();
 
           if (res.mergedNotes) {
@@ -2138,6 +2876,12 @@ export function useNotes() {
           }
           if (res.mergedFolders) {
             folders.value = normalizeFolderOrders(res.mergedFolders);
+          }
+          if (res.mergedBookmarkCategories) {
+            bookmarkCategories.value = normalizeBookmarkCategoryOrders(res.mergedBookmarkCategories);
+          }
+          if (res.mergedBookmarks) {
+            bookmarks.value = res.mergedBookmarks;
           }
         } else {
           // Clear only items synced up to syncStartSeq; preserve any edits made while sync was in flight
@@ -2151,8 +2895,20 @@ export function useNotes() {
               pendingModifiedFolderIds.delete(id);
             }
           });
+          modifiedBookmarksSnapshot.forEach((id) => {
+            if ((bookmarkDirtySeq.get(id) || 0) <= (bookmarkSeqSnapshot.get(id) || 0)) {
+              pendingModifiedBookmarkIds.delete(id);
+            }
+          });
+          modifiedBookmarkCategoriesSnapshot.forEach((id) => {
+            if ((bookmarkCategoryDirtySeq.get(id) || 0) <= (bookmarkCategorySeqSnapshot.get(id) || 0)) {
+              pendingModifiedBookmarkCategoryIds.delete(id);
+            }
+          });
           deletedNotesToSync.forEach((id) => pendingDeletedNoteIds.delete(id));
           deletedFoldersToSync.forEach((id) => pendingDeletedFolderIds.delete(id));
+          deletedBookmarksToSync.forEach((id) => pendingDeletedBookmarkIds.delete(id));
+          deletedBookmarkCategoriesToSync.forEach((id) => pendingDeletedBookmarkCategoryIds.delete(id));
           persistPendingDeletions();
 
           if (res.mergedNotes) {
@@ -2209,6 +2965,56 @@ export function useNotes() {
             });
             folders.value = normalizeFolderOrders(nextFolders);
           }
+
+          if (res.mergedBookmarkCategories) {
+            const deletedCatSet = new Set(pendingDeletedBookmarkCategoryIds);
+            const inFlightCats = new Map<string, BookmarkCategory>();
+            bookmarkCategories.value.forEach((localC) => {
+              const dirtySeq = bookmarkCategoryDirtySeq.get(localC.id) || 0;
+              const deletedSeq = bookmarkCategoryDeletedSeq.get(localC.id) || 0;
+              if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
+                inFlightCats.set(localC.id, localC);
+              }
+            });
+            const mergedCatIds = new Set<string>();
+            const nextCats = res.mergedBookmarkCategories
+              .filter((c) => !deletedCatSet.has(c.id) && (bookmarkCategoryDeletedSeq.get(c.id) || 0) <= syncStartSeq)
+              .map((c) => {
+                mergedCatIds.add(c.id);
+                return inFlightCats.get(c.id) || c;
+              });
+            inFlightCats.forEach((localC, id) => {
+              if (!mergedCatIds.has(id) && !deletedCatSet.has(id) && (bookmarkCategoryDeletedSeq.get(id) || 0) <= syncStartSeq) {
+                nextCats.push(localC);
+              }
+            });
+            bookmarkCategories.value = normalizeBookmarkCategoryOrders(nextCats);
+          }
+
+          if (res.mergedBookmarks) {
+            const deletedBmSet = new Set(pendingDeletedBookmarkIds);
+            const inFlightBms = new Map<string, Bookmark>();
+            bookmarks.value.forEach((localB) => {
+              const dirtySeq = bookmarkDirtySeq.get(localB.id) || 0;
+              const deletedSeq = bookmarkDeletedSeq.get(localB.id) || 0;
+              if (dirtySeq > syncStartSeq && dirtySeq > deletedSeq) {
+                inFlightBms.set(localB.id, localB);
+              }
+            });
+            const mergedBmIds = new Set<string>();
+            const nextBms = res.mergedBookmarks
+              .filter((b) => !deletedBmSet.has(b.id) && (bookmarkDeletedSeq.get(b.id) || 0) <= syncStartSeq)
+              .map((b) => {
+                mergedBmIds.add(b.id);
+                return inFlightBms.get(b.id) || b;
+              });
+            inFlightBms.forEach((localB, id) => {
+              if (!mergedBmIds.has(id) && !deletedBmSet.has(id) && (bookmarkDeletedSeq.get(id) || 0) <= syncStartSeq) {
+                nextBms.unshift(localB);
+              }
+            });
+            bookmarks.value = nextBms;
+          }
         }
 
         if (res.mergedFrequentFolderIds && Array.isArray(res.mergedFrequentFolderIds)) {
@@ -2232,6 +3038,14 @@ export function useNotes() {
           cloudOnlyFolders: 0,
           localUpdatedFolders: 0,
           cloudUpdatedFolders: 0,
+          localOnlyBookmarks: 0,
+          localUpdatedBookmarks: 0,
+          cloudOnlyBookmarks: 0,
+          cloudUpdatedBookmarks: 0,
+          localOnlyBookmarkCategories: 0,
+          localUpdatedBookmarkCategories: 0,
+          cloudOnlyBookmarkCategories: 0,
+          cloudUpdatedBookmarkCategories: 0,
           totalDiff: 0,
         };
         await nextTick();
@@ -2300,6 +3114,9 @@ export function useNotes() {
   return {
     folders,
     notes,
+    bookmarks,
+    bookmarkCategories,
+    bookmarksCount,
     currentView,
     activeFolderId,
     activeFolder,
@@ -2358,6 +3175,7 @@ export function useNotes() {
     getDirectFolderNoteCount,
     starredNotesCount,
     deletedNotesCount,
+    getBookmarkCategoryName,
     // methods
     showToast,
     selectFolder,
@@ -2400,6 +3218,21 @@ export function useNotes() {
     importMindMapFile,
     importDrawioFile,
     navigateToNoteFromSearch,
+    // Bookmarks & Categories CRUD
+    createBookmark,
+    updateBookmark,
+    toggleBookmarkPin,
+    deleteBookmark,
+    moveBookmarkToCategory,
+    batchDeleteBookmarks,
+    batchMoveBookmarks,
+    batchToggleBookmarkPin,
+    getAllDescendantBookmarkCategoryIds,
+    toggleBookmarkCategoryCollapse,
+    createBookmarkCategory,
+    updateBookmarkCategory,
+    reorderBookmarkCategory,
+    deleteBookmarkCategory,
     // IndexedDB storage info
     isStorageReady,
     storageInfo,

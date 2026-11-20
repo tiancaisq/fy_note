@@ -24,7 +24,11 @@
  * - GET    ?action=frequent_folders        获取常用目录列表
  * - POST   ?action=upsert_frequent_folders 新增/排序/保存常用目录
  * - DELETE ?action=delete_frequent_folder  移除常用目录固定
- * - POST   ?action=empty_trash             清空回收站
+ * - POST   ?action=empty_trash              清空回收站
+ * - POST   ?action=upsert_bookmark          新增或更新书签（支持批量）
+ * - DELETE ?action=delete_bookmark          直接彻底删除单个书签
+ * - POST   ?action=upsert_bookmark_category 新增或更新书签分类（支持批量）
+ * - DELETE ?action=delete_bookmark_category 删除单个书签分类（关联书签自动归入未分类）
  * ==============================================================================
  */
 
@@ -256,6 +260,103 @@ function collectDescendantFolderIdsPhp(PDO $pdo, string $userId, array $rootIds)
     return array_keys($allSet);
 }
 
+/**
+ * 幂等确保书签及书签分类表已存在（兼容已有数据库免迁移升级）
+ */
+function ensureBookmarkTables(PDO $pdo): void {
+    static $ensured = false;
+    if ($ensured) return;
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `bookmark_categories` (
+        `id` VARCHAR(64) NOT NULL,
+        `user_id` VARCHAR(64) NOT NULL DEFAULT 'default_user',
+        `parent_id` VARCHAR(64) DEFAULT NULL,
+        `name` VARCHAR(128) NOT NULL DEFAULT '',
+        `order_num` INT NOT NULL DEFAULT 0,
+        `is_collapsed` TINYINT(1) NOT NULL DEFAULT 0,
+        `color` VARCHAR(32) DEFAULT NULL,
+        `created_at` VARCHAR(32) NOT NULL DEFAULT '',
+        `updated_at` VARCHAR(32) NOT NULL DEFAULT '',
+        PRIMARY KEY (`id`),
+        KEY `idx_user_order` (`user_id`, `order_num`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网站书签树形目录表'");
+
+    // 兼容已存在的旧版 bookmark_categories 表，自动补齐 parent_id / is_collapsed 字段
+    try {
+        $colCheck = $pdo->query("SHOW COLUMNS FROM `bookmark_categories` LIKE 'parent_id'");
+        if (!$colCheck || !$colCheck->fetch()) {
+            $pdo->exec("ALTER TABLE `bookmark_categories` ADD COLUMN `parent_id` VARCHAR(64) DEFAULT NULL AFTER `user_id`");
+        }
+        $colCheck2 = $pdo->query("SHOW COLUMNS FROM `bookmark_categories` LIKE 'is_collapsed'");
+        if (!$colCheck2 || !$colCheck2->fetch()) {
+            $pdo->exec("ALTER TABLE `bookmark_categories` ADD COLUMN `is_collapsed` TINYINT(1) NOT NULL DEFAULT 0 AFTER `order_num`");
+        }
+    } catch (Exception $ignored) {}
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `bookmarks` (
+        `id` VARCHAR(64) NOT NULL,
+        `user_id` VARCHAR(64) NOT NULL DEFAULT 'default_user',
+        `category_id` VARCHAR(64) NOT NULL DEFAULT '',
+        `title` VARCHAR(255) NOT NULL DEFAULT '',
+        `url` TEXT NOT NULL,
+        `description` TEXT DEFAULT NULL,
+        `tags` TEXT DEFAULT NULL,
+        `is_pinned` TINYINT(1) NOT NULL DEFAULT 0,
+        `icon_url` TEXT DEFAULT NULL,
+        `created_at` VARCHAR(32) NOT NULL DEFAULT '',
+        `updated_at` VARCHAR(32) NOT NULL DEFAULT '',
+        PRIMARY KEY (`id`),
+        KEY `idx_user_category` (`user_id`, `category_id`),
+        KEY `idx_user_pinned_updated` (`user_id`, `is_pinned`, `updated_at`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网站书签主表'");
+    $ensured = true;
+}
+
+function fetchUserBookmarkData(PDO $pdo, string $userId): array {
+    ensureBookmarkTables($pdo);
+
+    $catStmt = $pdo->prepare("SELECT * FROM bookmark_categories WHERE user_id = :userId ORDER BY order_num ASC, created_at ASC");
+    $catStmt->execute([':userId' => $userId]);
+    $categories = array_map(function($c) {
+        return [
+            'id'        => (string)$c['id'],
+            'parentId'  => !empty($c['parent_id']) ? (string)$c['parent_id'] : null,
+            'name'      => (string)$c['name'],
+            'order'     => (int)($c['order_num'] ?? 0),
+            'isOpen'    => !((bool)($c['is_collapsed'] ?? false)),
+            'color'     => $c['color'] ?? null,
+            'createdAt' => $c['created_at'],
+            'updatedAt' => $c['updated_at'],
+        ];
+    }, $catStmt->fetchAll());
+
+    $bmStmt = $pdo->prepare("SELECT * FROM bookmarks WHERE user_id = :userId ORDER BY is_pinned DESC, updated_at DESC");
+    $bmStmt->execute([':userId' => $userId]);
+    $bookmarks = array_map(function($b) {
+        $tags = [];
+        if (!empty($b['tags'])) {
+            $decoded = json_decode($b['tags'], true);
+            if (is_array($decoded)) $tags = $decoded;
+        }
+        $row = [
+            'id'          => (string)$b['id'],
+            'title'       => (string)$b['title'],
+            'url'         => (string)$b['url'],
+            'description' => (string)($b['description'] ?? ''),
+            'categoryId'  => (string)($b['category_id'] ?? ''),
+            'tags'        => $tags,
+            'isPinned'    => (bool)($b['is_pinned'] ?? false),
+            'createdAt'   => $b['created_at'],
+            'updatedAt'   => $b['updated_at'],
+        ];
+        if (!empty($b['icon_url'])) {
+            $row['iconUrl'] = (string)$b['icon_url'];
+        }
+        return $row;
+    }, $bmStmt->fetchAll());
+
+    return ['bookmarkCategories' => $categories, 'bookmarks' => $bookmarks];
+}
+
 // ==============================================================================
 // 3. 数据库连接初始化 (PDO)
 // ==============================================================================
@@ -397,18 +498,27 @@ switch ($action) {
                 }
             }
 
+            $bookmarkPayload = fetchUserBookmarkData($pdo, $userId);
             $noteTombstones = loadTombstones($pdo, $userId, 'deleted_note_tombstones');
             $folderTombstones = loadTombstones($pdo, $userId, 'deleted_folder_tombstones');
+            $bookmarkTombstones = loadTombstones($pdo, $userId, 'deleted_bookmark_tombstones');
+            $bookmarkCatTombstones = loadTombstones($pdo, $userId, 'deleted_bookmark_category_tombstones');
 
             jsonResponse(200, true, '全量云端数据获取成功', [
-                'folders'              => $folders,
-                'notes'                => $notes,
-                'frequentFolderIds'    => $frequentFolderIds,
-                'deletedNotes'         => tombstoneIdsMap($noteTombstones),
-                'deletedFolders'       => tombstoneIdsMap($folderTombstones),
-                'foldersCount'         => count($folders),
-                'notesCount'           => count($notes),
-                'frequentFoldersCount' => count($frequentFolderIds),
+                'folders'                   => $folders,
+                'notes'                     => $notes,
+                'frequentFolderIds'         => $frequentFolderIds,
+                'bookmarks'                 => $bookmarkPayload['bookmarks'],
+                'bookmarkCategories'        => $bookmarkPayload['bookmarkCategories'],
+                'deletedNotes'              => tombstoneIdsMap($noteTombstones),
+                'deletedFolders'            => tombstoneIdsMap($folderTombstones),
+                'deletedBookmarks'          => tombstoneIdsMap($bookmarkTombstones),
+                'deletedBookmarkCategories' => tombstoneIdsMap($bookmarkCatTombstones),
+                'foldersCount'              => count($folders),
+                'notesCount'                => count($notes),
+                'frequentFoldersCount'      => count($frequentFolderIds),
+                'bookmarksCount'            => count($bookmarkPayload['bookmarks']),
+                'bookmarkCategoriesCount'   => count($bookmarkPayload['bookmarkCategories']),
             ]);
         } catch (Exception $e) {
             jsonResponse(500, false, '拉取云端数据失败: ' . $e->getMessage());
@@ -749,16 +859,22 @@ switch ($action) {
         $clientFrequentFolderIds = is_array($body['frequentFolderIds'] ?? null) 
             ? $body['frequentFolderIds'] 
             : (is_array($body['frequentFolders'] ?? null) ? $body['frequentFolders'] : null);
+        $clientBookmarks = is_array($body['bookmarks'] ?? null) ? $body['bookmarks'] : [];
+        $clientBookmarkCategories = is_array($body['bookmarkCategories'] ?? null) ? $body['bookmarkCategories'] : [];
         $deletedNoteIds = is_array($body['deletedNoteIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['deletedNoteIds']))) : [];
         $deletedFolderIds = is_array($body['deletedFolderIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['deletedFolderIds']))) : [];
+        $deletedBookmarkIds = is_array($body['deletedBookmarkIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['deletedBookmarkIds']))) : [];
+        $deletedBookmarkCategoryIds = is_array($body['deletedBookmarkCategoryIds'] ?? null) ? array_values(array_filter(array_map('strval', $body['deletedBookmarkCategoryIds']))) : [];
 
         try {
+            // DDL 建表必须在开启事务前执行，防止 MySQL 隐式提交
+            ensureBookmarkTables($pdo);
             $pdo->beginTransaction();
 
             $opMs = max((int)(microtime(true) * 1000), (int)($body['timestamp'] ?? 0));
             $opAt = (string)($body['clientTimeStr'] ?? $body['deletedAt'] ?? date('Y-m-d H:i:s'));
 
-            // 0. 先处理彻底删除项并写入墓碑（如清空回收站或彻底删除文件夹）
+            // 0. 先处理彻底删除项并写入墓碑（含回收站清空、文件夹删除、书签直接物理删除与分类删除）
             if (!empty($deletedFolderIds)) {
                 $deletedFolderIds = collectDescendantFolderIdsPhp($pdo, $userId, $deletedFolderIds);
                 $placeholders = implode(',', array_fill(0, count($deletedFolderIds), '?'));
@@ -772,12 +888,30 @@ switch ($action) {
                 $delStmt->execute(array_merge([$userId], $deletedNoteIds));
                 addTombstones($pdo, $userId, 'deleted_note_tombstones', $deletedNoteIds, $opMs, $opAt);
             }
+            if (!empty($deletedBookmarkIds)) {
+                $placeholders = implode(',', array_fill(0, count($deletedBookmarkIds), '?'));
+                $delStmt = $pdo->prepare("DELETE FROM bookmarks WHERE user_id = ? AND id IN ($placeholders)");
+                $delStmt->execute(array_merge([$userId], $deletedBookmarkIds));
+                addTombstones($pdo, $userId, 'deleted_bookmark_tombstones', $deletedBookmarkIds, $opMs, $opAt);
+            }
+            if (!empty($deletedBookmarkCategoryIds)) {
+                $placeholders = implode(',', array_fill(0, count($deletedBookmarkCategoryIds), '?'));
+                $delStmt = $pdo->prepare("DELETE FROM bookmark_categories WHERE user_id = ? AND id IN ($placeholders)");
+                $delStmt->execute(array_merge([$userId], $deletedBookmarkCategoryIds));
+                $updStmt = $pdo->prepare("UPDATE bookmarks SET category_id = '', updated_at = ? WHERE user_id = ? AND category_id IN ($placeholders)");
+                $updStmt->execute(array_merge([$opAt, $userId], $deletedBookmarkCategoryIds));
+                addTombstones($pdo, $userId, 'deleted_bookmark_category_tombstones', $deletedBookmarkCategoryIds, $opMs, $opAt);
+            }
 
             $deletedNoteSet = array_flip($deletedNoteIds);
             $deletedFolderSet = array_flip($deletedFolderIds);
+            $deletedBookmarkSet = array_flip($deletedBookmarkIds);
+            $deletedBookmarkCatSet = array_flip($deletedBookmarkCategoryIds);
 
             $noteTombstones = loadTombstones($pdo, $userId, 'deleted_note_tombstones');
             $folderTombstones = loadTombstones($pdo, $userId, 'deleted_folder_tombstones');
+            $bookmarkTombstones = loadTombstones($pdo, $userId, 'deleted_bookmark_tombstones');
+            $bookmarkCatTombstones = loadTombstones($pdo, $userId, 'deleted_bookmark_category_tombstones');
 
             // 0.1 同步常用目录设置 (frequentFolderIds)
             if ($clientFrequentFolderIds !== null) {
@@ -950,6 +1084,146 @@ switch ($action) {
                 $noteTombstones = loadTombstones($pdo, $userId, 'deleted_note_tombstones');
             }
 
+            // 5. 执行书签分类双向比对与更新 (尊重墓碑)
+            $bcStmt = $pdo->prepare("SELECT * FROM bookmark_categories WHERE user_id = :userId");
+            $bcStmt->execute([':userId' => $userId]);
+            $cloudBmCatMap = [];
+            foreach ($bcStmt->fetchAll() as $cc) {
+                $cloudBmCatMap[$cc['id']] = $cc;
+            }
+
+            $upsertBmCat = $pdo->prepare("INSERT INTO bookmark_categories
+                (id, user_id, parent_id, name, order_num, is_collapsed, color, created_at, updated_at)
+                VALUES (:id, :userId, :parentId, :name, :orderNum, :isCollapsed, :color, :createdAt, :updatedAt)
+                ON DUPLICATE KEY UPDATE
+                    parent_id = :uParentId,
+                    name = :uName,
+                    order_num = :uOrderNum,
+                    is_collapsed = :uIsCollapsed,
+                    color = :uColor,
+                    updated_at = :uUpdatedAt");
+
+            $revivedBmCatIds = [];
+            foreach ($clientBookmarkCategories as $cc) {
+                if (!is_array($cc) || empty($cc['id'])) continue;
+                $cid = (string)$cc['id'];
+                if (isset($deletedBookmarkCatSet[$cid])) continue;
+                $shouldUpdate = false;
+                if (!isset($cloudBmCatMap[$cid])) {
+                    if (isBlockedByTombstone($cc, $bookmarkCatTombstones[$cid] ?? null, false)) {
+                        continue;
+                    }
+                    $revivedBmCatIds[] = $cid;
+                    $shouldUpdate = true;
+                } elseif (empty($cc['updatedAt'])) {
+                    $shouldUpdate = true;
+                } else {
+                    $cloudTs = strtotime($cloudBmCatMap[$cid]['updated_at'] ?? '2000-01-01');
+                    $localTs = strtotime($cc['updatedAt']);
+                    if ($localTs >= $cloudTs) {
+                        $shouldUpdate = true;
+                    }
+                }
+                if ($shouldUpdate) {
+                    $parentId = !empty($cc['parentId']) ? (string)$cc['parentId'] : null;
+                    $isCollapsed = (isset($cc['isOpen']) && !$cc['isOpen']) ? 1 : 0;
+                    $upsertBmCat->execute([
+                        ':id'           => $cid,
+                        ':userId'       => $userId,
+                        ':parentId'     => $parentId,
+                        ':name'         => (string)($cc['name'] ?? '未命名目录'),
+                        ':orderNum'     => (int)($cc['order'] ?? 0),
+                        ':isCollapsed'  => $isCollapsed,
+                        ':color'        => $cc['color'] ?? null,
+                        ':createdAt'    => $cc['createdAt'] ?? date('Y-m-d H:i:s'),
+                        ':updatedAt'    => $cc['updatedAt'] ?? date('Y-m-d H:i:s'),
+                        ':uParentId'    => $parentId,
+                        ':uName'        => (string)($cc['name'] ?? '未命名目录'),
+                        ':uOrderNum'    => (int)($cc['order'] ?? 0),
+                        ':uIsCollapsed' => $isCollapsed,
+                        ':uColor'       => $cc['color'] ?? null,
+                        ':uUpdatedAt'   => $cc['updatedAt'] ?? date('Y-m-d H:i:s'),
+                    ]);
+                }
+            }
+            if (!empty($revivedBmCatIds)) {
+                removeTombstones($pdo, $userId, 'deleted_bookmark_category_tombstones', $revivedBmCatIds);
+                $bookmarkCatTombstones = loadTombstones($pdo, $userId, 'deleted_bookmark_category_tombstones');
+            }
+
+            // 6. 执行网站书签双向比对与更新 (直接删除无回收站，严格尊重墓碑)
+            $bmStmt = $pdo->prepare("SELECT * FROM bookmarks WHERE user_id = :userId");
+            $bmStmt->execute([':userId' => $userId]);
+            $cloudBmMap = [];
+            foreach ($bmStmt->fetchAll() as $cb) {
+                $cloudBmMap[$cb['id']] = $cb;
+            }
+
+            $upsertBm = $pdo->prepare("INSERT INTO bookmarks
+                (id, user_id, category_id, title, url, description, tags, is_pinned, icon_url, created_at, updated_at)
+                VALUES (:id, :userId, :categoryId, :title, :url, :description, :tags, :isPinned, :iconUrl, :createdAt, :updatedAt)
+                ON DUPLICATE KEY UPDATE
+                    category_id = :uCategoryId,
+                    title = :uTitle,
+                    url = :uUrl,
+                    description = :uDescription,
+                    tags = :uTags,
+                    is_pinned = :uIsPinned,
+                    icon_url = :uIconUrl,
+                    updated_at = :uUpdatedAt");
+
+            $revivedBmIds = [];
+            foreach ($clientBookmarks as $cb) {
+                if (!is_array($cb) || empty($cb['id'])) continue;
+                $bid = (string)$cb['id'];
+                if (isset($deletedBookmarkSet[$bid])) continue;
+                $shouldUpdate = false;
+                if (!isset($cloudBmMap[$bid])) {
+                    if (isBlockedByTombstone($cb, $bookmarkTombstones[$bid] ?? null, false)) {
+                        continue;
+                    }
+                    $revivedBmIds[] = $bid;
+                    $shouldUpdate = true;
+                } else {
+                    $cloudTs = strtotime($cloudBmMap[$bid]['updated_at'] ?? '2000-01-01');
+                    $localTs = strtotime($cb['updatedAt'] ?? '2000-01-01');
+                    if ($localTs >= $cloudTs) {
+                        $shouldUpdate = true;
+                    }
+                }
+                if ($shouldUpdate) {
+                    $catId = !empty($cb['categoryId']) ? (string)$cb['categoryId'] : '';
+                    if ($catId !== '' && isset($deletedBookmarkCatSet[$catId])) {
+                        $catId = '';
+                    }
+                    $upsertBm->execute([
+                        ':id'           => $bid,
+                        ':userId'       => $userId,
+                        ':categoryId'   => $catId,
+                        ':title'        => (string)($cb['title'] ?? '未命名书签'),
+                        ':url'          => (string)($cb['url'] ?? ''),
+                        ':description'  => (string)($cb['description'] ?? ''),
+                        ':tags'         => json_encode($cb['tags'] ?? [], JSON_UNESCAPED_UNICODE),
+                        ':isPinned'     => !empty($cb['isPinned']) ? 1 : 0,
+                        ':iconUrl'      => !empty($cb['iconUrl']) ? (string)$cb['iconUrl'] : null,
+                        ':createdAt'    => $cb['createdAt'] ?? date('Y-m-d H:i:s'),
+                        ':updatedAt'    => $cb['updatedAt'] ?? date('Y-m-d H:i:s'),
+                        ':uCategoryId'  => $catId,
+                        ':uTitle'       => (string)($cb['title'] ?? '未命名书签'),
+                        ':uUrl'         => (string)($cb['url'] ?? ''),
+                        ':uDescription' => (string)($cb['description'] ?? ''),
+                        ':uTags'        => json_encode($cb['tags'] ?? [], JSON_UNESCAPED_UNICODE),
+                        ':uIsPinned'    => !empty($cb['isPinned']) ? 1 : 0,
+                        ':uIconUrl'     => !empty($cb['iconUrl']) ? (string)$cb['iconUrl'] : null,
+                        ':uUpdatedAt'   => $cb['updatedAt'] ?? date('Y-m-d H:i:s'),
+                    ]);
+                }
+            }
+            if (!empty($revivedBmIds)) {
+                removeTombstones($pdo, $userId, 'deleted_bookmark_tombstones', $revivedBmIds);
+                $bookmarkTombstones = loadTombstones($pdo, $userId, 'deleted_bookmark_tombstones');
+            }
+
             // 查询合并后的最新完整数据并返回给客户端
             $finalF = $pdo->prepare("SELECT * FROM folders WHERE user_id = :userId AND is_deleted = 0 ORDER BY order_num ASC");
             $finalF->execute([':userId' => $userId]);
@@ -1003,17 +1277,25 @@ switch ($action) {
                 }
             }
 
+            $mergedBookmarkPayload = fetchUserBookmarkData($pdo, $userId);
+
             $pdo->commit();
 
             jsonResponse(200, true, '数据同步成功', [
-                'folders'              => $mergedFolders,
-                'notes'                => $mergedNotes,
-                'frequentFolderIds'    => $mergedFreqIds,
-                'deletedNotes'         => tombstoneIdsMap($noteTombstones),
-                'deletedFolders'       => tombstoneIdsMap($folderTombstones),
-                'foldersCount'         => count($mergedFolders),
-                'notesCount'           => count($mergedNotes),
-                'frequentFoldersCount' => count($mergedFreqIds),
+                'folders'                   => $mergedFolders,
+                'notes'                     => $mergedNotes,
+                'frequentFolderIds'         => $mergedFreqIds,
+                'bookmarks'                 => $mergedBookmarkPayload['bookmarks'],
+                'bookmarkCategories'        => $mergedBookmarkPayload['bookmarkCategories'],
+                'deletedNotes'              => tombstoneIdsMap($noteTombstones),
+                'deletedFolders'            => tombstoneIdsMap($folderTombstones),
+                'deletedBookmarks'          => tombstoneIdsMap($bookmarkTombstones),
+                'deletedBookmarkCategories' => tombstoneIdsMap($bookmarkCatTombstones),
+                'foldersCount'              => count($mergedFolders),
+                'notesCount'                => count($mergedNotes),
+                'frequentFoldersCount'      => count($mergedFreqIds),
+                'bookmarksCount'            => count($mergedBookmarkPayload['bookmarks']),
+                'bookmarkCategoriesCount'   => count($mergedBookmarkPayload['bookmarkCategories']),
             ]);
         } catch (Exception $e) {
             if ($pdo->inTransaction()) {
@@ -1177,9 +1459,264 @@ switch ($action) {
         break;
 
     // --------------------------------------------------------------------------
+    // 接口 12: 保存 / 批量保存网站书签 (Upsert Bookmarks)
+    // --------------------------------------------------------------------------
+    case 'upsert_bookmark':
+    case 'save_bookmark':
+        requireMethod('POST');
+        $items = [];
+        if (!empty($body['bookmarks']) && is_array($body['bookmarks'])) {
+            $items = $body['bookmarks'];
+        } elseif (!empty($body['bookmark']) && is_array($body['bookmark'])) {
+            $items = [$body['bookmark']];
+        } elseif (!empty($body['id'])) {
+            $items = [$body];
+        }
+        if (empty($items)) {
+            jsonResponse(400, false, '参数缺失: 缺少书签数据');
+        }
+
+        try {
+            ensureBookmarkTables($pdo);
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("INSERT INTO bookmarks
+                (id, user_id, category_id, title, url, description, tags, is_pinned, icon_url, created_at, updated_at)
+                VALUES (:id, :userId, :categoryId, :title, :url, :description, :tags, :isPinned, :iconUrl, :createdAt, :updatedAt)
+                ON DUPLICATE KEY UPDATE
+                    category_id = :uCategoryId,
+                    title = :uTitle,
+                    url = :uUrl,
+                    description = :uDescription,
+                    tags = :uTags,
+                    is_pinned = :uIsPinned,
+                    icon_url = :uIconUrl,
+                    updated_at = :uUpdatedAt");
+
+            $savedIds = [];
+            foreach ($items as $bm) {
+                if (!is_array($bm) || empty($bm['id'])) continue;
+                $id = (string)$bm['id'];
+                $catId = !empty($bm['categoryId']) ? (string)$bm['categoryId'] : '';
+                $title = (string)($bm['title'] ?? '未命名书签');
+                $url = (string)($bm['url'] ?? '');
+                $desc = (string)($bm['description'] ?? '');
+                $tags = json_encode($bm['tags'] ?? [], JSON_UNESCAPED_UNICODE);
+                $isPinned = !empty($bm['isPinned']) ? 1 : 0;
+                $iconUrl = !empty($bm['iconUrl']) ? (string)$bm['iconUrl'] : null;
+                $createdAt = $bm['createdAt'] ?? date('Y-m-d H:i:s');
+                $updatedAt = $bm['updatedAt'] ?? date('Y-m-d H:i:s');
+
+                $stmt->execute([
+                    ':id'           => $id,
+                    ':userId'       => $userId,
+                    ':categoryId'   => $catId,
+                    ':title'        => $title,
+                    ':url'          => $url,
+                    ':description'  => $desc,
+                    ':tags'         => $tags,
+                    ':isPinned'     => $isPinned,
+                    ':iconUrl'      => $iconUrl,
+                    ':createdAt'    => $createdAt,
+                    ':updatedAt'    => $updatedAt,
+                    ':uCategoryId'  => $catId,
+                    ':uTitle'       => $title,
+                    ':uUrl'         => $url,
+                    ':uDescription' => $desc,
+                    ':uTags'        => $tags,
+                    ':uIsPinned'    => $isPinned,
+                    ':uIconUrl'     => $iconUrl,
+                    ':uUpdatedAt'   => $updatedAt,
+                ]);
+                $savedIds[] = $id;
+            }
+
+            removeTombstones($pdo, $userId, 'deleted_bookmark_tombstones', $savedIds);
+            $pdo->commit();
+
+            jsonResponse(200, true, '书签已成功同步至云端', [
+                'ids'   => $savedIds,
+                'count' => count($savedIds),
+            ]);
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            jsonResponse(500, false, '保存书签失败: ' . $e->getMessage());
+        }
+        break;
+
+    // --------------------------------------------------------------------------
+    // 接口 13: 直接彻底删除单个书签 (Delete Bookmark - 不进入回收站)
+    // --------------------------------------------------------------------------
+    case 'delete_bookmark':
+        $bookmarkId = (string)($_GET['id'] ?? $body['id'] ?? '');
+        if (empty($bookmarkId)) {
+            jsonResponse(400, false, '参数缺失: 缺少待删除的书签 ID');
+        }
+
+        try {
+            ensureBookmarkTables($pdo);
+            $stmt = $pdo->prepare("DELETE FROM bookmarks WHERE id = :id AND user_id = :userId");
+            $stmt->execute([':id' => $bookmarkId, ':userId' => $userId]);
+
+            $opMs = max((int)(microtime(true) * 1000), (int)($body['timestamp'] ?? 0));
+            $opAt = (string)($body['deletedAt'] ?? date('Y-m-d H:i:s'));
+            addTombstones($pdo, $userId, 'deleted_bookmark_tombstones', [$bookmarkId], $opMs, $opAt);
+
+            jsonResponse(200, true, '云端书签已彻底删除', [
+                'id'      => $bookmarkId,
+                'deleted' => true,
+            ]);
+        } catch (Exception $e) {
+            jsonResponse(500, false, '删除书签失败: ' . $e->getMessage());
+        }
+        break;
+
+    // --------------------------------------------------------------------------
+    // 接口 14: 保存 / 批量保存书签分类 (Upsert Bookmark Categories)
+    // --------------------------------------------------------------------------
+    case 'upsert_bookmark_category':
+    case 'save_bookmark_category':
+        requireMethod('POST');
+        $items = [];
+        if (!empty($body['categories']) && is_array($body['categories'])) {
+            $items = $body['categories'];
+        } elseif (!empty($body['category']) && is_array($body['category'])) {
+            $items = [$body['category']];
+        } elseif (!empty($body['id'])) {
+            $items = [$body];
+        }
+        if (empty($items)) {
+            jsonResponse(400, false, '参数缺失: 缺少书签分类数据');
+        }
+
+        try {
+            ensureBookmarkTables($pdo);
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("INSERT INTO bookmark_categories
+                (id, user_id, parent_id, name, order_num, is_collapsed, color, created_at, updated_at)
+                VALUES (:id, :userId, :parentId, :name, :orderNum, :isCollapsed, :color, :createdAt, :updatedAt)
+                ON DUPLICATE KEY UPDATE
+                    parent_id = :uParentId,
+                    name = :uName,
+                    order_num = :uOrderNum,
+                    is_collapsed = :uIsCollapsed,
+                    color = :uColor,
+                    updated_at = :uUpdatedAt");
+
+            $savedIds = [];
+            foreach ($items as $cat) {
+                if (!is_array($cat) || empty($cat['id'])) continue;
+                $id = (string)$cat['id'];
+                $parentId = !empty($cat['parentId']) ? (string)$cat['parentId'] : null;
+                $name = (string)($cat['name'] ?? '未命名目录');
+                $orderNum = (int)($cat['order'] ?? 0);
+                $isCollapsed = (isset($cat['isOpen']) && !$cat['isOpen']) ? 1 : 0;
+                $color = $cat['color'] ?? null;
+                $createdAt = $cat['createdAt'] ?? date('Y-m-d H:i:s');
+                $updatedAt = $cat['updatedAt'] ?? date('Y-m-d H:i:s');
+
+                $stmt->execute([
+                    ':id'           => $id,
+                    ':userId'       => $userId,
+                    ':parentId'     => $parentId,
+                    ':name'         => $name,
+                    ':orderNum'     => $orderNum,
+                    ':isCollapsed'  => $isCollapsed,
+                    ':color'        => $color,
+                    ':createdAt'    => $createdAt,
+                    ':updatedAt'    => $updatedAt,
+                    ':uParentId'    => $parentId,
+                    ':uName'        => $name,
+                    ':uOrderNum'    => $orderNum,
+                    ':uIsCollapsed' => $isCollapsed,
+                    ':uColor'       => $color,
+                    ':uUpdatedAt'   => $updatedAt,
+                ]);
+                $savedIds[] = $id;
+            }
+
+            removeTombstones($pdo, $userId, 'deleted_bookmark_category_tombstones', $savedIds);
+            $pdo->commit();
+
+            jsonResponse(200, true, '书签目录已成功同步至云端', [
+                'ids'   => $savedIds,
+                'count' => count($savedIds),
+            ]);
+        } catch (Exception $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            jsonResponse(500, false, '保存书签目录失败: ' . $e->getMessage());
+        }
+        break;
+
+    // --------------------------------------------------------------------------
+    // 接口 15: 删除书签目录 (Delete Bookmark Category & Descendants)
+    // --------------------------------------------------------------------------
+    case 'delete_bookmark_category':
+        $categoryId = (string)($_GET['id'] ?? $body['id'] ?? '');
+        if (empty($categoryId)) {
+            jsonResponse(400, false, '参数缺失: 缺少待删除的书签目录 ID');
+        }
+
+        try {
+            ensureBookmarkTables($pdo);
+            $nowStr = (string)($body['deletedAt'] ?? date('Y-m-d H:i:s'));
+
+            // 收集待删除目录及其全部子目录
+            $allStmt = $pdo->prepare("SELECT id, parent_id FROM bookmark_categories WHERE user_id = :userId");
+            $allStmt->execute([':userId' => $userId]);
+            $allRows = $allStmt->fetchAll();
+
+            $parentOfTarget = '';
+            foreach ($allRows as $r) {
+                if ((string)$r['id'] === $categoryId && !empty($r['parent_id'])) {
+                    $parentOfTarget = (string)$r['parent_id'];
+                    break;
+                }
+            }
+
+            $idsToDelete = [$categoryId => true];
+            $added = true;
+            while ($added) {
+                $added = false;
+                foreach ($allRows as $r) {
+                    $rid = (string)$r['id'];
+                    $pid = !empty($r['parent_id']) ? (string)$r['parent_id'] : '';
+                    if ($pid !== '' && isset($idsToDelete[$pid]) && !isset($idsToDelete[$rid])) {
+                        $idsToDelete[$rid] = true;
+                        $added = true;
+                    }
+                }
+            }
+            $deleteList = array_keys($idsToDelete);
+            $fallbackCatId = ($parentOfTarget !== '' && !isset($idsToDelete[$parentOfTarget])) ? $parentOfTarget : '';
+
+            $placeholders = implode(',', array_fill(0, count($deleteList), '?'));
+            $delStmt = $pdo->prepare("DELETE FROM bookmark_categories WHERE user_id = ? AND id IN ($placeholders)");
+            $delStmt->execute(array_merge([$userId], $deleteList));
+
+            $updStmt = $pdo->prepare("UPDATE bookmarks SET category_id = ?, updated_at = ? WHERE user_id = ? AND category_id IN ($placeholders)");
+            $updStmt->execute(array_merge([$fallbackCatId, $nowStr, $userId], $deleteList));
+
+            $opMs = max((int)(microtime(true) * 1000), (int)($body['timestamp'] ?? 0));
+            addTombstones($pdo, $userId, 'deleted_bookmark_category_tombstones', $deleteList, $opMs, $nowStr);
+
+            jsonResponse(200, true, '云端书签目录已删除', [
+                'id'         => $categoryId,
+                'deletedIds' => $deleteList,
+                'deleted'    => true,
+            ]);
+        } catch (Exception $e) {
+            jsonResponse(500, false, '删除书签目录失败: ' . $e->getMessage());
+        }
+        break;
+
+    // --------------------------------------------------------------------------
     // 默认兜底: 未匹配到已知 Action
     // --------------------------------------------------------------------------
     default:
-        jsonResponse(400, false, sprintf('无效的 action 参数: [%s]。请参考 API 文档传入正确的操作指令 (ping / pull / sync / upsert_note / delete_note / empty_trash / upsert_folder / delete_folder / frequent_folders / upsert_frequent_folders / delete_frequent_folder)', htmlspecialchars($action, ENT_QUOTES, 'UTF-8')));
+        jsonResponse(400, false, sprintf('无效的 action 参数: [%s]。请参考 API 文档传入正确的操作指令 (ping / pull / sync / upsert_note / delete_note / empty_trash / upsert_folder / delete_folder / frequent_folders / upsert_frequent_folders / delete_frequent_folder / upsert_bookmark / delete_bookmark / upsert_bookmark_category / delete_bookmark_category)', htmlspecialchars($action, ENT_QUOTES, 'UTF-8')));
         break;
 }

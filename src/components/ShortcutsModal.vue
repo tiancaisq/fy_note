@@ -74,6 +74,7 @@ const shortcutGroups = computed(() => [
       { keys: [altKey.value, '2'], desc: '切换到「我的标星」' },
       { keys: [altKey.value, '3'], desc: '切换到「我的回收站」' },
       { keys: [altKey.value, '4'], desc: '切换到「文件时间线」' },
+      { keys: [altKey.value, '5'], desc: '切换到「网站书签」' },
     ],
   },
 ]);

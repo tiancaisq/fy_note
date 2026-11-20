@@ -36,6 +36,8 @@ const props = defineProps<{
   isSyncing: boolean;
   notesCount: number;
   foldersCount: number;
+  bookmarksCount?: number;
+  bookmarkCategoriesCount?: number;
   storageInfo?: {
     usage: number;
     quota: number;
@@ -344,7 +346,7 @@ function handleBackdropClick(e: MouseEvent) {
               </div>
 
               <div class="flex items-center justify-between text-[11px] text-slate-500">
-                <span>本地数据量: {{ notesCount }} 篇笔记, {{ foldersCount }} 个文件夹</span>
+                <span>本地数据量: {{ notesCount }} 篇笔记, {{ foldersCount }} 个文件夹, {{ bookmarksCount ?? 0 }} 条书签</span>
                 <span>占用配额: {{ storageInfo?.percent ? storageInfo.percent + '%' : '< 1%' }}</span>
               </div>
             </div>
@@ -356,9 +358,10 @@ function handleBackdropClick(e: MouseEvent) {
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div class="p-3.5 bg-slate-50 border border-slate-100 rounded-xl">
                 <div class="text-xs text-slate-400 font-medium">当前本地数据</div>
-                <div class="text-base font-semibold text-slate-800 mt-1 flex items-baseline gap-2">
+                <div class="text-sm font-semibold text-slate-800 mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 tabular-nums">
                   <span>{{ notesCount }} 篇笔记</span>
-                  <span class="text-xs text-slate-500 font-normal">{{ foldersCount }} 个文件夹</span>
+                  <span class="text-xs text-slate-500 font-normal">{{ foldersCount }} 目录</span>
+                  <span class="text-xs text-blue-600 font-medium">{{ bookmarksCount ?? 0 }} 书签</span>
                 </div>
               </div>
 
@@ -419,19 +422,47 @@ function handleBackdropClick(e: MouseEvent) {
 
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <div class="p-2.5 bg-blue-50/60 border border-blue-100 rounded-lg text-center">
-                    <div class="text-lg font-bold text-blue-600">{{ syncDiff.localOnlyNotes + syncDiff.localOnlyFolders }}</div>
+                    <div class="text-lg font-bold text-blue-600 tabular-nums">
+                      {{
+                        syncDiff.localOnlyNotes +
+                        syncDiff.localOnlyFolders +
+                        (syncDiff.localOnlyBookmarks || 0) +
+                        (syncDiff.localOnlyBookmarkCategories || 0)
+                      }}
+                    </div>
                     <div class="text-[11px] text-blue-700">本地待上传新增项</div>
                   </div>
                   <div class="p-2.5 bg-amber-50/60 border border-amber-100 rounded-lg text-center">
-                    <div class="text-lg font-bold text-amber-600">{{ syncDiff.localUpdatedNotes + (syncDiff.localUpdatedFolders || 0) }}</div>
+                    <div class="text-lg font-bold text-amber-600 tabular-nums">
+                      {{
+                        syncDiff.localUpdatedNotes +
+                        (syncDiff.localUpdatedFolders || 0) +
+                        (syncDiff.localUpdatedBookmarks || 0) +
+                        (syncDiff.localUpdatedBookmarkCategories || 0)
+                      }}
+                    </div>
                     <div class="text-[11px] text-amber-700">本地待更新项</div>
                   </div>
                   <div class="p-2.5 bg-emerald-50/60 border border-emerald-100 rounded-lg text-center">
-                    <div class="text-lg font-bold text-emerald-600">{{ syncDiff.cloudOnlyNotes + syncDiff.cloudOnlyFolders }}</div>
+                    <div class="text-lg font-bold text-emerald-600 tabular-nums">
+                      {{
+                        syncDiff.cloudOnlyNotes +
+                        syncDiff.cloudOnlyFolders +
+                        (syncDiff.cloudOnlyBookmarks || 0) +
+                        (syncDiff.cloudOnlyBookmarkCategories || 0)
+                      }}
+                    </div>
                     <div class="text-[11px] text-emerald-700">云端待拉取新增项</div>
                   </div>
                   <div class="p-2.5 bg-purple-50/60 border border-purple-100 rounded-lg text-center">
-                    <div class="text-lg font-bold text-purple-600">{{ syncDiff.cloudUpdatedNotes + (syncDiff.cloudUpdatedFolders || 0) }}</div>
+                    <div class="text-lg font-bold text-purple-600 tabular-nums">
+                      {{
+                        syncDiff.cloudUpdatedNotes +
+                        (syncDiff.cloudUpdatedFolders || 0) +
+                        (syncDiff.cloudUpdatedBookmarks || 0) +
+                        (syncDiff.cloudUpdatedBookmarkCategories || 0)
+                      }}
+                    </div>
                     <div class="text-[11px] text-purple-700">云端最新修改项</div>
                   </div>
                 </div>

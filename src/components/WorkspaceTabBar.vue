@@ -7,7 +7,8 @@ import {
   Star,
   Trash2,
   ExternalLink,
-  XCircle
+  XCircle,
+  Bookmark
 } from 'lucide-vue-next';
 import { Note, ViewType } from '../types';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
@@ -55,6 +56,8 @@ const workspaceTabLabel = computed(() => {
   switch (props.currentView) {
     case 'timeline':
       return '时间线';
+    case 'bookmarks':
+      return '网站书签';
     case 'starred':
       return '我的标星';
     case 'trash':
@@ -69,6 +72,8 @@ const workspaceTabIcon = computed(() => {
   switch (props.currentView) {
     case 'timeline':
       return Clock;
+    case 'bookmarks':
+      return Bookmark;
     case 'starred':
       return Star;
     case 'trash':

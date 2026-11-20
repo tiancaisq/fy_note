@@ -2,8 +2,13 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { INITIAL_FOLDERS, INITIAL_NOTES } from './src/data/initialData';
-import { Folder, Note } from './src/types';
+import {
+  INITIAL_FOLDERS,
+  INITIAL_NOTES,
+  INITIAL_BOOKMARKS,
+  INITIAL_BOOKMARK_CATEGORIES,
+} from './src/data/initialData';
+import { Bookmark, BookmarkCategory, Folder, Note } from './src/types';
 
 const app = express();
 const PORT = 3000;
@@ -17,8 +22,12 @@ interface UserDataStore {
   notes: Note[];
   folders: Folder[];
   frequentFolderIds?: string[];
+  bookmarks?: Bookmark[];
+  bookmarkCategories?: BookmarkCategory[];
   deletedNotes?: Record<string, number>;
   deletedFolders?: Record<string, number>;
+  deletedBookmarks?: Record<string, number>;
+  deletedBookmarkCategories?: Record<string, number>;
   updatedAt: number;
 }
 
@@ -49,6 +58,12 @@ function loadDatabase(): ServerDatabase {
             notes: JSON.parse(JSON.stringify(INITIAL_NOTES)),
             folders: JSON.parse(JSON.stringify(INITIAL_FOLDERS)),
             frequentFolderIds: [],
+            bookmarks: JSON.parse(JSON.stringify(INITIAL_BOOKMARKS)),
+            bookmarkCategories: JSON.parse(JSON.stringify(INITIAL_BOOKMARK_CATEGORIES)),
+            deletedNotes: {},
+            deletedFolders: {},
+            deletedBookmarks: {},
+            deletedBookmarkCategories: {},
             updatedAt: Date.now(),
           },
         },
@@ -78,8 +93,12 @@ function getUserStore(userId = 'default_user'): UserDataStore {
       notes: JSON.parse(JSON.stringify(INITIAL_NOTES)),
       folders: JSON.parse(JSON.stringify(INITIAL_FOLDERS)),
       frequentFolderIds: [],
+      bookmarks: JSON.parse(JSON.stringify(INITIAL_BOOKMARKS)),
+      bookmarkCategories: JSON.parse(JSON.stringify(INITIAL_BOOKMARK_CATEGORIES)),
       deletedNotes: {},
       deletedFolders: {},
+      deletedBookmarks: {},
+      deletedBookmarkCategories: {},
       updatedAt: Date.now(),
     };
     saveDatabase();
@@ -87,11 +106,26 @@ function getUserStore(userId = 'default_user'): UserDataStore {
   if (!Array.isArray(dbCache.users[normalizedId].frequentFolderIds)) {
     dbCache.users[normalizedId].frequentFolderIds = [];
   }
+  if (!Array.isArray(dbCache.users[normalizedId].bookmarks)) {
+    dbCache.users[normalizedId].bookmarks = JSON.parse(JSON.stringify(INITIAL_BOOKMARKS));
+  }
+  if (!Array.isArray(dbCache.users[normalizedId].bookmarkCategories)) {
+    dbCache.users[normalizedId].bookmarkCategories = JSON.parse(JSON.stringify(INITIAL_BOOKMARK_CATEGORIES));
+  }
   if (!dbCache.users[normalizedId].deletedNotes || typeof dbCache.users[normalizedId].deletedNotes !== 'object') {
     dbCache.users[normalizedId].deletedNotes = {};
   }
   if (!dbCache.users[normalizedId].deletedFolders || typeof dbCache.users[normalizedId].deletedFolders !== 'object') {
     dbCache.users[normalizedId].deletedFolders = {};
+  }
+  if (!dbCache.users[normalizedId].deletedBookmarks || typeof dbCache.users[normalizedId].deletedBookmarks !== 'object') {
+    dbCache.users[normalizedId].deletedBookmarks = {};
+  }
+  if (
+    !dbCache.users[normalizedId].deletedBookmarkCategories ||
+    typeof dbCache.users[normalizedId].deletedBookmarkCategories !== 'object'
+  ) {
+    dbCache.users[normalizedId].deletedBookmarkCategories = {};
   }
   return dbCache.users[normalizedId];
 }
@@ -243,11 +277,14 @@ function handlePing(req: express.Request, res: express.Response) {
       noteCount: userStore.notes.length,
       folderCount: userStore.folders.length,
       frequentFoldersCount: (userStore.frequentFolderIds || []).length,
+      bookmarksCount: (userStore.bookmarks || []).length,
+      bookmarkCategoriesCount: (userStore.bookmarkCategories || []).length,
       serverTime: Date.now(),
       supportedFeatures: [
         'incremental_note_sync',
         'incremental_folder_sync',
         'frequent_folders_sync',
+        'bookmarks_sync',
         'batch_merge_sync',
         'indexeddb_sync'
       ],
@@ -274,18 +311,28 @@ function handleGetAllData(req: express.Request, res: express.Response) {
       notes: userStore.notes,
       folders: userStore.folders,
       frequentFolderIds: userStore.frequentFolderIds || [],
+      bookmarks: userStore.bookmarks || [],
+      bookmarkCategories: userStore.bookmarkCategories || [],
       deletedNotes: userStore.deletedNotes || {},
       deletedFolders: userStore.deletedFolders || {},
+      deletedBookmarks: userStore.deletedBookmarks || {},
+      deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
       notesCount: userStore.notes.length,
       foldersCount: userStore.folders.length,
       frequentFoldersCount: (userStore.frequentFolderIds || []).length,
+      bookmarksCount: (userStore.bookmarks || []).length,
+      bookmarkCategoriesCount: (userStore.bookmarkCategories || []).length,
       serverTime: Date.now(),
     },
     notes: userStore.notes,
     folders: userStore.folders,
     frequentFolderIds: userStore.frequentFolderIds || [],
+    bookmarks: userStore.bookmarks || [],
+    bookmarkCategories: userStore.bookmarkCategories || [],
     deletedNotes: userStore.deletedNotes || {},
     deletedFolders: userStore.deletedFolders || {},
+    deletedBookmarks: userStore.deletedBookmarks || {},
+    deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
     serverTime: Date.now(),
   });
 }
@@ -308,6 +355,12 @@ function handleSync(req: express.Request, res: express.Response) {
     ? body.frequentFolderIds
     : Array.isArray(body.frequentFolders)
     ? body.frequentFolders
+    : [];
+  const hasClientBookmarks = Array.isArray(body.bookmarks);
+  const hasClientBookmarkCategories = Array.isArray(body.bookmarkCategories);
+  const clientBookmarks: Bookmark[] = hasClientBookmarks ? body.bookmarks : [];
+  const clientBookmarkCategories: BookmarkCategory[] = hasClientBookmarkCategories
+    ? body.bookmarkCategories
     : [];
 
   const now = Date.now();
@@ -333,6 +386,24 @@ function handleSync(req: express.Request, res: express.Response) {
     if (Array.isArray(body.frequentFolderIds) || Array.isArray(body.frequentFolders)) {
       userStore.frequentFolderIds = clientFrequentFolderIds;
     }
+    if (hasClientBookmarks) {
+      const clientBmIdSet = new Set(clientBookmarks.map((b) => String(b.id)));
+      const removedBmIds = (userStore.bookmarks || [])
+        .map((b) => String(b.id))
+        .filter((id) => !clientBmIdSet.has(id));
+      recordTombstones(userStore.deletedBookmarks!, removedBmIds, now);
+      clientBmIdSet.forEach((id) => delete userStore.deletedBookmarks![id]);
+      userStore.bookmarks = clientBookmarks;
+    }
+    if (hasClientBookmarkCategories) {
+      const clientCatIdSet = new Set(clientBookmarkCategories.map((c) => String(c.id)));
+      const removedCatIds = (userStore.bookmarkCategories || [])
+        .map((c) => String(c.id))
+        .filter((id) => !clientCatIdSet.has(id));
+      recordTombstones(userStore.deletedBookmarkCategories!, removedCatIds, now);
+      clientCatIdSet.forEach((id) => delete userStore.deletedBookmarkCategories![id]);
+      userStore.bookmarkCategories = clientBookmarkCategories;
+    }
     userStore.updatedAt = now;
     saveDatabase();
 
@@ -344,15 +415,23 @@ function handleSync(req: express.Request, res: express.Response) {
         notes: userStore.notes,
         folders: userStore.folders,
         frequentFolderIds: userStore.frequentFolderIds || [],
+        bookmarks: userStore.bookmarks || [],
+        bookmarkCategories: userStore.bookmarkCategories || [],
         deletedNotes: userStore.deletedNotes || {},
         deletedFolders: userStore.deletedFolders || {},
+        deletedBookmarks: userStore.deletedBookmarks || {},
+        deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
         serverTime: now,
       },
       notes: userStore.notes,
       folders: userStore.folders,
       frequentFolderIds: userStore.frequentFolderIds || [],
+      bookmarks: userStore.bookmarks || [],
+      bookmarkCategories: userStore.bookmarkCategories || [],
       deletedNotes: userStore.deletedNotes || {},
       deletedFolders: userStore.deletedFolders || {},
+      deletedBookmarks: userStore.deletedBookmarks || {},
+      deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
       serverTime: now,
     });
   }
@@ -367,15 +446,23 @@ function handleSync(req: express.Request, res: express.Response) {
         notes: userStore.notes,
         folders: userStore.folders,
         frequentFolderIds: userStore.frequentFolderIds || [],
+        bookmarks: userStore.bookmarks || [],
+        bookmarkCategories: userStore.bookmarkCategories || [],
         deletedNotes: userStore.deletedNotes || {},
         deletedFolders: userStore.deletedFolders || {},
+        deletedBookmarks: userStore.deletedBookmarks || {},
+        deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
         serverTime: now,
       },
       notes: userStore.notes,
       folders: userStore.folders,
       frequentFolderIds: userStore.frequentFolderIds || [],
+      bookmarks: userStore.bookmarks || [],
+      bookmarkCategories: userStore.bookmarkCategories || [],
       deletedNotes: userStore.deletedNotes || {},
       deletedFolders: userStore.deletedFolders || {},
+      deletedBookmarks: userStore.deletedBookmarks || {},
+      deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
       serverTime: now,
     });
   }
@@ -387,6 +474,12 @@ function handleSync(req: express.Request, res: express.Response) {
   );
   const deletedFolderIdSet = new Set<string>(
     Array.isArray(body.deletedFolderIds) ? body.deletedFolderIds.map(String) : []
+  );
+  const deletedBookmarkIdSet = new Set<string>(
+    Array.isArray(body.deletedBookmarkIds) ? body.deletedBookmarkIds.map(String) : []
+  );
+  const deletedBookmarkCategoryIdSet = new Set<string>(
+    Array.isArray(body.deletedBookmarkCategoryIds) ? body.deletedBookmarkCategoryIds.map(String) : []
   );
 
   // Expand deletedFolderIdSet with any server-side descendants of deleted folders
@@ -404,6 +497,28 @@ function handleSync(req: express.Request, res: express.Response) {
     recordTombstones(userStore.deletedNotes!, deletedNoteIdSet, opTs);
   }
 
+  if (deletedBookmarkIdSet.size > 0) {
+    userStore.bookmarks = (userStore.bookmarks || []).filter(
+      (b) => !deletedBookmarkIdSet.has(String(b.id))
+    );
+    recordTombstones(userStore.deletedBookmarks!, deletedBookmarkIdSet, opTs);
+  }
+
+  if (deletedBookmarkCategoryIdSet.size > 0) {
+    userStore.bookmarkCategories = (userStore.bookmarkCategories || []).filter(
+      (c) => !deletedBookmarkCategoryIdSet.has(String(c.id))
+    );
+    recordTombstones(userStore.deletedBookmarkCategories!, deletedBookmarkCategoryIdSet, opTs);
+    const nowStr = formatServerDateTime();
+    (userStore.bookmarks || []).forEach((b) => {
+      if (deletedBookmarkCategoryIdSet.has(String(b.categoryId))) {
+        b.categoryId = '';
+        b.updatedAt = nowStr;
+        b.updatedAtMs = opTs;
+      }
+    });
+  }
+
   const serverNoteMap = new Map<string, Note>(userStore.notes.map((n) => [String(n.id), n]));
   const serverFolderMap = new Map<string, Folder>(userStore.folders.map((f) => [String(f.id), f]));
 
@@ -417,14 +532,12 @@ function handleSync(req: express.Request, res: express.Response) {
     const serverNote = serverNoteMap.get(id);
 
     if (!serverNote) {
-      // If another device permanently deleted this note/emptied trash, do not resurrect stale copy
       if (isBlockedByNoteTombstone(clientNote, userStore.deletedNotes?.[id])) {
         continue;
       }
       delete userStore.deletedNotes![id];
       mergedNotesMap.set(id, clientNote);
     } else {
-      // Note exists in both -> compare update times
       const clientTime = getEntityTimestampMs(clientNote);
       const serverTime = getEntityTimestampMs(serverNote);
 
@@ -436,7 +549,6 @@ function handleSync(req: express.Request, res: express.Response) {
     }
   }
 
-  // Add notes that only exist on server
   for (const serverNote of userStore.notes) {
     const id = String(serverNote.id);
     if (deletedNoteIdSet.has(id)) continue;
@@ -477,8 +589,91 @@ function handleSync(req: express.Request, res: express.Response) {
     }
   }
 
+  // 2.5 Process Bookmark Categories with timestamp comparison & tombstones
+  const serverCategoryMap = new Map<string, BookmarkCategory>(
+    (userStore.bookmarkCategories || []).map((c) => [String(c.id), c])
+  );
+  const mergedCategoriesMap = new Map<string, BookmarkCategory>();
+
+  for (const clientCat of clientBookmarkCategories) {
+    const id = String(clientCat.id);
+    if (deletedBookmarkCategoryIdSet.has(id)) continue;
+    const serverCat = serverCategoryMap.get(id);
+    if (!serverCat) {
+      const tombMs = userStore.deletedBookmarkCategories?.[id];
+      const clientTime = getEntityTimestampMs(clientCat);
+      if (tombMs && (clientTime === 0 || clientTime <= tombMs)) {
+        continue;
+      }
+      delete userStore.deletedBookmarkCategories![id];
+      mergedCategoriesMap.set(id, clientCat);
+    } else {
+      const clientTime = getEntityTimestampMs(clientCat);
+      const serverTime = getEntityTimestampMs(serverCat);
+      if (clientTime === 0 && serverTime === 0) {
+        mergedCategoriesMap.set(id, clientCat);
+      } else if (clientTime >= serverTime) {
+        mergedCategoriesMap.set(id, clientCat);
+      } else {
+        mergedCategoriesMap.set(id, serverCat);
+      }
+    }
+  }
+
+  for (const serverCat of userStore.bookmarkCategories || []) {
+    const id = String(serverCat.id);
+    if (deletedBookmarkCategoryIdSet.has(id)) continue;
+    if (!mergedCategoriesMap.has(id)) {
+      mergedCategoriesMap.set(id, serverCat);
+    }
+  }
+
+  // 2.6 Process Bookmarks with timestamp comparison & tombstones
+  const serverBookmarkMap = new Map<string, Bookmark>(
+    (userStore.bookmarks || []).map((b) => [String(b.id), b])
+  );
+  const mergedBookmarksMap = new Map<string, Bookmark>();
+
+  for (const clientBm of clientBookmarks) {
+    const id = String(clientBm.id);
+    if (deletedBookmarkIdSet.has(id)) continue;
+    const serverBm = serverBookmarkMap.get(id);
+    if (!serverBm) {
+      const tombMs = userStore.deletedBookmarks?.[id];
+      const clientTime = getEntityTimestampMs(clientBm);
+      if (tombMs && (clientTime === 0 || clientTime <= tombMs)) {
+        continue;
+      }
+      delete userStore.deletedBookmarks![id];
+      mergedBookmarksMap.set(id, clientBm);
+    } else {
+      const clientTime = getEntityTimestampMs(clientBm);
+      const serverTime = getEntityTimestampMs(serverBm);
+      if (clientTime >= serverTime) {
+        mergedBookmarksMap.set(id, clientBm);
+      } else {
+        mergedBookmarksMap.set(id, serverBm);
+      }
+    }
+  }
+
+  for (const serverBm of userStore.bookmarks || []) {
+    const id = String(serverBm.id);
+    if (deletedBookmarkIdSet.has(id)) continue;
+    if (!mergedBookmarksMap.has(id)) {
+      mergedBookmarksMap.set(id, serverBm);
+    }
+  }
+
   const finalMergedNotes = Array.from(mergedNotesMap.values());
   const finalMergedFolders = Array.from(mergedFoldersMap.values());
+  const finalMergedBookmarkCategories = Array.from(mergedCategoriesMap.values()).sort(
+    (a, b) => Number(a.order || 0) - Number(b.order || 0)
+  );
+  const validCategoryIdSet = new Set(finalMergedBookmarkCategories.map((c) => String(c.id)));
+  const finalMergedBookmarks = Array.from(mergedBookmarksMap.values()).map((b) =>
+    b.categoryId && !validCategoryIdSet.has(String(b.categoryId)) ? { ...b, categoryId: '' } : b
+  );
 
   // 3. Process frequentFolderIds
   let finalFrequentFolderIds = userStore.frequentFolderIds || [];
@@ -488,7 +683,6 @@ function handleSync(req: express.Request, res: express.Response) {
     finalFrequentFolderIds = body.frequentFolders.map(String);
   }
 
-  // Ensure frequent folder IDs reference existing folders
   const validFolderIdSet = new Set(finalMergedFolders.map((f) => String(f.id)));
   finalFrequentFolderIds = finalFrequentFolderIds.filter(
     (fid) => validFolderIdSet.has(fid) && !deletedFolderIdSet.has(fid)
@@ -498,6 +692,8 @@ function handleSync(req: express.Request, res: express.Response) {
   userStore.notes = finalMergedNotes;
   userStore.folders = finalMergedFolders;
   userStore.frequentFolderIds = finalFrequentFolderIds;
+  userStore.bookmarks = finalMergedBookmarks;
+  userStore.bookmarkCategories = finalMergedBookmarkCategories;
   userStore.updatedAt = now;
   saveDatabase();
 
@@ -509,18 +705,28 @@ function handleSync(req: express.Request, res: express.Response) {
       notes: finalMergedNotes,
       folders: finalMergedFolders,
       frequentFolderIds: finalFrequentFolderIds,
+      bookmarks: finalMergedBookmarks,
+      bookmarkCategories: finalMergedBookmarkCategories,
       deletedNotes: userStore.deletedNotes || {},
       deletedFolders: userStore.deletedFolders || {},
+      deletedBookmarks: userStore.deletedBookmarks || {},
+      deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
       notesCount: finalMergedNotes.length,
       foldersCount: finalMergedFolders.length,
       frequentFoldersCount: finalFrequentFolderIds.length,
+      bookmarksCount: finalMergedBookmarks.length,
+      bookmarkCategoriesCount: finalMergedBookmarkCategories.length,
       serverTime: now,
     },
     notes: finalMergedNotes,
     folders: finalMergedFolders,
     frequentFolderIds: finalFrequentFolderIds,
+    bookmarks: finalMergedBookmarks,
+    bookmarkCategories: finalMergedBookmarkCategories,
     deletedNotes: userStore.deletedNotes || {},
     deletedFolders: userStore.deletedFolders || {},
+    deletedBookmarks: userStore.deletedBookmarks || {},
+    deletedBookmarkCategories: userStore.deletedBookmarkCategories || {},
     serverTime: now,
   });
 }
@@ -814,6 +1020,188 @@ app.delete('/api/frequent-folders/:id', handleDeleteFrequentFolder);
 app.delete('/api/frequent-folders', handleDeleteFrequentFolder);
 
 // ==========================================
+// 5.3 Bookmarks & Bookmark Categories (Incremental CRUD + Direct Permanent Delete)
+// ==========================================
+function handleUpsertBookmarks(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  const items: Bookmark[] = Array.isArray(req.body?.bookmarks)
+    ? req.body.bookmarks
+    : req.body?.bookmark
+    ? [req.body.bookmark]
+    : req.body?.id
+    ? [req.body]
+    : [];
+
+  if (items.length === 0) {
+    return res.status(400).json({ code: 400, success: false, message: '缺少有效的书签数据' });
+  }
+
+  userStore.bookmarks = userStore.bookmarks || [];
+  for (const bm of items) {
+    if (!bm || !bm.id) continue;
+    const idx = userStore.bookmarks.findIndex((b) => String(b.id) === String(bm.id));
+    if (idx !== -1) {
+      userStore.bookmarks[idx] = { ...userStore.bookmarks[idx], ...bm };
+    } else {
+      userStore.bookmarks.unshift(bm);
+    }
+    delete userStore.deletedBookmarks![String(bm.id)];
+  }
+
+  userStore.updatedAt = Date.now();
+  saveDatabase();
+
+  return res.json({
+    code: 200,
+    success: true,
+    message: `${items.length} 个书签已同步至云端`,
+    data: { count: items.length, ids: items.map((b) => b.id) },
+    serverTime: Date.now(),
+  });
+}
+
+function handleDeleteBookmark(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  const bookmarkId = req.params.id || (req.query.id as string) || req.body?.id;
+
+  if (!bookmarkId) {
+    return res.status(400).json({ code: 400, success: false, message: '缺少书签 ID' });
+  }
+
+  const opTs = Math.max(Date.now(), Number(req.body?.timestamp) || 0);
+  userStore.bookmarks = (userStore.bookmarks || []).filter(
+    (b) => String(b.id) !== String(bookmarkId)
+  );
+  recordTombstones(userStore.deletedBookmarks!, [String(bookmarkId)], opTs);
+  userStore.updatedAt = opTs;
+  saveDatabase();
+
+  return res.json({
+    code: 200,
+    success: true,
+    message: '云端书签已彻底删除',
+    data: { id: bookmarkId, deleted: true },
+    serverTime: Date.now(),
+  });
+}
+
+function handleUpsertBookmarkCategories(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  const items: BookmarkCategory[] = Array.isArray(req.body?.categories)
+    ? req.body.categories
+    : req.body?.category
+    ? [req.body.category]
+    : req.body?.id
+    ? [req.body]
+    : [];
+
+  if (items.length === 0) {
+    return res.status(400).json({ code: 400, success: false, message: '缺少有效的书签分类数据' });
+  }
+
+  userStore.bookmarkCategories = userStore.bookmarkCategories || [];
+  for (const cat of items) {
+    if (!cat || !cat.id) continue;
+    const cleanCat: BookmarkCategory = {
+      ...cat,
+      parentId: cat.parentId ? String(cat.parentId) : null,
+      isOpen: cat.isOpen !== undefined ? Boolean(cat.isOpen) : true,
+      order: typeof cat.order === 'number' && !isNaN(cat.order) ? cat.order : 0,
+    };
+    const idx = userStore.bookmarkCategories.findIndex((c) => String(c.id) === String(cat.id));
+    if (idx !== -1) {
+      userStore.bookmarkCategories[idx] = { ...userStore.bookmarkCategories[idx], ...cleanCat };
+    } else {
+      userStore.bookmarkCategories.push(cleanCat);
+    }
+    delete userStore.deletedBookmarkCategories![String(cat.id)];
+  }
+
+  userStore.updatedAt = Date.now();
+  saveDatabase();
+
+  return res.json({
+    code: 200,
+    success: true,
+    message: `${items.length} 个书签目录已同步至云端`,
+    data: { count: items.length, ids: items.map((c) => c.id) },
+    serverTime: Date.now(),
+  });
+}
+
+function handleDeleteBookmarkCategory(req: express.Request, res: express.Response) {
+  const userId = extractUserId(req);
+  const userStore = getUserStore(userId);
+  const categoryId = req.params.id || (req.query.id as string) || req.body?.id;
+
+  if (!categoryId) {
+    return res.status(400).json({ code: 400, success: false, message: '缺少书签目录 ID' });
+  }
+
+  const nowMs = Date.now();
+  const opTs = Math.max(nowMs, Number(req.body?.timestamp) || 0);
+  const existingCats = userStore.bookmarkCategories || [];
+  const targetCat = existingCats.find((c) => String(c.id) === String(categoryId));
+
+  // Collect target category and all descendant categories
+  const idsToDelete = new Set<string>([String(categoryId)]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const c of existingCats) {
+      const cid = String(c.id);
+      const pid = c.parentId ? String(c.parentId) : null;
+      if (pid && idsToDelete.has(pid) && !idsToDelete.has(cid)) {
+        idsToDelete.add(cid);
+        added = true;
+      }
+    }
+  }
+
+  const fallbackCategoryId =
+    targetCat?.parentId && !idsToDelete.has(String(targetCat.parentId))
+      ? String(targetCat.parentId)
+      : '';
+
+  userStore.bookmarkCategories = existingCats.filter((c) => !idsToDelete.has(String(c.id)));
+  recordTombstones(userStore.deletedBookmarkCategories!, idsToDelete, opTs);
+
+  // Move bookmarks in deleted categories safely to parent or root ('')
+  const nowStr = formatServerDateTime();
+  (userStore.bookmarks || []).forEach((b) => {
+    if (idsToDelete.has(String(b.categoryId))) {
+      b.categoryId = fallbackCategoryId;
+      b.updatedAt = nowStr;
+      b.updatedAtMs = nowMs;
+    }
+  });
+
+  userStore.updatedAt = nowMs;
+  saveDatabase();
+
+  return res.json({
+    code: 200,
+    success: true,
+    message: '云端书签目录已删除',
+    data: { id: categoryId, deletedIds: Array.from(idsToDelete), deleted: true },
+    serverTime: nowMs,
+  });
+}
+
+app.post('/api/bookmarks', handleUpsertBookmarks);
+app.put('/api/bookmarks', handleUpsertBookmarks);
+app.delete('/api/bookmarks/:id', handleDeleteBookmark);
+app.delete('/api/bookmarks', handleDeleteBookmark);
+
+app.post('/api/bookmark-categories', handleUpsertBookmarkCategories);
+app.put('/api/bookmark-categories', handleUpsertBookmarkCategories);
+app.delete('/api/bookmark-categories/:id', handleDeleteBookmarkCategory);
+app.delete('/api/bookmark-categories', handleDeleteBookmarkCategory);
+
+// ==========================================
 // 6. Unified Query Dispatcher for /api.php & /api
 // ==========================================
 app.all(['/api.php', '/api'], (req, res) => {
@@ -851,6 +1239,18 @@ app.all(['/api.php', '/api'], (req, res) => {
   }
   if (action === 'empty_trash') {
     return handleEmptyTrash(req, res);
+  }
+  if (action === 'upsert_bookmark' || action === 'save_bookmark') {
+    return handleUpsertBookmarks(req, res);
+  }
+  if (action === 'delete_bookmark') {
+    return handleDeleteBookmark(req, res);
+  }
+  if (action === 'upsert_bookmark_category' || action === 'save_bookmark_category') {
+    return handleUpsertBookmarkCategories(req, res);
+  }
+  if (action === 'delete_bookmark_category') {
+    return handleDeleteBookmarkCategory(req, res);
   }
 
   // Default fallback for GET

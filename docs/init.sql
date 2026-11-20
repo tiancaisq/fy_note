@@ -115,6 +115,53 @@ INSERT INTO `user_settings` (`user_id`, `setting_key`, `setting_value`, `updated
 ('default_user', 'frequent_folder_ids', '["folder-mysql","folder-redis"]', '2026-03-27 18:00:00')
 ON DUPLICATE KEY UPDATE `setting_value` = VALUES(`setting_value`), `updated_at` = VALUES(`updated_at`);
 
+-- ------------------------------------------------------------------------------
+-- 7. 网站书签分类表 (bookmark_categories) 与网站书签表 (bookmarks)
+-- ------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `bookmark_categories`;
+CREATE TABLE `bookmark_categories` (
+  `id` VARCHAR(64) NOT NULL COMMENT '书签目录唯一ID',
+  `user_id` VARCHAR(64) NOT NULL DEFAULT 'default_user' COMMENT '用户标识',
+  `parent_id` VARCHAR(64) DEFAULT NULL COMMENT '父级目录ID，顶级为NULL',
+  `name` VARCHAR(128) NOT NULL DEFAULT '' COMMENT '目录名称',
+  `order_num` INT NOT NULL DEFAULT 0 COMMENT '排序权重',
+  `is_collapsed` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否折叠(0否,1是)',
+  `color` VARCHAR(32) DEFAULT NULL COMMENT '目录标识色',
+  `created_at` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '创建时间字符串',
+  `updated_at` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '更新时间字符串',
+  PRIMARY KEY (`id`),
+  KEY `idx_user_parent_order` (`user_id`, `parent_id`, `order_num`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网站书签树形目录表';
+
+DROP TABLE IF EXISTS `bookmarks`;
+CREATE TABLE `bookmarks` (
+  `id` VARCHAR(64) NOT NULL COMMENT '书签唯一ID',
+  `user_id` VARCHAR(64) NOT NULL DEFAULT 'default_user' COMMENT '用户标识',
+  `category_id` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '所属目录ID，空字符串表示根目录',
+  `title` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '网站标题',
+  `url` TEXT NOT NULL COMMENT '书签链接',
+  `description` TEXT DEFAULT NULL COMMENT '简短备注说明',
+  `tags` TEXT DEFAULT NULL COMMENT 'JSON标签数组',
+  `is_pinned` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否置顶收藏(0否,1是)',
+  `icon_url` TEXT DEFAULT NULL COMMENT '自定义站点图标地址',
+  `created_at` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '创建时间字符串',
+  `updated_at` VARCHAR(32) NOT NULL DEFAULT '' COMMENT '更新时间字符串',
+  PRIMARY KEY (`id`),
+  KEY `idx_user_category` (`user_id`, `category_id`),
+  KEY `idx_user_pinned_updated` (`user_id`, `is_pinned`, `updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='网站书签主表';
+
+INSERT INTO `bookmark_categories` (`id`, `user_id`, `parent_id`, `name`, `order_num`, `is_collapsed`, `color`, `created_at`, `updated_at`) VALUES
+('bcat-dev-docs', 'default_user', NULL, '开发文档', 0, 0, '#2563eb', '2026-03-27 18:00:00', '2026-03-27 18:00:00'),
+('bcat-frontend', 'default_user', 'bcat-dev-docs', '前端框架', 0, 0, '#2563eb', '2026-03-27 18:02:00', '2026-03-27 18:02:00'),
+('bcat-tools', 'default_user', NULL, '效率工具', 1, 0, '#0d9488', '2026-03-27 18:05:00', '2026-03-27 18:05:00'),
+('bcat-community', 'default_user', NULL, '技术社区', 2, 0, '#d97706', '2026-03-27 18:10:00', '2026-03-27 18:10:00');
+
+INSERT INTO `bookmarks` (`id`, `user_id`, `category_id`, `title`, `url`, `description`, `tags`, `is_pinned`, `icon_url`, `created_at`, `updated_at`) VALUES
+('bm-vuejs', 'default_user', 'bcat-frontend', 'Vue.js 官方文档', 'https://cn.vuejs.org/', '', '[]', 1, NULL, '2026-03-27 18:15:00', '2026-03-27 18:15:00'),
+('bm-mdn', 'default_user', 'bcat-dev-docs', 'MDN Web Docs', 'https://developer.mozilla.org/zh-CN/', '', '[]', 1, NULL, '2026-03-27 18:16:00', '2026-03-27 18:16:00'),
+('bm-github', 'default_user', 'bcat-community', 'GitHub', 'https://github.com/', '', '[]', 1, NULL, '2026-03-27 18:17:00', '2026-03-27 18:17:00');
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- ==============================================================================

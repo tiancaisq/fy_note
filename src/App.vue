@@ -15,12 +15,16 @@ import ShortcutsModal from './components/ShortcutsModal.vue';
 import CloudSyncModal from './components/CloudSyncModal.vue';
 import ConfirmModal from './components/ConfirmModal.vue';
 import TimelineView from './components/TimelineView.vue';
+import BookmarksView from './components/BookmarksView.vue';
 import WorkspaceTabBar from './components/WorkspaceTabBar.vue';
-import { Folder, Note } from './types';
+import { Folder, Note, Bookmark, BookmarkCategory, BookmarkSearchResultItem } from './types';
 
 const {
   folders,
   notes,
+  bookmarks,
+  bookmarkCategories,
+  bookmarksCount,
   currentView,
   activeFolderId,
   activeFolder,
@@ -117,6 +121,18 @@ const {
   importMindMapFile,
   importDrawioFile,
   navigateToNoteFromSearch,
+  createBookmark,
+  updateBookmark,
+  toggleBookmarkPin,
+  deleteBookmark,
+  batchDeleteBookmarks,
+  batchMoveBookmarks,
+  batchToggleBookmarkPin,
+  moveBookmarkToCategory,
+  toggleBookmarkCategoryCollapse,
+  createBookmarkCategory,
+  updateBookmarkCategory,
+  deleteBookmarkCategory,
 } = useNotes();
 
 const STORAGE_KEY_SIDEBAR_COLLAPSED = 'fengye_sidebar_collapsed_v1';
@@ -144,7 +160,7 @@ interface ConfirmDialogState {
   confirmText?: string;
   cancelText?: string;
   dangerLevel?: 'danger' | 'warning' | 'info';
-  itemType?: 'note' | 'folder' | 'trash';
+  itemType?: 'note' | 'folder' | 'trash' | 'bookmark' | 'bookmarkCategory';
   itemName?: string;
   itemFormat?: 'markdown' | 'mindmap' | string;
   noteCount?: number;
@@ -289,6 +305,96 @@ function handlePromptEmptyTrash() {
   };
 }
 
+function handlePromptDeleteBookmark(bm: Bookmark) {
+  confirmDialog.value = {
+    isOpen: true,
+    title: '彻底删除书签',
+    message: `确定要删除网站书签「${bm.title}」吗？`,
+    subMessage: '⚠️ 书签删除后将直接永久移除，不会进入回收站，且无法恢复。',
+    confirmText: '确认直接删除',
+    cancelText: '取消',
+    dangerLevel: 'danger',
+    itemType: 'bookmark',
+    itemName: bm.title,
+    noteCount: 1,
+    onConfirm: () => {
+      deleteBookmark(bm.id);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+function handlePromptBatchDeleteBookmarks(ids: string[]) {
+  if (!ids.length) return;
+  confirmDialog.value = {
+    isOpen: true,
+    title: '批量直接删除书签',
+    message: `确定要直接删除选中的 ${ids.length} 条网站书签吗？`,
+    subMessage: '⚠️ 选中的所有书签将被直接永久移除，不会进入回收站，且无法恢复。',
+    confirmText: '确认直接删除',
+    cancelText: '取消',
+    dangerLevel: 'danger',
+    itemType: 'bookmark',
+    itemName: `已选中的 ${ids.length} 条网站书签`,
+    noteCount: ids.length,
+    onConfirm: () => {
+      batchDeleteBookmarks(ids);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+function handlePromptDeleteBookmarkCategory(
+  cat: BookmarkCategory,
+  bookmarkCount: number,
+  subFolderCount = 0
+) {
+  const hasParent = Boolean(cat.parentId);
+  const targetLabel = hasParent ? '上级目录' : '根目录';
+  const subParts: string[] = [];
+  if (subFolderCount > 0) {
+    subParts.push(`该目录下的 ${subFolderCount} 个子目录也将一并直接删除（不进入回收站）`);
+  } else {
+    subParts.push('目录删除后将直接永久移除，不会进入回收站');
+  }
+  if (bookmarkCount > 0) {
+    subParts.push(`其中的 ${bookmarkCount} 条书签不会丢失，将自动移至${targetLabel}中保留`);
+  }
+
+  confirmDialog.value = {
+    isOpen: true,
+    title: '删除书签目录',
+    message: `确定要删除目录「${cat.name}」吗？`,
+    subMessage: `${subParts.join('；')}。`,
+    confirmText: '确认直接删除',
+    cancelText: '取消',
+    dangerLevel: 'danger',
+    itemType: 'bookmarkCategory',
+    itemName: cat.name,
+    noteCount: bookmarkCount,
+    subFolderCount,
+    onConfirm: () => {
+      deleteBookmarkCategory(cat.id);
+      confirmDialog.value.isOpen = false;
+    },
+  };
+}
+
+const bookmarkInitialCategoryId = ref<string>('all');
+const highlightedBookmarkId = ref<string>('');
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+function handleSelectBookmarkSearchResult(item: BookmarkSearchResultItem) {
+  bookmarkInitialCategoryId.value = item.bookmark.categoryId || 'all';
+  highlightedBookmarkId.value = item.bookmark.id;
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    highlightedBookmarkId.value = '';
+  }, 2400);
+  selectView('bookmarks');
+  searchQuery.value = '';
+}
+
 // Header reference for focusing search
 const headerRef = ref<InstanceType<typeof Header> | null>(null);
 
@@ -343,8 +449,10 @@ function exportAllNotesBackup() {
   const data = {
     folders: folders.value,
     notes: notes.value,
+    bookmarks: bookmarks.value,
+    bookmarkCategories: bookmarkCategories.value,
     exportedAt: new Date().toISOString(),
-    version: '3.0',
+    version: '3.1',
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -355,7 +463,7 @@ function exportAllNotesBackup() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  showToast('全量笔记备份文件已导出');
+  showToast('全量笔记与书签备份文件已导出');
 }
 
 // Global Keyboard Shortcuts Handler
@@ -460,6 +568,11 @@ function handleGlobalKeyDown(e: KeyboardEvent) {
       selectView('timeline');
       return;
     }
+    if (e.key === '5') {
+      e.preventDefault();
+      selectView('bookmarks');
+      return;
+    }
   }
 
   // 9. Escape: Close modals
@@ -494,11 +607,13 @@ onUnmounted(() => {
       ref="headerRef"
       v-model:searchQuery="searchQuery"
       :notes-count="displayedNotes.length"
+      :bookmarks-count="bookmarksCount"
       :search-results="globalSearchResults"
       :active-folder-name="activeFolder?.name"
       :sync-status="syncStatus"
       :last-synced-at="cloudConfig.lastSyncedAt"
       @select-search-result="navigateToNoteFromSearch"
+      @select-bookmark-search-result="handleSelectBookmarkSearchResult"
       @open-import="isImportModalOpen = true"
       @export-all="exportAllNotesBackup"
       @empty-trash="handlePromptEmptyTrash"
@@ -520,6 +635,7 @@ onUnmounted(() => {
         :get-folder-note-count="getFolderNoteCount"
         :starred-count="starredNotesCount"
         :trash-count="deletedNotesCount"
+        :bookmarks-count="bookmarksCount"
         :collapsed="isSidebarCollapsed"
         @select-folder="selectFolder"
         @select-view="selectView"
@@ -574,6 +690,27 @@ onUnmounted(() => {
               @open-note="(n) => openNoteTab(n)"
               @select-folder="selectFolder"
               @switch-to-table-view="selectView('folder')"
+            />
+
+            <BookmarksView
+              v-else-if="currentView === 'bookmarks'"
+              :bookmarks="bookmarks"
+              :categories="bookmarkCategories"
+              :initial-category-id="bookmarkInitialCategoryId"
+              :highlighted-bookmark-id="highlightedBookmarkId"
+              @create-bookmark="createBookmark"
+              @update-bookmark="updateBookmark"
+              @toggle-pin="toggleBookmarkPin"
+              @move-bookmark="moveBookmarkToCategory"
+              @request-delete-bookmark="handlePromptDeleteBookmark"
+              @request-batch-delete-bookmarks="handlePromptBatchDeleteBookmarks"
+              @batch-move-bookmarks="batchMoveBookmarks"
+              @batch-toggle-pin="batchToggleBookmarkPin"
+              @toggle-category-collapse="toggleBookmarkCategoryCollapse"
+              @create-category="createBookmarkCategory"
+              @update-category="updateBookmarkCategory"
+              @request-delete-category="handlePromptDeleteBookmarkCategory"
+              @copy-success="showToast"
             />
 
             <NoteList
@@ -718,6 +855,8 @@ onUnmounted(() => {
       :is-syncing="isSyncing"
       :notes-count="notes.length"
       :folders-count="folders.length"
+      :bookmarks-count="bookmarksCount"
+      :bookmark-categories-count="bookmarkCategories.length"
       :storage-info="storageInfo"
       @close="isCloudSyncModalOpen = false"
       @save-config="saveCloudConfig"

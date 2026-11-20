@@ -31,7 +31,33 @@ export interface Note {
   previewSvg?: string; // Optional cached SVG preview for fast thumbnail display
 }
 
-export type ViewType = 'folder' | 'starred' | 'trash' | 'search' | 'timeline';
+export interface BookmarkCategory {
+  id: string;
+  name: string;
+  parentId?: string | null;
+  isOpen?: boolean;
+  order: number;
+  color?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  updatedAtMs?: number;
+}
+
+export interface Bookmark {
+  id: string;
+  title: string;
+  url: string;
+  description: string;
+  categoryId: string; // Empty string means uncategorized
+  tags: string[];
+  isPinned: boolean;
+  iconUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+  updatedAtMs?: number;
+}
+
+export type ViewType = 'folder' | 'starred' | 'trash' | 'search' | 'timeline' | 'bookmarks';
 
 export type SortField = 'createdAt' | 'updatedAt' | 'title';
 export type SortOrder = 'desc' | 'asc';
@@ -58,6 +84,12 @@ export interface SearchResultItem {
   matchedContentSnippet?: string;
 }
 
+export interface BookmarkSearchResultItem {
+  bookmark: Bookmark;
+  categoryName: string;
+  host: string;
+}
+
 export type SyncStatus = 'unconfigured' | 'synced' | 'syncing' | 'unsynced' | 'error';
 
 export interface CloudConfig {
@@ -78,5 +110,13 @@ export interface SyncDiffResult {
   cloudOnlyFolders: number;
   localUpdatedFolders?: number;
   cloudUpdatedFolders?: number;
+  localOnlyBookmarks?: number;
+  localUpdatedBookmarks?: number;
+  cloudOnlyBookmarks?: number;
+  cloudUpdatedBookmarks?: number;
+  localOnlyBookmarkCategories?: number;
+  localUpdatedBookmarkCategories?: number;
+  cloudOnlyBookmarkCategories?: number;
+  cloudUpdatedBookmarkCategories?: number;
   totalDiff: number;
 }

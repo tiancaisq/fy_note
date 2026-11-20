@@ -1,4 +1,4 @@
-import { CloudConfig, Folder, Note, SyncDiffResult } from '../types';
+import { Bookmark, BookmarkCategory, CloudConfig, Folder, Note, SyncDiffResult } from '../types';
 
 export interface CloudSyncResponse {
   code: number | string;
@@ -10,14 +10,22 @@ export interface CloudSyncResponse {
     notes?: Note[];
     folders?: Folder[];
     frequentFolderIds?: string[];
+    bookmarks?: Bookmark[];
+    bookmarkCategories?: BookmarkCategory[];
     deletedNotes?: Record<string, number>;
     deletedFolders?: Record<string, number>;
+    deletedBookmarks?: Record<string, number>;
+    deletedBookmarkCategories?: Record<string, number>;
   };
   notes?: Note[];
   folders?: Folder[];
   frequentFolderIds?: string[];
+  bookmarks?: Bookmark[];
+  bookmarkCategories?: BookmarkCategory[];
   deletedNotes?: Record<string, number>;
   deletedFolders?: Record<string, number>;
+  deletedBookmarks?: Record<string, number>;
+  deletedBookmarkCategories?: Record<string, number>;
   serverTime?: number;
 }
 
@@ -212,6 +220,128 @@ export function normalizeRemoteFolder(raw: any): Folder {
   };
 }
 
+/**
+ * Standardize bookmark category fields coming from server
+ */
+export function normalizeRemoteBookmarkCategory(raw: any): BookmarkCategory {
+  const nowStr = formatLocalDateTime();
+  if (!raw || typeof raw !== 'object') {
+    return {
+      id: 'bcat-' + Date.now(),
+      name: '未命名目录',
+      parentId: null,
+      isOpen: true,
+      order: 0,
+      color: null,
+      createdAt: nowStr,
+      updatedAt: nowStr,
+      updatedAtMs: Date.now(),
+    };
+  }
+  const rawParent =
+    raw.parentId !== undefined
+      ? raw.parentId
+      : raw.parent_id !== undefined
+      ? raw.parent_id
+      : null;
+  const parentId =
+    rawParent === '' || rawParent === '0' || rawParent === 0
+      ? null
+      : rawParent
+      ? String(rawParent)
+      : null;
+  const isOpen =
+    raw.isOpen !== undefined
+      ? Boolean(raw.isOpen)
+      : raw.is_collapsed !== undefined
+      ? !raw.is_collapsed
+      : true;
+
+  const createdAt = raw.createdAt || raw.created_at || undefined;
+  const updatedAt = raw.updatedAt || raw.updated_at || createdAt || undefined;
+  const updatedAtMs =
+    typeof raw.updatedAtMs === 'number' && !isNaN(raw.updatedAtMs)
+      ? raw.updatedAtMs
+      : typeof raw.updated_at_ms === 'number' && !isNaN(raw.updated_at_ms)
+      ? raw.updated_at_ms
+      : undefined;
+
+  return {
+    id: String(raw.id || raw.categoryId || 'bcat-' + Date.now()),
+    name: String(raw.name || '未命名目录'),
+    parentId,
+    isOpen,
+    order: Number(raw.order ?? raw.order_num ?? raw.sort ?? 0),
+    color: raw.color ?? null,
+    ...(createdAt ? { createdAt: String(createdAt) } : {}),
+    ...(updatedAt ? { updatedAt: String(updatedAt) } : {}),
+    ...(updatedAtMs !== undefined ? { updatedAtMs } : {}),
+  };
+}
+
+/**
+ * Standardize bookmark fields coming from server
+ */
+export function normalizeRemoteBookmark(raw: any): Bookmark {
+  const fallbackNow = formatLocalDateTime();
+  if (!raw || typeof raw !== 'object') {
+    return {
+      id: 'bm-' + Date.now(),
+      title: '未命名书签',
+      url: 'https://example.com',
+      description: '',
+      categoryId: '',
+      tags: [],
+      isPinned: false,
+      createdAt: fallbackNow,
+      updatedAt: fallbackNow,
+      updatedAtMs: Date.now(),
+    };
+  }
+
+  let tags: string[] = [];
+  if (Array.isArray(raw.tags)) {
+    tags = raw.tags.map((t: any) => String(t)).filter(Boolean);
+  } else if (typeof raw.tags === 'string' && raw.tags.trim()) {
+    try {
+      const parsed = JSON.parse(raw.tags);
+      if (Array.isArray(parsed)) {
+        tags = parsed.map((t: any) => String(t)).filter(Boolean);
+      } else {
+        tags = [raw.tags];
+      }
+    } catch {
+      tags = raw.tags
+        .split(',')
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+    }
+  }
+
+  const createdAt = String(raw.createdAt || raw.created_at || fallbackNow);
+  const updatedAt = String(raw.updatedAt || raw.updated_at || createdAt);
+  const updatedAtMs =
+    typeof raw.updatedAtMs === 'number' && !isNaN(raw.updatedAtMs)
+      ? raw.updatedAtMs
+      : typeof raw.updated_at_ms === 'number' && !isNaN(raw.updated_at_ms)
+      ? raw.updated_at_ms
+      : undefined;
+
+  return {
+    id: String(raw.id || raw.bookmarkId || 'bm-' + Date.now()),
+    title: String(raw.title !== undefined && raw.title !== null ? raw.title : '未命名书签'),
+    url: String(raw.url || ''),
+    description: String(raw.description ?? raw.desc ?? ''),
+    categoryId: String(raw.categoryId ?? raw.category_id ?? ''),
+    tags,
+    isPinned: Boolean(raw.isPinned ?? raw.is_pinned ?? raw.pinned),
+    ...(raw.iconUrl || raw.icon_url ? { iconUrl: String(raw.iconUrl || raw.icon_url) } : {}),
+    createdAt,
+    updatedAt,
+    ...(updatedAtMs !== undefined ? { updatedAtMs } : {}),
+  };
+}
+
 // Build standard request headers
 function getHeaders(config: CloudConfig): Record<string, string> {
   const headers: Record<string, string> = {
@@ -366,6 +496,8 @@ function resolveActionUrl(baseUrl: string, action: string, restPath?: string): s
     if (action === 'upsert_folder' || action === 'delete_folder') return `${normalized}/folders`;
     if (action === 'frequent_folders' || action === 'upsert_frequent_folders' || action === 'delete_frequent_folder') return `${normalized}/frequent-folders`;
     if (action === 'empty_trash') return `${normalized}/trash/empty`;
+    if (action === 'upsert_bookmark' || action === 'delete_bookmark') return `${normalized}/bookmarks`;
+    if (action === 'upsert_bookmark_category' || action === 'delete_bookmark_category') return `${normalized}/bookmark-categories`;
     return `${normalized}?action=${action}`;
   }
 
@@ -449,7 +581,9 @@ function recordSuccessfulEndpoint(baseUrl: string, action: string, url: string) 
     url.includes('/notes') ||
     url.includes('/folders') ||
     url.includes('/frequent-folders') ||
-    url.includes('/trash')
+    url.includes('/trash') ||
+    url.includes('/bookmarks') ||
+    url.includes('/bookmark-categories')
   ) {
     cachedFlavorMap.set(normalized, 'rest');
   }
@@ -634,8 +768,12 @@ export async function fetchRemoteData(
     notes: Note[];
     folders: Folder[];
     frequentFolderIds?: string[];
+    bookmarks?: Bookmark[];
+    bookmarkCategories?: BookmarkCategory[];
     deletedNotes?: Record<string, number>;
     deletedFolders?: Record<string, number>;
+    deletedBookmarks?: Record<string, number>;
+    deletedBookmarkCategories?: Record<string, number>;
     serverTime: number;
   };
   message?: string;
@@ -711,6 +849,18 @@ export async function fetchRemoteData(
       ? json.frequentFolders
       : undefined;
 
+    const rawBookmarksList: any[] | undefined = Array.isArray(resData.bookmarks)
+      ? resData.bookmarks
+      : Array.isArray(json.bookmarks)
+      ? json.bookmarks
+      : undefined;
+
+    const rawBookmarkCategoriesList: any[] | undefined = Array.isArray(resData.bookmarkCategories)
+      ? resData.bookmarkCategories
+      : Array.isArray(json.bookmarkCategories)
+      ? json.bookmarkCategories
+      : undefined;
+
     if (!isSuccess && rawNotesList.length === 0 && rawFoldersList.length === 0 && !json.data) {
       return { success: false, message: extractResponseMessage(json, '服务端返回错误') };
     }
@@ -719,8 +869,18 @@ export async function fetchRemoteData(
 
     const notes: Note[] = rawNotesList.map(normalizeRemoteNote);
     const folders: Folder[] = rawFoldersList.map(normalizeRemoteFolder);
+    const bookmarks: Bookmark[] | undefined = rawBookmarksList
+      ? rawBookmarksList.map(normalizeRemoteBookmark)
+      : undefined;
+    const bookmarkCategories: BookmarkCategory[] | undefined = rawBookmarkCategoriesList
+      ? rawBookmarkCategoriesList.map(normalizeRemoteBookmarkCategory)
+      : undefined;
     const deletedNotes = parseTombstoneMap(resData.deletedNotes || json.deletedNotes);
     const deletedFolders = parseTombstoneMap(resData.deletedFolders || json.deletedFolders);
+    const deletedBookmarks = parseTombstoneMap(resData.deletedBookmarks || json.deletedBookmarks);
+    const deletedBookmarkCategories = parseTombstoneMap(
+      resData.deletedBookmarkCategories || json.deletedBookmarkCategories
+    );
 
     return {
       success: true,
@@ -728,8 +888,12 @@ export async function fetchRemoteData(
         notes,
         folders,
         frequentFolderIds: rawFrequentFolderIds ? rawFrequentFolderIds.map(String) : undefined,
+        ...(bookmarks !== undefined ? { bookmarks } : {}),
+        ...(bookmarkCategories !== undefined ? { bookmarkCategories } : {}),
         ...(deletedNotes ? { deletedNotes } : {}),
         ...(deletedFolders ? { deletedFolders } : {}),
+        ...(deletedBookmarks ? { deletedBookmarks } : {}),
+        ...(deletedBookmarkCategories ? { deletedBookmarkCategories } : {}),
         serverTime: resData.serverTime || json.serverTime || Date.now(),
       },
     };
@@ -776,7 +940,15 @@ export function calculateSyncDiff(
   remoteNotes: Note[],
   remoteFolders: Folder[],
   remoteDeletedNotes?: Record<string, number>,
-  remoteDeletedFolders?: Record<string, number>
+  remoteDeletedFolders?: Record<string, number>,
+  bookmarkSyncArgs?: {
+    localBookmarks?: Bookmark[];
+    localBookmarkCategories?: BookmarkCategory[];
+    remoteBookmarks?: Bookmark[];
+    remoteBookmarkCategories?: BookmarkCategory[];
+    remoteDeletedBookmarks?: Record<string, number>;
+    remoteDeletedBookmarkCategories?: Record<string, number>;
+  }
 ): SyncDiffResult {
   const remoteNoteList = Array.isArray(remoteNotes) ? remoteNotes : [];
   const remoteFolderList = Array.isArray(remoteFolders) ? remoteFolders : [];
@@ -796,6 +968,14 @@ export function calculateSyncDiff(
   let cloudUpdatedNotes = 0;
   let cloudOnlyFolders = 0;
   let cloudUpdatedFolders = 0;
+  let localOnlyBookmarks = 0;
+  let localUpdatedBookmarks = 0;
+  let cloudOnlyBookmarks = 0;
+  let cloudUpdatedBookmarks = 0;
+  let localOnlyBookmarkCategories = 0;
+  let localUpdatedBookmarkCategories = 0;
+  let cloudOnlyBookmarkCategories = 0;
+  let cloudUpdatedBookmarkCategories = 0;
 
   // Compare local notes against remote
   for (const local of localNoteList) {
@@ -805,7 +985,6 @@ export function calculateSyncDiff(
       const tombMs = remoteDeletedNotes?.[lid];
       const localTime = getEntityTimestampMs(local);
       if (tombMs && (local.isDeleted || localTime === 0 || localTime <= tombMs)) {
-        // Deleted permanently on another device; sync will clean up local copy
         cloudUpdatedNotes++;
       } else {
         localOnlyNotes++;
@@ -824,7 +1003,6 @@ export function calculateSyncDiff(
         (local.format || 'markdown') !== (remote.format || 'markdown') ||
         !areTagsEqual(local.tags, remote.tags);
 
-      // More than 1 second difference (or sub-second when updatedAtMs is present on both)
       const timeThreshold =
         typeof local.updatedAtMs === 'number' && typeof remote.updatedAtMs === 'number' ? 0 : 1000;
 
@@ -838,7 +1016,6 @@ export function calculateSyncDiff(
     }
   }
 
-  // Compare remote notes against local (for cloud-newer items)
   for (const remote of remoteNoteList) {
     const local = localNoteMap.get(String(remote.id));
     if (!local) {
@@ -854,7 +1031,6 @@ export function calculateSyncDiff(
     }
   }
 
-  // Compare folders (missing/extra + rename/move/reorder diffs)
   for (const localF of localFolderList) {
     const fid = String(localF.id);
     const remoteF = remoteFolderMap.get(fid);
@@ -889,6 +1065,108 @@ export function calculateSyncDiff(
     }
   }
 
+  // Compare Bookmarks (only if remote server returned bookmark payload)
+  if (bookmarkSyncArgs && Array.isArray(bookmarkSyncArgs.remoteBookmarks)) {
+    const localBmList = Array.isArray(bookmarkSyncArgs.localBookmarks) ? bookmarkSyncArgs.localBookmarks : [];
+    const remoteBmList = bookmarkSyncArgs.remoteBookmarks;
+    const remoteBmMap = new Map(remoteBmList.map((b) => [String(b.id), b]));
+    const localBmMap = new Map(localBmList.map((b) => [String(b.id), b]));
+
+    for (const localB of localBmList) {
+      const bid = String(localB.id);
+      const remoteB = remoteBmMap.get(bid);
+      if (!remoteB) {
+        const tombMs = bookmarkSyncArgs.remoteDeletedBookmarks?.[bid];
+        const localTime = getEntityTimestampMs(localB);
+        if (tombMs && (localTime === 0 || localTime <= tombMs)) {
+          cloudUpdatedBookmarks++;
+        } else {
+          localOnlyBookmarks++;
+        }
+      } else {
+        const localTime = getEntityTimestampMs(localB);
+        const remoteTime = getEntityTimestampMs(remoteB);
+        const isDiff =
+          (localB.title || '') !== (remoteB.title || '') ||
+          (localB.url || '') !== (remoteB.url || '') ||
+          (localB.description || '') !== (remoteB.description || '') ||
+          (localB.categoryId || '') !== (remoteB.categoryId || '') ||
+          Boolean(localB.isPinned) !== Boolean(remoteB.isPinned) ||
+          (localB.iconUrl || '') !== (remoteB.iconUrl || '') ||
+          !areTagsEqual(localB.tags, remoteB.tags);
+        const threshold =
+          typeof localB.updatedAtMs === 'number' && typeof remoteB.updatedAtMs === 'number' ? 0 : 1000;
+        if (localTime - remoteTime > threshold) {
+          localUpdatedBookmarks++;
+        } else if (remoteTime - localTime > threshold) {
+          // counted in remote loop
+        } else if (isDiff) {
+          localUpdatedBookmarks++;
+        }
+      }
+    }
+
+    for (const remoteB of remoteBmList) {
+      const localB = localBmMap.get(String(remoteB.id));
+      if (!localB) {
+        cloudOnlyBookmarks++;
+      } else {
+        const localTime = getEntityTimestampMs(localB);
+        const remoteTime = getEntityTimestampMs(remoteB);
+        const threshold =
+          typeof localB.updatedAtMs === 'number' && typeof remoteB.updatedAtMs === 'number' ? 0 : 1000;
+        if (remoteTime - localTime > threshold) {
+          cloudUpdatedBookmarks++;
+        }
+      }
+    }
+  }
+
+  // Compare Bookmark Categories
+  if (bookmarkSyncArgs && Array.isArray(bookmarkSyncArgs.remoteBookmarkCategories)) {
+    const localCatList = Array.isArray(bookmarkSyncArgs.localBookmarkCategories)
+      ? bookmarkSyncArgs.localBookmarkCategories
+      : [];
+    const remoteCatList = bookmarkSyncArgs.remoteBookmarkCategories;
+    const remoteCatMap = new Map(remoteCatList.map((c) => [String(c.id), c]));
+    const localCatMap = new Map(localCatList.map((c) => [String(c.id), c]));
+
+    for (const localC of localCatList) {
+      const cid = String(localC.id);
+      const remoteC = remoteCatMap.get(cid);
+      if (!remoteC) {
+        const tombMs = bookmarkSyncArgs.remoteDeletedBookmarkCategories?.[cid];
+        const localTime = getEntityTimestampMs(localC);
+        if (tombMs && (localTime === 0 || localTime <= tombMs)) {
+          cloudUpdatedBookmarkCategories++;
+        } else {
+          localOnlyBookmarkCategories++;
+        }
+      } else {
+        const isDiff =
+          (localC.name || '') !== (remoteC.name || '') ||
+          (localC.parentId || null) !== (remoteC.parentId || null) ||
+          Number(localC.order || 0) !== Number(remoteC.order || 0) ||
+          (localC.color || null) !== (remoteC.color || null);
+        if (isDiff) {
+          const localTime = getEntityTimestampMs(localC);
+          const remoteTime = getEntityTimestampMs(remoteC);
+          if (remoteTime > localTime + 1000) {
+            cloudUpdatedBookmarkCategories++;
+          } else {
+            localUpdatedBookmarkCategories++;
+          }
+        }
+      }
+    }
+
+    for (const remoteC of remoteCatList) {
+      if (!localCatMap.has(String(remoteC.id))) {
+        cloudOnlyBookmarkCategories++;
+      }
+    }
+  }
+
   const totalDiff =
     localOnlyNotes +
     localUpdatedNotes +
@@ -897,7 +1175,15 @@ export function calculateSyncDiff(
     localOnlyFolders +
     cloudOnlyFolders +
     localUpdatedFolders +
-    cloudUpdatedFolders;
+    cloudUpdatedFolders +
+    localOnlyBookmarks +
+    localUpdatedBookmarks +
+    cloudOnlyBookmarks +
+    cloudUpdatedBookmarks +
+    localOnlyBookmarkCategories +
+    localUpdatedBookmarkCategories +
+    cloudOnlyBookmarkCategories +
+    cloudUpdatedBookmarkCategories;
 
   return {
     localOnlyNotes,
@@ -908,6 +1194,14 @@ export function calculateSyncDiff(
     cloudOnlyFolders,
     localUpdatedFolders,
     cloudUpdatedFolders,
+    localOnlyBookmarks,
+    localUpdatedBookmarks,
+    cloudOnlyBookmarks,
+    cloudUpdatedBookmarks,
+    localOnlyBookmarkCategories,
+    localUpdatedBookmarkCategories,
+    cloudOnlyBookmarkCategories,
+    cloudUpdatedBookmarkCategories,
     totalDiff,
   };
 }
@@ -922,6 +1216,10 @@ export async function pushSyncToCloud(
     deletedNoteIds?: string[];
     deletedFolderIds?: string[];
     frequentFolderIds?: string[];
+    bookmarks?: Bookmark[];
+    bookmarkCategories?: BookmarkCategory[];
+    deletedBookmarkIds?: string[];
+    deletedBookmarkCategoryIds?: string[];
   }
 ): Promise<{
   success: boolean;
@@ -929,8 +1227,12 @@ export async function pushSyncToCloud(
   mergedNotes?: Note[];
   mergedFolders?: Folder[];
   mergedFrequentFolderIds?: string[];
+  mergedBookmarks?: Bookmark[];
+  mergedBookmarkCategories?: BookmarkCategory[];
   deletedNotes?: Record<string, number>;
   deletedFolders?: Record<string, number>;
+  deletedBookmarks?: Record<string, number>;
+  deletedBookmarkCategories?: Record<string, number>;
   serverTime?: number;
 }> {
   const baseUrl = normalizeApiUrl(config.apiUrl);
@@ -948,8 +1250,14 @@ export async function pushSyncToCloud(
         mergedNotes: remoteRes.data.notes,
         mergedFolders: remoteRes.data.folders,
         mergedFrequentFolderIds: remoteRes.data.frequentFolderIds,
+        ...(remoteRes.data.bookmarks !== undefined ? { mergedBookmarks: remoteRes.data.bookmarks } : {}),
+        ...(remoteRes.data.bookmarkCategories !== undefined
+          ? { mergedBookmarkCategories: remoteRes.data.bookmarkCategories }
+          : {}),
         deletedNotes: remoteRes.data.deletedNotes,
         deletedFolders: remoteRes.data.deletedFolders,
+        deletedBookmarks: remoteRes.data.deletedBookmarks,
+        deletedBookmarkCategories: remoteRes.data.deletedBookmarkCategories,
         serverTime: remoteRes.data.serverTime,
       };
     }
@@ -965,8 +1273,12 @@ export async function pushSyncToCloud(
       notes: localNotes,
       folders: localFolders,
       frequentFolderIds: options?.frequentFolderIds || [],
+      bookmarks: options?.bookmarks || [],
+      bookmarkCategories: options?.bookmarkCategories || [],
       deletedNoteIds: options?.deletedNoteIds || [],
       deletedFolderIds: options?.deletedFolderIds || [],
+      deletedBookmarkIds: options?.deletedBookmarkIds || [],
+      deletedBookmarkCategoryIds: options?.deletedBookmarkCategoryIds || [],
       timestamp: Date.now(),
       clientTimeStr: formatLocalDateTime(),
     };
@@ -1049,6 +1361,18 @@ export async function pushSyncToCloud(
       ? result.frequentFolders
       : undefined;
 
+    const rawBookmarksList = Array.isArray(data.bookmarks)
+      ? data.bookmarks
+      : Array.isArray(result.bookmarks)
+      ? result.bookmarks
+      : null;
+
+    const rawBookmarkCategoriesList = Array.isArray(data.bookmarkCategories)
+      ? data.bookmarkCategories
+      : Array.isArray(result.bookmarkCategories)
+      ? result.bookmarkCategories
+      : null;
+
     const mergedNotes: Note[] = rawNotesList ? rawNotesList.map(normalizeRemoteNote) : localNotes;
     const mergedFolders: Folder[] = rawFoldersList
       ? rawFoldersList.map(normalizeRemoteFolder)
@@ -1056,6 +1380,12 @@ export async function pushSyncToCloud(
     const mergedFrequentFolderIds: string[] | undefined = rawFrequentFolderIds
       ? rawFrequentFolderIds.map(String)
       : options?.frequentFolderIds;
+    const mergedBookmarks: Bookmark[] | undefined = rawBookmarksList
+      ? rawBookmarksList.map(normalizeRemoteBookmark)
+      : undefined;
+    const mergedBookmarkCategories: BookmarkCategory[] | undefined = rawBookmarkCategoriesList
+      ? rawBookmarkCategoriesList.map(normalizeRemoteBookmarkCategory)
+      : undefined;
 
     const successMessage =
       mode === 'push_all'
@@ -1066,6 +1396,10 @@ export async function pushSyncToCloud(
 
     const deletedNotes = parseTombstoneMap(data.deletedNotes || result.deletedNotes);
     const deletedFolders = parseTombstoneMap(data.deletedFolders || result.deletedFolders);
+    const deletedBookmarks = parseTombstoneMap(data.deletedBookmarks || result.deletedBookmarks);
+    const deletedBookmarkCategories = parseTombstoneMap(
+      data.deletedBookmarkCategories || result.deletedBookmarkCategories
+    );
 
     return {
       success: true,
@@ -1073,8 +1407,12 @@ export async function pushSyncToCloud(
       mergedNotes,
       mergedFolders,
       mergedFrequentFolderIds,
+      ...(mergedBookmarks !== undefined ? { mergedBookmarks } : {}),
+      ...(mergedBookmarkCategories !== undefined ? { mergedBookmarkCategories } : {}),
       ...(deletedNotes ? { deletedNotes } : {}),
       ...(deletedFolders ? { deletedFolders } : {}),
+      ...(deletedBookmarks ? { deletedBookmarks } : {}),
+      ...(deletedBookmarkCategories ? { deletedBookmarkCategories } : {}),
       serverTime: data.serverTime || result.serverTime || Date.now(),
     };
   } catch (err: any) {
@@ -1459,4 +1797,203 @@ export async function deleteFrequentFolderFromCloud(
     return { success: false, message: `移除常用目录同步失败: ${err.message}` };
   }
 }
+
+// 10. Incremental Sync: Save / Update Single or Batch Bookmarks
+export async function saveBookmarksToCloud(
+  config: CloudConfig,
+  bookmarks: Bookmark[]
+): Promise<{ success: boolean; message?: string }> {
+  const baseUrl = normalizeApiUrl(config.apiUrl);
+  if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+  if (!bookmarks || bookmarks.length === 0) return { success: true };
+
+  try {
+    const urls = getActionCandidateUrls(baseUrl, 'upsert_bookmark', '/bookmarks');
+    const headers = getHeaders(config);
+    const payload = {
+      bookmarks,
+      bookmark: bookmarks[0],
+      action: 'upsert_bookmark',
+    };
+
+    for (const url of urls) {
+      try {
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          },
+          12000
+        );
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'upsert_bookmark', url);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '书签已同步至云端'),
+          };
+        }
+      } catch {}
+    }
+
+    return { success: false, message: '书签同步未成功' };
+  } catch (err: any) {
+    return { success: false, message: `书签同步失败: ${err.message}` };
+  }
+}
+
+// 11. Incremental Sync: Permanently Delete Single Bookmark (Direct delete + tombstone)
+export async function deleteSingleBookmarkFromCloud(
+  config: CloudConfig,
+  bookmarkId: string
+): Promise<{ success: boolean; message?: string }> {
+  const baseUrl = normalizeApiUrl(config.apiUrl);
+  if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+
+  try {
+    const urls = getActionCandidateUrls(
+      baseUrl,
+      'delete_bookmark',
+      `/bookmarks/${encodeURIComponent(bookmarkId)}`
+    );
+    const headers = getHeaders(config);
+
+    for (const url of urls) {
+      try {
+        const isQueryMode = url.includes('?action=') || url.includes('&action=');
+        const fullUrl = isQueryMode ? `${url}&id=${encodeURIComponent(bookmarkId)}` : url;
+
+        const res = await fetchWithTimeout(
+          fullUrl,
+          {
+            method: 'DELETE',
+            headers,
+            body: JSON.stringify({
+              id: bookmarkId,
+              action: 'delete_bookmark',
+              timestamp: Date.now(),
+              deletedAt: formatLocalDateTime(),
+            }),
+          },
+          12000
+        );
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'delete_bookmark', url);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '云端书签已删除'),
+          };
+        }
+      } catch {}
+    }
+
+    return { success: false, message: '云端书签删除未成功' };
+  } catch (err: any) {
+    return { success: false, message: `删除书签同步失败: ${err.message}` };
+  }
+}
+
+// 12. Incremental Sync: Save / Update Single or Batch Bookmark Categories
+export async function saveBookmarkCategoriesToCloud(
+  config: CloudConfig,
+  categories: BookmarkCategory[]
+): Promise<{ success: boolean; message?: string }> {
+  const baseUrl = normalizeApiUrl(config.apiUrl);
+  if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+  if (!categories || categories.length === 0) return { success: true };
+
+  try {
+    const urls = getActionCandidateUrls(baseUrl, 'upsert_bookmark_category', '/bookmark-categories');
+    const headers = getHeaders(config);
+    const payload = {
+      categories,
+      category: categories[0],
+      action: 'upsert_bookmark_category',
+    };
+
+    for (const url of urls) {
+      try {
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          },
+          12000
+        );
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'upsert_bookmark_category', url);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '书签分类已同步至云端'),
+          };
+        }
+      } catch {}
+    }
+
+    return { success: false, message: '书签分类同步未成功' };
+  } catch (err: any) {
+    return { success: false, message: `书签分类同步失败: ${err.message}` };
+  }
+}
+
+// 13. Incremental Sync: Permanently Delete Single Bookmark Category
+export async function deleteSingleBookmarkCategoryFromCloud(
+  config: CloudConfig,
+  categoryId: string
+): Promise<{ success: boolean; message?: string }> {
+  const baseUrl = normalizeApiUrl(config.apiUrl);
+  if (!baseUrl) return { success: false, message: '未配置 API 地址' };
+
+  try {
+    const urls = getActionCandidateUrls(
+      baseUrl,
+      'delete_bookmark_category',
+      `/bookmark-categories/${encodeURIComponent(categoryId)}`
+    );
+    const headers = getHeaders(config);
+
+    for (const url of urls) {
+      try {
+        const isQueryMode = url.includes('?action=') || url.includes('&action=');
+        const fullUrl = isQueryMode ? `${url}&id=${encodeURIComponent(categoryId)}` : url;
+
+        const res = await fetchWithTimeout(
+          fullUrl,
+          {
+            method: 'DELETE',
+            headers,
+            body: JSON.stringify({
+              id: categoryId,
+              action: 'delete_bookmark_category',
+              timestamp: Date.now(),
+              deletedAt: formatLocalDateTime(),
+            }),
+          },
+          12000
+        );
+
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          recordSuccessfulEndpoint(baseUrl, 'delete_bookmark_category', url);
+          return {
+            success: isResponseSuccessful(data, true),
+            message: extractResponseMessage(data, '云端书签分类已删除'),
+          };
+        }
+      } catch {}
+    }
+
+    return { success: false, message: '云端书签分类删除未成功' };
+  } catch (err: any) {
+    return { success: false, message: `删除书签分类同步失败: ${err.message}` };
+  }
+}
+
 

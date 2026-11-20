@@ -16,7 +16,8 @@ import {
   PinOff,
   X,
   Check,
-  GripVertical
+  GripVertical,
+  Bookmark
 } from 'lucide-vue-next';
 import { Folder, ViewType } from '../types';
 import { compareFolders } from '../utils/folderSort';
@@ -36,6 +37,7 @@ const props = defineProps<{
   getFolderNoteCount: (id: string) => number;
   starredCount: number;
   trashCount: number;
+  bookmarksCount?: number;
   collapsed?: boolean;
 }>();
 
@@ -782,6 +784,31 @@ onUnmounted(() => {
             <span class="text-[13px]">时间线</span>
           </div>
           <span class="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.2 rounded font-medium">动态</span>
+        </div>
+
+        <!-- 网站书签 -->
+        <div
+          id="nav-bookmarks"
+          @click="emit('selectView', 'bookmarks')"
+          :class="[
+            'flex items-center justify-between px-2.5 py-1.5 rounded-md text-sm cursor-pointer transition-colors',
+            currentView === 'bookmarks'
+              ? 'bg-[#e8f1fd] text-blue-600 font-medium'
+              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+          ]"
+        >
+          <div class="flex items-center gap-2">
+            <Bookmark
+              class="w-4 h-4 text-gray-400"
+              :class="{ 'text-blue-600 fill-blue-600/15': currentView === 'bookmarks' }"
+            />
+            <span class="text-[13px]">网站书签</span>
+          </div>
+          <span
+            v-if="bookmarksCount && bookmarksCount > 0"
+            class="text-xs text-gray-400 tabular-nums"
+            :class="{ '!text-blue-600': currentView === 'bookmarks' }"
+          >{{ bookmarksCount }}</span>
         </div>
 
         <!-- 我的标星 -->

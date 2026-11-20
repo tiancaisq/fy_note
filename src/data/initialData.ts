@@ -1,4 +1,4 @@
-import { Folder, Note } from '../types';
+import { Bookmark, BookmarkCategory, Folder, Note } from '../types';
 import { DRAWIO_TEMPLATES } from '../utils/drawioTemplates';
 
 export const INITIAL_FOLDERS: Folder[] = [
@@ -134,4 +134,117 @@ export const INITIAL_NOTES: Note[] = [
     type: 'markdown',
   },
 ];
+
+export const INITIAL_BOOKMARK_CATEGORIES: BookmarkCategory[] = [
+  {
+    id: 'bcat-dev-docs',
+    name: '开发文档',
+    parentId: null,
+    isOpen: true,
+    order: 0,
+    color: '#2563eb',
+    createdAt: '2025-01-18 09:00:00',
+    updatedAt: '2025-01-18 09:00:00',
+  },
+  {
+    id: 'bcat-frontend',
+    name: '前端框架',
+    parentId: 'bcat-dev-docs',
+    isOpen: true,
+    order: 0,
+    color: '#2563eb',
+    createdAt: '2025-01-18 09:02:00',
+    updatedAt: '2025-01-18 09:02:00',
+  },
+  {
+    id: 'bcat-tools',
+    name: '效率工具',
+    parentId: null,
+    isOpen: true,
+    order: 1,
+    color: '#0d9488',
+    createdAt: '2025-01-18 09:05:00',
+    updatedAt: '2025-01-18 09:05:00',
+  },
+  {
+    id: 'bcat-community',
+    name: '技术社区',
+    parentId: null,
+    isOpen: true,
+    order: 2,
+    color: '#d97706',
+    createdAt: '2025-01-18 09:10:00',
+    updatedAt: '2025-01-18 09:10:00',
+  },
+];
+
+export const INITIAL_BOOKMARKS: Bookmark[] = [
+  {
+    id: 'bm-vuejs',
+    title: 'Vue.js 官方文档',
+    url: 'https://cn.vuejs.org/',
+    description: '',
+    categoryId: 'bcat-frontend',
+    tags: [],
+    isPinned: true,
+    createdAt: '2025-01-18 09:20:00',
+    updatedAt: '2025-01-18 09:20:00',
+  },
+  {
+    id: 'bm-tailwind',
+    title: 'Tailwind CSS 文档',
+    url: 'https://tailwindcss.com/docs',
+    description: '',
+    categoryId: 'bcat-frontend',
+    tags: [],
+    isPinned: false,
+    createdAt: '2025-01-18 09:30:00',
+    updatedAt: '2025-01-18 09:30:00',
+  },
+  {
+    id: 'bm-mdn',
+    title: 'MDN Web Docs',
+    url: 'https://developer.mozilla.org/zh-CN/',
+    description: '',
+    categoryId: 'bcat-dev-docs',
+    tags: [],
+    isPinned: true,
+    createdAt: '2025-01-18 09:25:00',
+    updatedAt: '2025-01-18 09:25:00',
+  },
+  {
+    id: 'bm-excalidraw',
+    title: 'Draw.io / diagrams.net',
+    url: 'https://app.diagrams.net/',
+    description: '',
+    categoryId: 'bcat-tools',
+    tags: [],
+    isPinned: false,
+    createdAt: '2025-01-18 09:35:00',
+    updatedAt: '2025-01-18 09:35:00',
+  },
+  {
+    id: 'bm-regex101',
+    title: 'Regex101 正则调试器',
+    url: 'https://regex101.com/',
+    description: '',
+    categoryId: 'bcat-tools',
+    tags: [],
+    isPinned: false,
+    createdAt: '2025-01-18 09:40:00',
+    updatedAt: '2025-01-18 09:40:00',
+  },
+  {
+    id: 'bm-github',
+    title: 'GitHub',
+    url: 'https://github.com/',
+    description: '',
+    categoryId: 'bcat-community',
+    tags: [],
+    isPinned: true,
+    createdAt: '2025-01-18 09:45:00',
+    updatedAt: '2025-01-18 09:45:00',
+  },
+];
+
 

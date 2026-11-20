@@ -15,17 +15,21 @@ import {
   Sparkles,
   X,
   Keyboard,
-  Server
+  Server,
+  Bookmark,
+  ExternalLink
 } from 'lucide-vue-next';
-import { SearchResultItem, SyncStatus } from '../types';
+import { SearchResultItem, BookmarkSearchResultItem, SyncStatus } from '../types';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
 
 const props = defineProps<{
   searchQuery: string;
   notesCount: number;
+  bookmarksCount?: number;
   searchResults: {
     currentFolderMatches: SearchResultItem[];
     otherMatches: SearchResultItem[];
+    bookmarkMatches?: BookmarkSearchResultItem[];
     totalCount: number;
   };
   activeFolderName?: string;
@@ -39,6 +43,7 @@ const emit = defineEmits<{
   (e: 'exportAll'): void;
   (e: 'emptyTrash'): void;
   (e: 'selectSearchResult', item: SearchResultItem): void;
+  (e: 'selectBookmarkSearchResult', item: BookmarkSearchResultItem): void;
   (e: 'openShortcuts'): void;
   (e: 'openCloudSync'): void;
 }>();
@@ -73,6 +78,11 @@ function clearSearch() {
 
 function selectResult(item: SearchResultItem) {
   emit('selectSearchResult', item);
+  isSearchDropdownOpen.value = false;
+}
+
+function selectBookmarkResult(item: BookmarkSearchResultItem) {
+  emit('selectBookmarkSearchResult', item);
   isSearchDropdownOpen.value = false;
 }
 
@@ -148,7 +158,7 @@ function highlightMatch(text: string, query: string): string {
           :value="searchQuery"
           @input="handleSearchInput"
           @focus="handleSearchFocus"
-          placeholder="全局搜索笔记标题、内容或标签..."
+          placeholder="全局搜索笔记、书签标题、网址或标签..."
           class="w-full h-8.5 pl-9 pr-16 bg-[#f5f6f8] text-sm text-gray-800 placeholder-gray-400 rounded-lg border border-transparent focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100 transition-all outline-none"
         />
 
@@ -182,14 +192,14 @@ function highlightMatch(text: string, query: string): string {
       >
         <!-- Search Stats Header -->
         <div class="px-4 py-2 bg-gray-50/80 flex items-center justify-between text-xs text-gray-500">
-          <span>共找到 <strong class="text-blue-600 font-semibold">{{ searchResults.totalCount }}</strong> 篇匹配笔记</span>
-          <span class="text-[11px] text-gray-400">优先展示当前目录</span>
+          <span>共找到 <strong class="text-blue-600 font-semibold tabular-nums">{{ searchResults.totalCount }}</strong> 条匹配结果</span>
+          <span class="text-[11px] text-gray-400">包含笔记与网站书签</span>
         </div>
 
         <!-- Empty Results -->
         <div v-if="searchResults.totalCount === 0" class="py-10 text-center text-gray-400 text-xs">
-          <p>未找到包含「{{ searchQuery }}」的相关笔记</p>
-          <p class="mt-1 text-[11px] text-gray-400">试试搜索其它关键词或标签</p>
+          <p>未找到包含「{{ searchQuery }}」的相关笔记或书签</p>
+          <p class="mt-1 text-[11px] text-gray-400">试试搜索其它关键词、域名或标签</p>
         </div>
 
         <!-- Group 1: Current Folder Matches (Prioritized) -->
@@ -288,6 +298,57 @@ function highlightMatch(text: string, query: string): string {
                 <FolderIcon class="w-3 h-3 text-amber-500" />
                 <span class="text-gray-600 font-medium truncate">{{ item.folderPath }}</span>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Group 3: Matching Website Bookmarks -->
+        <div v-if="searchResults.bookmarkMatches && searchResults.bookmarkMatches.length > 0" class="py-2">
+          <div class="px-4 py-1 flex items-center justify-between text-xs font-semibold text-indigo-600 bg-indigo-50/50">
+            <span class="flex items-center gap-1.5">
+              <Bookmark class="w-3.5 h-3.5 text-indigo-600" />
+              匹配网站书签
+            </span>
+            <span class="text-[11px] bg-indigo-100 text-indigo-700 px-1.5 py-0.2 rounded font-normal tabular-nums">
+              {{ searchResults.bookmarkMatches.length }} 条
+            </span>
+          </div>
+
+          <div class="divide-y divide-gray-50">
+            <div
+              v-for="bmItem in searchResults.bookmarkMatches"
+              :key="'bm-' + bmItem.bookmark.id"
+              @click="selectBookmarkResult(bmItem)"
+              class="px-4 py-2.5 hover:bg-indigo-50/40 cursor-pointer transition-colors group flex items-center justify-between gap-3"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 min-w-0">
+                  <Bookmark class="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                  <span
+                    class="text-sm font-medium text-gray-800 group-hover:text-blue-600 truncate"
+                    v-html="highlightMatch(bmItem.bookmark.title, searchQuery)"
+                  ></span>
+                </div>
+                <div class="mt-1 pl-5.5 text-[11px] text-gray-400 truncate">
+                  <span class="font-mono text-gray-500" v-html="highlightMatch(bmItem.host, searchQuery)"></span>
+                  <span> · {{ bmItem.categoryName }}</span>
+                  <span v-if="bmItem.bookmark.tags && bmItem.bookmark.tags.length > 0">
+                    · {{ bmItem.bookmark.tags.slice(0, 3).map((t) => `#${t}`).join(' · ') }}
+                  </span>
+                </div>
+              </div>
+
+              <a
+                :href="bmItem.bookmark.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                @click.stop
+                class="px-2 py-1 text-[11px] text-blue-600 hover:bg-blue-50 border border-blue-100 rounded-md flex items-center gap-1 shrink-0 transition-colors"
+                title="直接打开网站"
+              >
+                <ExternalLink class="w-3 h-3" />
+                <span>访问</span>
+              </a>
             </div>
           </div>
         </div>
@@ -391,7 +452,11 @@ function highlightMatch(text: string, query: string): string {
             </div>
             <div class="mt-2 flex items-center justify-between text-xs text-gray-500">
               <span>本地笔记</span>
-              <span class="font-medium text-blue-600">{{ notesCount }} 篇</span>
+              <span class="font-medium text-blue-600 tabular-nums">{{ notesCount }} 篇</span>
+            </div>
+            <div v-if="bookmarksCount !== undefined" class="mt-1 flex items-center justify-between text-xs text-gray-500">
+              <span>网站书签</span>
+              <span class="font-medium text-indigo-600 tabular-nums">{{ bookmarksCount }} 条</span>
             </div>
           </div>
 

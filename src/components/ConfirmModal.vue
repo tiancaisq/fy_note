@@ -8,6 +8,7 @@ import {
   FileText,
   AlertCircle,
   Info,
+  Bookmark,
 } from 'lucide-vue-next';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
 
@@ -19,7 +20,7 @@ const props = withDefaults(
     confirmText?: string;
     cancelText?: string;
     dangerLevel?: 'danger' | 'warning' | 'info';
-    itemType?: 'note' | 'folder' | 'trash';
+    itemType?: 'note' | 'folder' | 'trash' | 'bookmark' | 'bookmarkCategory';
     itemName?: string;
     itemFormat?: 'markdown' | 'mindmap' | string;
     noteCount?: number;
@@ -143,6 +144,12 @@ onUnmounted(() => {
             <template v-else-if="itemType === 'trash'">
               <Trash2 class="w-4 h-4 text-red-500 shrink-0" />
             </template>
+            <template v-else-if="itemType === 'bookmark'">
+              <Bookmark class="w-4 h-4 text-red-500 shrink-0" />
+            </template>
+            <template v-else-if="itemType === 'bookmarkCategory'">
+              <FolderIcon class="w-4 h-4 text-amber-500 fill-amber-500/20 shrink-0" />
+            </template>
 
             <span class="font-medium text-gray-800 truncate" :title="itemName">
               {{ itemName || (itemType === 'trash' ? '全部回收站内容' : '') }}
@@ -168,6 +175,18 @@ onUnmounted(() => {
               class="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-md font-medium"
             >
               {{ itemFormat === 'mindmap' ? '思维导图' : 'Markdown 笔记' }}
+            </span>
+            <span
+              v-else-if="itemType === 'bookmark'"
+              class="px-2 py-0.5 bg-red-100 text-red-700 rounded-md font-medium"
+            >
+              {{ noteCount && noteCount > 1 ? `共 ${noteCount} 条 · 直接删除` : '直接彻底删除' }}
+            </span>
+            <span
+              v-else-if="itemType === 'bookmarkCategory'"
+              class="px-2 py-0.5 bg-gray-200/70 text-gray-700 rounded-md font-mono"
+            >
+              {{ subFolderCount && subFolderCount > 0 ? `${subFolderCount} 个子目录 · ` : '' }}{{ noteCount ?? 0 }} 条书签移至上级/根目录
             </span>
           </div>
         </div>
