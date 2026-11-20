@@ -21,6 +21,7 @@ import {
 } from 'lucide-vue-next';
 import { SearchResultItem, BookmarkSearchResultItem, SyncStatus } from '../types';
 import FileFormatIcon from './icons/FileFormatIcon.vue';
+import BookmarkIconBadge from './BookmarkIconBadge.vue';
 
 const props = defineProps<{
   searchQuery: string;
@@ -323,7 +324,12 @@ function highlightMatch(text: string, query: string): string {
             >
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2 min-w-0">
-                  <Bookmark class="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                  <BookmarkIconBadge
+                    :url="bmItem.bookmark.url"
+                    :title="bmItem.bookmark.title"
+                    :icon-url="bmItem.bookmark.iconUrl"
+                    size="xs"
+                  />
                   <span
                     class="text-sm font-medium text-gray-800 group-hover:text-blue-600 truncate"
                     v-html="highlightMatch(bmItem.bookmark.title, searchQuery)"

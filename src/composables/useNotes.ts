@@ -29,6 +29,8 @@ import {
   normalizeBookmarkUrl,
   extractBookmarkHost,
   deriveTitleFromUrl,
+  getDefaultFaviconUrl,
+  fetchTargetSiteMetadata,
 } from '../utils/bookmarkHelpers';
 import {
   initStorageAndMigrate,
@@ -2430,6 +2432,25 @@ export function useNotes() {
     cat.updatedAtMs = Date.now();
   }
 
+  function enrichBookmarkIconInBackground(bookmarkId: string, targetUrl: string, currentIconUrl?: string) {
+    const defaultIcon = getDefaultFaviconUrl(targetUrl);
+    // Skip background fetch if a specific non-default icon URL was already resolved
+    if (currentIconUrl && currentIconUrl !== defaultIcon) return;
+
+    fetchTargetSiteMetadata(targetUrl)
+      .then((meta) => {
+        if (!meta.iconUrl || meta.iconUrl === currentIconUrl) return;
+        const target = bookmarks.value.find((b) => b.id === bookmarkId);
+        if (!target || target.url !== targetUrl) return;
+        target.iconUrl = meta.iconUrl;
+        stampBookmarkMutation(target);
+        triggerAutoSyncDebounced({ bookmarkId: target.id });
+      })
+      .catch(() => {
+        // Ignore silent background enrichment errors
+      });
+  }
+
   function createBookmark(input: {
     title?: string;
     url: string;
@@ -2454,6 +2475,7 @@ export function useNotes() {
       input.categoryId && bookmarkCategories.value.some((c) => c.id === input.categoryId)
         ? input.categoryId
         : '';
+    const resolvedIcon = (input.iconUrl || '').trim() || getDefaultFaviconUrl(normalized.url) || undefined;
 
     const newBookmark: Bookmark = {
       id: 'bm-' + nowMs + '-' + Math.random().toString(36).substring(2, 6),
@@ -2463,7 +2485,7 @@ export function useNotes() {
       categoryId: validCatId,
       tags: cleanTags,
       isPinned: Boolean(input.isPinned),
-      iconUrl: (input.iconUrl || '').trim() || undefined,
+      iconUrl: resolvedIcon,
       createdAt: now,
       updatedAt: now,
       updatedAtMs: nowMs,
@@ -2472,6 +2494,7 @@ export function useNotes() {
     bookmarks.value.unshift(newBookmark);
     showToast(`书签「${newBookmark.title}」已添加`);
     triggerAutoSyncDebounced({ bookmarkId: newBookmark.id });
+    enrichBookmarkIconInBackground(newBookmark.id, newBookmark.url, newBookmark.iconUrl);
     return { success: true, bookmark: newBookmark };
   }
 
@@ -2482,11 +2505,15 @@ export function useNotes() {
     const bm = bookmarks.value.find((b) => b.id === id);
     if (!bm) return { success: false, error: '书签不存在' };
 
+    let urlChanged = false;
     if (updates.url !== undefined) {
       const normalized = normalizeBookmarkUrl(updates.url);
       if (!normalized.valid) {
         showToast(normalized.error || '网址格式无效');
         return { success: false, error: normalized.error };
+      }
+      if (bm.url !== normalized.url) {
+        urlChanged = true;
       }
       bm.url = normalized.url;
     }
@@ -2510,12 +2537,17 @@ export function useNotes() {
       bm.isPinned = Boolean(updates.isPinned);
     }
     if (updates.iconUrl !== undefined) {
-      bm.iconUrl = updates.iconUrl.trim() || undefined;
+      bm.iconUrl = updates.iconUrl.trim() || getDefaultFaviconUrl(bm.url) || undefined;
+    } else if (urlChanged) {
+      bm.iconUrl = getDefaultFaviconUrl(bm.url) || undefined;
     }
 
     stampBookmarkMutation(bm);
     showToast('书签已更新');
     triggerAutoSyncDebounced({ bookmarkId: bm.id });
+    if (urlChanged || !bm.iconUrl) {
+      enrichBookmarkIconInBackground(bm.id, bm.url, bm.iconUrl);
+    }
     return { success: true };
   }
 

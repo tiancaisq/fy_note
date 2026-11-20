@@ -5,8 +5,10 @@ import { Bookmark, BookmarkCategory } from '../types';
 import {
   normalizeBookmarkUrl,
   deriveTitleFromUrl,
-  getBookmarkBadgeInfo,
+  getDefaultFaviconUrl,
+  fetchTargetSiteMetadata,
 } from '../utils/bookmarkHelpers';
+import BookmarkIconBadge from './BookmarkIconBadge.vue';
 
 const props = defineProps<{
   bookmark?: Bookmark | null;
@@ -26,6 +28,7 @@ const emit = defineEmits<{
       categoryId: string;
       tags: string[];
       isPinned: boolean;
+      iconUrl?: string;
     }
   ): void;
 }>();
@@ -37,17 +40,72 @@ const title = ref(props.bookmark?.title || '');
 const categoryId = ref(
   props.bookmark ? props.bookmark.categoryId : props.defaultCategoryId || ''
 );
+const resolvedIconUrl = ref(props.bookmark?.iconUrl || '');
+const isFetchingIcon = ref(false);
 const urlError = ref('');
 const urlInputRef = ref<HTMLInputElement | null>(null);
 
-watch(url, () => {
+let lastFetchedUrl = props.bookmark?.url || '';
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let activeFetchController: AbortController | null = null;
+
+async function resolveSiteIcon(rawUrl: string, allowAutoTitle = false) {
+  const check = normalizeBookmarkUrl(rawUrl);
+  if (!check.valid) return;
+  if (check.url === lastFetchedUrl && resolvedIconUrl.value) return;
+
+  if (activeFetchController) {
+    activeFetchController.abort();
+  }
+  const controller = new AbortController();
+  activeFetchController = controller;
+  lastFetchedUrl = check.url;
+
+  // Set default /favicon.ico immediately for instant preview
+  const defaultIcon = getDefaultFaviconUrl(check.url);
+  if (!resolvedIconUrl.value || check.url !== props.bookmark?.url) {
+    resolvedIconUrl.value = defaultIcon;
+  }
+
+  isFetchingIcon.value = true;
+  try {
+    const meta = await fetchTargetSiteMetadata(check.url, controller.signal);
+    if (controller.signal.aborted) return;
+    if (meta.iconUrl) {
+      resolvedIconUrl.value = meta.iconUrl;
+    }
+    if (allowAutoTitle && !title.value.trim()) {
+      title.value = meta.title || deriveTitleFromUrl(check.url);
+    }
+  } finally {
+    if (activeFetchController === controller) {
+      isFetchingIcon.value = false;
+      activeFetchController = null;
+    }
+  }
+}
+
+watch(url, (val) => {
   if (urlError.value) {
-    const check = normalizeBookmarkUrl(url.value);
+    const check = normalizeBookmarkUrl(val);
     if (check.valid) urlError.value = '';
   }
-});
 
-const previewBadge = computed(() => getBookmarkBadgeInfo(url.value || 'example.com', title.value));
+  if (debounceTimer) clearTimeout(debounceTimer);
+  const trimmed = val.trim();
+  if (!trimmed) {
+    resolvedIconUrl.value = '';
+    lastFetchedUrl = '';
+    return;
+  }
+
+  const check = normalizeBookmarkUrl(trimmed);
+  if (check.valid && check.url !== lastFetchedUrl) {
+    debounceTimer = setTimeout(() => {
+      resolveSiteIcon(check.url, !isEdit.value);
+    }, 550);
+  }
+});
 
 interface CategorySelectOption {
   id: string;
@@ -91,9 +149,8 @@ function handleUrlBlur() {
   if (check.valid) {
     url.value = check.url;
     urlError.value = '';
-    if (!title.value.trim()) {
-      title.value = deriveTitleFromUrl(check.url);
-    }
+    if (debounceTimer) clearTimeout(debounceTimer);
+    resolveSiteIcon(check.url, true);
   } else {
     urlError.value = check.error || '网址格式无效';
   }
@@ -107,6 +164,8 @@ function handleSubmit() {
     return;
   }
 
+  const finalIconUrl = resolvedIconUrl.value || getDefaultFaviconUrl(normalized.url);
+
   emit('submit', {
     id: props.bookmark?.id,
     title: title.value.trim() || deriveTitleFromUrl(normalized.url),
@@ -115,6 +174,7 @@ function handleSubmit() {
     categoryId: categoryId.value,
     tags: props.bookmark?.tags || [],
     isPinned: props.bookmark?.isPinned ?? false,
+    iconUrl: finalIconUrl || undefined,
   });
 }
 
@@ -140,10 +200,17 @@ function handleKeydown(e: KeyboardEvent) {
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown);
   urlInputRef.value?.focus();
+  // If editing an existing bookmark without stored iconUrl, fetch it automatically
+  if (props.bookmark && !props.bookmark.iconUrl && props.bookmark.url) {
+    lastFetchedUrl = '';
+    resolveSiteIcon(props.bookmark.url, false);
+  }
 });
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown);
+  if (debounceTimer) clearTimeout(debounceTimer);
+  if (activeFetchController) activeFetchController.abort();
 });
 </script>
 
@@ -158,18 +225,21 @@ onUnmounted(() => {
       id="bookmark-modal-container"
       class="bg-white w-full max-w-md rounded-2xl shadow-2xl border border-gray-200/80 overflow-hidden flex flex-col"
     >
-      <!-- Header -->
+      <!-- Header with live auto-fetched target site icon preview -->
       <div class="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between bg-slate-50/70">
         <div class="flex items-center gap-2.5">
-          <div
-            class="w-7 h-7 rounded-lg border flex items-center justify-center text-xs font-semibold shrink-0"
-            :class="[previewBadge.bg, previewBadge.text, previewBadge.border]"
-          >
-            {{ previewBadge.letter }}
+          <BookmarkIconBadge
+            :url="url || 'example.com'"
+            :title="title"
+            :icon-url="resolvedIconUrl"
+            :loading="isFetchingIcon"
+            size="md"
+          />
+          <div>
+            <h3 class="text-sm font-bold text-gray-900">
+              {{ isEdit ? '编辑书签' : '添加书签' }}
+            </h3>
           </div>
-          <h3 class="text-sm font-bold text-gray-900">
-            {{ isEdit ? '编辑书签' : '添加书签' }}
-          </h3>
         </div>
         <button
           type="button"
@@ -208,6 +278,9 @@ onUnmounted(() => {
             <AlertCircle class="w-3.5 h-3.5 shrink-0" />
             <span>{{ urlError }}</span>
           </p>
+          <p v-else-if="isFetchingIcon" class="text-[11px] text-blue-600">
+            正在自动获取网站图标...
+          </p>
         </div>
 
         <!-- 2. Title -->
@@ -216,7 +289,7 @@ onUnmounted(() => {
           <input
             v-model="title"
             type="text"
-            placeholder="留空则根据域名自动生成"
+            placeholder="留空则自动获取网站标题或域名"
             class="w-full px-3 py-2 text-sm bg-slate-50 border border-gray-200 rounded-lg focus:outline-none focus:bg-white focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-colors"
           />
         </div>

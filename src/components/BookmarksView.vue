@@ -16,8 +16,9 @@ import {
   X,
 } from 'lucide-vue-next';
 import { Bookmark, BookmarkCategory } from '../types';
-import { extractBookmarkHost, getBookmarkBadgeInfo } from '../utils/bookmarkHelpers';
+import { extractBookmarkHost } from '../utils/bookmarkHelpers';
 import BookmarkFolderTreeItem from './BookmarkFolderTreeItem.vue';
+import BookmarkIconBadge from './BookmarkIconBadge.vue';
 import BookmarkModal from './BookmarkModal.vue';
 import BookmarkCategoryModal from './BookmarkCategoryModal.vue';
 
@@ -38,6 +39,7 @@ const emit = defineEmits<{
       categoryId?: string;
       tags?: string[];
       isPinned?: boolean;
+      iconUrl?: string;
     }
   ): void;
   (e: 'update-bookmark', id: string, updates: Partial<Bookmark>): void;
@@ -400,6 +402,7 @@ function handleBookmarkSubmit(payload: {
   categoryId: string;
   tags: string[];
   isPinned: boolean;
+  iconUrl?: string;
 }) {
   if (payload.id) {
     emit('update-bookmark', payload.id, {
@@ -409,6 +412,7 @@ function handleBookmarkSubmit(payload: {
       categoryId: payload.categoryId,
       tags: payload.tags,
       isPinned: payload.isPinned,
+      iconUrl: payload.iconUrl,
     });
   } else {
     emit('create-bookmark', {
@@ -418,6 +422,7 @@ function handleBookmarkSubmit(payload: {
       categoryId: payload.categoryId,
       tags: payload.tags,
       isPinned: payload.isPinned,
+      iconUrl: payload.iconUrl,
     });
   }
   isBookmarkModalOpen.value = false;
@@ -611,26 +616,26 @@ const showFolderColumn = computed(() => {
       </div>
     </aside>
 
-    <!-- Right Main Workspace -->
-    <section class="flex-1 flex flex-col min-w-0 min-h-0 bg-white">
+    <!-- Right Main Workspace (Container Query root for responsive columns) -->
+    <section class="flex-1 flex flex-col min-w-0 min-h-0 bg-white @container">
       <!-- Top Toolbar (Switches cleanly to Contextual Batch Bar when items are selected) -->
       <div
         v-if="selectedCount > 0"
         id="bookmarks-batch-toolbar"
-        class="h-12 px-4 border-b border-blue-200/80 bg-blue-50/75 flex items-center justify-between gap-3 shrink-0"
+        class="h-12 px-4 border-b border-blue-200/80 bg-blue-50/75 flex items-center justify-between gap-2 shrink-0 overflow-x-auto"
       >
-        <div class="flex items-center gap-2.5 min-w-0">
-          <span class="text-xs font-semibold text-blue-700 tabular-nums">
+        <div class="flex items-center gap-2 min-w-0 shrink-0">
+          <span class="text-xs font-semibold text-blue-700 tabular-nums whitespace-nowrap">
             已选 {{ selectedCount }} 项
           </span>
           <button
             id="btn-bookmark-batch-clear"
             type="button"
             @click="clearSelection"
-            class="inline-flex items-center gap-1 px-2 py-1 text-xs text-slate-600 hover:text-slate-900 hover:bg-white/80 rounded-md transition-colors cursor-pointer"
+            class="inline-flex items-center gap-1 px-2 py-1 text-xs text-slate-600 hover:text-slate-900 hover:bg-white/80 rounded-md transition-colors cursor-pointer whitespace-nowrap"
           >
-            <X class="w-3.5 h-3.5" />
-            <span>取消选择</span>
+            <X class="w-3.5 h-3.5 shrink-0" />
+            <span class="hidden @[480px]:inline">取消选择</span>
           </button>
         </div>
 
@@ -641,11 +646,11 @@ const showFolderColumn = computed(() => {
               id="btn-bookmark-batch-move"
               type="button"
               @click.stop="isBatchMoveMenuOpen = !isBatchMoveMenuOpen"
-              class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-gray-200/90 rounded-lg transition-colors shadow-2xs cursor-pointer"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-gray-200/90 rounded-lg transition-colors shadow-2xs cursor-pointer whitespace-nowrap"
             >
-              <FolderInput class="w-3.5 h-3.5 text-slate-500" />
+              <FolderInput class="w-3.5 h-3.5 text-slate-500 shrink-0" />
               <span>移动到目录</span>
-              <ChevronDown class="w-3.5 h-3.5 text-slate-400" />
+              <ChevronDown class="w-3.5 h-3.5 text-slate-400 shrink-0" />
             </button>
 
             <div
@@ -684,10 +689,10 @@ const showFolderColumn = computed(() => {
             id="btn-bookmark-batch-pin"
             type="button"
             @click="handleBatchTogglePin"
-            class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-gray-200/90 rounded-lg transition-colors shadow-2xs cursor-pointer"
+            class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-50 border border-gray-200/90 rounded-lg transition-colors shadow-2xs cursor-pointer whitespace-nowrap"
           >
             <Pin
-              class="w-3.5 h-3.5"
+              class="w-3.5 h-3.5 shrink-0"
               :class="areAllSelectedPinned ? 'text-amber-500 fill-amber-500/20' : 'text-slate-500'"
             />
             <span>{{ areAllSelectedPinned ? '取消置顶' : '批量置顶' }}</span>
@@ -698,9 +703,9 @@ const showFolderColumn = computed(() => {
             id="btn-bookmark-batch-delete"
             type="button"
             @click="handleBatchDelete"
-            class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-red-600 bg-white hover:bg-red-50 border border-red-200/90 rounded-lg transition-colors shadow-2xs cursor-pointer"
+            class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-red-600 bg-white hover:bg-red-50 border border-red-200/90 rounded-lg transition-colors shadow-2xs cursor-pointer whitespace-nowrap"
           >
-            <Trash2 class="w-3.5 h-3.5" />
+            <Trash2 class="w-3.5 h-3.5 shrink-0" />
             <span>直接删除</span>
           </button>
         </div>
@@ -730,7 +735,7 @@ const showFolderColumn = computed(() => {
               type="button"
               @click="activeCategoryId = 'all'"
               :class="[
-                'truncate transition-colors cursor-pointer',
+                'truncate whitespace-nowrap transition-colors cursor-pointer',
                 folderBreadcrumbs.length === 0
                   ? 'font-semibold text-slate-900'
                   : 'text-slate-500 hover:text-blue-600',
@@ -745,7 +750,7 @@ const showFolderColumn = computed(() => {
                 type="button"
                 @click="activeCategoryId = crumb.id"
                 :class="[
-                  'truncate transition-colors cursor-pointer max-w-[160px]',
+                  'truncate whitespace-nowrap transition-colors cursor-pointer max-w-[160px]',
                   idx === folderBreadcrumbs.length - 1
                     ? 'font-semibold text-slate-900'
                     : 'text-slate-500 hover:text-blue-600',
@@ -757,7 +762,7 @@ const showFolderColumn = computed(() => {
             </template>
           </nav>
 
-          <span class="text-xs text-slate-400 tabular-nums shrink-0 ml-1">
+          <span class="text-xs text-slate-400 tabular-nums whitespace-nowrap shrink-0 ml-1">
             {{ displayedBookmarks.length }}
           </span>
         </div>
@@ -767,15 +772,15 @@ const showFolderColumn = computed(() => {
           id="btn-add-bookmark"
           type="button"
           @click="openCreateBookmark"
-          class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg transition-colors shadow-2xs cursor-pointer shrink-0"
+          class="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg transition-colors shadow-2xs cursor-pointer shrink-0 whitespace-nowrap"
         >
-          <Plus class="w-3.5 h-3.5" />
+          <Plus class="w-3.5 h-3.5 shrink-0" />
           <span>添加书签</span>
         </button>
       </div>
 
       <!-- Bookmarks List Body -->
-      <div class="flex-1 overflow-y-auto">
+      <div class="flex-1 overflow-auto">
         <!-- Empty State -->
         <div
           v-if="displayedBookmarks.length === 0"
@@ -799,7 +804,7 @@ const showFolderColumn = computed(() => {
         </div>
 
         <!-- Clean List Table -->
-        <div v-else id="bookmarks-list-container" class="flex flex-col">
+        <div v-else id="bookmarks-list-container" class="flex flex-col min-w-[320px]">
           <!-- Sticky List Header -->
           <div
             class="sticky top-0 z-10 h-9 px-4 bg-slate-50/95 backdrop-blur-xs border-b border-gray-200/80 flex items-center gap-3 text-[11px] font-medium text-slate-500 select-none"
@@ -813,10 +818,17 @@ const showFolderColumn = computed(() => {
               class="w-3.5 h-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
               title="全选 / 取消全选"
             />
-            <span class="flex-1 min-w-0">书签名称</span>
-            <span v-if="showFolderColumn" class="hidden md:inline w-28 truncate shrink-0">所属目录</span>
-            <span class="hidden sm:inline w-48 truncate shrink-0">网址</span>
-            <span class="w-28 text-right shrink-0">操作</span>
+            <span class="flex-1 min-w-[120px] truncate whitespace-nowrap">书签名称</span>
+            <span
+              v-if="showFolderColumn"
+              class="hidden @[720px]:inline w-28 truncate whitespace-nowrap shrink-0"
+            >
+              所属目录
+            </span>
+            <span class="hidden @[540px]:inline w-40 @[760px]:w-48 truncate whitespace-nowrap shrink-0">
+              网址
+            </span>
+            <span class="w-28 text-right whitespace-nowrap shrink-0">操作</span>
           </div>
 
           <!-- Bookmark Rows -->
@@ -846,18 +858,14 @@ const showFolderColumn = computed(() => {
                 :aria-label="`选择书签 ${bm.title}`"
               />
 
-              <!-- Badge + Pin + Title Link -->
-              <div class="flex-1 min-w-0 flex items-center gap-2">
-                <div
-                  class="w-6 h-6 rounded-md border flex items-center justify-center text-[11px] font-semibold shrink-0 select-none"
-                  :class="[
-                    getBookmarkBadgeInfo(bm.url, bm.title).bg,
-                    getBookmarkBadgeInfo(bm.url, bm.title).text,
-                    getBookmarkBadgeInfo(bm.url, bm.title).border,
-                  ]"
-                >
-                  {{ getBookmarkBadgeInfo(bm.url, bm.title).letter }}
-                </div>
+              <!-- Target Website Favicon + Pin + Title Link -->
+              <div class="flex-1 min-w-[120px] flex items-center gap-2 overflow-hidden">
+                <BookmarkIconBadge
+                  :url="bm.url"
+                  :title="bm.title"
+                  :icon-url="bm.iconUrl"
+                  size="sm"
+                />
 
                 <Pin
                   v-if="bm.isPinned"
@@ -869,25 +877,25 @@ const showFolderColumn = computed(() => {
                   :href="bm.url"
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="text-[13px] font-medium text-slate-800 hover:text-blue-600 truncate transition-colors"
+                  class="block flex-1 min-w-0 text-[13px] font-medium text-slate-800 hover:text-blue-600 truncate whitespace-nowrap transition-colors"
                   :title="`${bm.title}\n${bm.url}`"
                 >
                   {{ bm.title }}
                 </a>
               </div>
 
-              <!-- Subtle Folder Column -->
+              <!-- Subtle Folder Column (shown when pane width >= 720px) -->
               <span
                 v-if="showFolderColumn"
-                class="hidden md:inline w-28 text-xs text-slate-400 truncate shrink-0"
+                class="hidden @[720px]:inline w-28 text-xs text-slate-400 truncate whitespace-nowrap shrink-0"
                 :title="getCategoryLabel(bm.categoryId) || '根目录'"
               >
                 {{ getCategoryLabel(bm.categoryId) || '根目录' }}
               </span>
 
-              <!-- Clean Host Column -->
+              <!-- Clean Host Column (shown when pane width >= 540px) -->
               <span
-                class="hidden sm:inline w-48 text-xs font-mono text-slate-400 truncate shrink-0"
+                class="hidden @[540px]:inline w-40 @[760px]:w-48 text-xs font-mono text-slate-400 truncate whitespace-nowrap shrink-0"
                 :title="bm.url"
               >
                 {{ extractBookmarkHost(bm.url) }}

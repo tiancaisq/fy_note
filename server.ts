@@ -1,6 +1,8 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import dns from 'dns';
+import net from 'net';
 import { createServer as createViteServer } from 'vite';
 import {
   INITIAL_FOLDERS,
@@ -1202,6 +1204,242 @@ app.delete('/api/bookmark-categories/:id', handleDeleteBookmarkCategory);
 app.delete('/api/bookmark-categories', handleDeleteBookmarkCategory);
 
 // ==========================================
+// 5.6 Automatic Target Website Favicon Resolver (SSRF-safe)
+// ==========================================
+function isPrivateIpAddress(ip: string): boolean {
+  const clean = ip.replace(/^::ffff:/i, '');
+  if (net.isIPv4(clean)) {
+    const parts = clean.split('.').map(Number);
+    if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return true;
+    const [a, b] = parts;
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a >= 224) return true;
+    return false;
+  }
+  if (net.isIPv6(clean)) {
+    const lower = clean.toLowerCase();
+    if (lower === '::1' || lower === '::' || lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80')) {
+      return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+function decodeHtmlEntities(input: string): string {
+  return input
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(Number(num)))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractIconAndTitleFromHtml(html: string, baseUrl: string): { iconUrl?: string; title?: string } {
+  let title: string | undefined;
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (titleMatch && titleMatch[1]) {
+    const decoded = decodeHtmlEntities(titleMatch[1]);
+    if (decoded) {
+      title = decoded.slice(0, 120);
+    }
+  }
+
+  const linkRegex = /<link\b[^>]*>/gi;
+  const candidates: { href: string; score: number }[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = linkRegex.exec(html)) !== null) {
+    const tag = match[0];
+    const relMatch = tag.match(/\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const hrefMatch = tag.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    if (!relMatch || !hrefMatch) continue;
+
+    const rel = (relMatch[1] || relMatch[2] || relMatch[3] || '').toLowerCase();
+    const rawHref = (hrefMatch[1] || hrefMatch[2] || hrefMatch[3] || '').trim();
+    if (!rawHref || rawHref.startsWith('data:')) continue;
+
+    // Only consider favicon-related link tags
+    const relTokens = rel.split(/\s+/).filter(Boolean);
+    const isIconRel =
+      relTokens.includes('icon') ||
+      relTokens.includes('apple-touch-icon') ||
+      relTokens.includes('apple-touch-icon-precomposed') ||
+      rel === 'shortcut icon';
+    if (!isIconRel) continue;
+
+    let resolvedHref = '';
+    try {
+      const resolved = new URL(decodeHtmlEntities(rawHref), baseUrl);
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') continue;
+      resolvedHref = resolved.toString();
+    } catch {
+      continue;
+    }
+
+    let score = 10;
+    if (rel === 'icon' || rel === 'shortcut icon') score += 20;
+    if (relTokens.includes('apple-touch-icon')) score += 15;
+    if (/\.svg(\?|$)/i.test(resolvedHref)) score += 18;
+    else if (/\.png(\?|$)/i.test(resolvedHref)) score += 12;
+    else if (/\.ico(\?|$)/i.test(resolvedHref)) score += 6;
+
+    const sizesMatch = tag.match(/\bsizes\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const sizesStr = (sizesMatch?.[1] || sizesMatch?.[2] || sizesMatch?.[3] || '').toLowerCase();
+    if (sizesStr === 'any') {
+      score += 15;
+    } else {
+      const dim = sizesStr.match(/(\d+)x(\d+)/);
+      if (dim) {
+        const w = Number(dim[1]);
+        if (w >= 32 && w <= 192) score += 10;
+        else if (w > 192) score += 6;
+      }
+    }
+
+    candidates.push({ href: resolvedHref, score });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  return {
+    iconUrl: candidates[0]?.href,
+    title,
+  };
+}
+
+async function handleFetchBookmarkFavicon(req: express.Request, res: express.Response) {
+  const rawUrl = String(req.query.url || req.body?.url || '').trim();
+  if (!rawUrl) {
+    return res.status(400).json({ code: 400, success: false, message: '缺少 url 参数' });
+  }
+
+  let parsed: URL;
+  try {
+    const candidate = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+    parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return res.status(400).json({ code: 400, success: false, message: '仅支持 http/https 网址' });
+    }
+  } catch {
+    return res.status(400).json({ code: 400, success: false, message: '网址格式无效' });
+  }
+
+  const defaultIconUrl = `${parsed.origin}/favicon.ico`;
+  const hostname = parsed.hostname.toLowerCase();
+  if (
+    hostname === 'localhost' ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.internal') ||
+    (net.isIP(hostname) && isPrivateIpAddress(hostname))
+  ) {
+    return res.json({
+      code: 200,
+      success: true,
+      data: { iconUrl: defaultIconUrl, resolvedFromHtml: false },
+    });
+  }
+
+  // Resolve DNS and block private/loopback IPs (SSRF protection)
+  try {
+    const records = await dns.promises.lookup(hostname, { all: true });
+    if (!records.length || records.some((r) => isPrivateIpAddress(r.address))) {
+      return res.json({
+        code: 200,
+        success: true,
+        data: { iconUrl: defaultIconUrl, resolvedFromHtml: false },
+      });
+    }
+  } catch {
+    return res.json({
+      code: 200,
+      success: true,
+      data: { iconUrl: defaultIconUrl, resolvedFromHtml: false },
+    });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3800);
+
+  try {
+    const response = await fetch(parsed.toString(), {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+    });
+
+    const finalUrl = response.url || parsed.toString();
+    let finalOrigin = parsed.origin;
+    try {
+      finalOrigin = new URL(finalUrl).origin;
+    } catch {}
+
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (!response.ok || (!contentType.includes('text/html') && !contentType.includes('xhtml'))) {
+      return res.json({
+        code: 200,
+        success: true,
+        data: { iconUrl: `${finalOrigin}/favicon.ico`, resolvedFromHtml: false },
+      });
+    }
+
+    // Read only up to ~128KB so large pages return fast
+    const reader = response.body?.getReader();
+    let htmlChunk = '';
+    if (reader) {
+      const decoder = new TextDecoder('utf-8', { fatal: false });
+      let bytesRead = 0;
+      const MAX_BYTES = 131072;
+      while (bytesRead < MAX_BYTES) {
+        const { done, value } = await reader.read();
+        if (done || !value) break;
+        bytesRead += value.byteLength;
+        htmlChunk += decoder.decode(value, { stream: true });
+        if (/<\/head>/i.test(htmlChunk)) break;
+      }
+      try {
+        await reader.cancel();
+      } catch {}
+    } else {
+      htmlChunk = (await response.text()).slice(0, 131072);
+    }
+
+    const extracted = extractIconAndTitleFromHtml(htmlChunk, finalUrl);
+    return res.json({
+      code: 200,
+      success: true,
+      data: {
+        iconUrl: extracted.iconUrl || `${finalOrigin}/favicon.ico`,
+        title: extracted.title,
+        resolvedFromHtml: Boolean(extracted.iconUrl),
+      },
+    });
+  } catch {
+    return res.json({
+      code: 200,
+      success: true,
+      data: { iconUrl: defaultIconUrl, resolvedFromHtml: false },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+app.get('/api/bookmark-favicon', handleFetchBookmarkFavicon);
+
+// ==========================================
 // 6. Unified Query Dispatcher for /api.php & /api
 // ==========================================
 app.all(['/api.php', '/api'], (req, res) => {
@@ -1251,6 +1489,9 @@ app.all(['/api.php', '/api'], (req, res) => {
   }
   if (action === 'delete_bookmark_category') {
     return handleDeleteBookmarkCategory(req, res);
+  }
+  if (action === 'fetch_favicon' || action === 'bookmark_favicon') {
+    return handleFetchBookmarkFavicon(req, res);
   }
 
   // Default fallback for GET

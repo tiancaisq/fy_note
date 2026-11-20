@@ -1,5 +1,5 @@
 /**
- * Safe URL normalization and domain badge utilities for website bookmarks.
+ * Safe URL normalization, automatic favicon resolution, and domain badge utilities for website bookmarks.
  */
 
 export function normalizeBookmarkUrl(raw: string): { valid: boolean; url: string; error?: string } {
@@ -20,7 +20,7 @@ export function normalizeBookmarkUrl(raw: string): { valid: boolean; url: string
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return { valid: false, url: '', error: '仅支持 http:// 或 https:// 协议的网址' };
     }
-    if (!parsed.hostname || !parsed.hostname.includes('.') && parsed.hostname !== 'localhost') {
+    if (!parsed.hostname || (!parsed.hostname.includes('.') && parsed.hostname !== 'localhost')) {
       return { valid: false, url: '', error: '网址域名格式不正确，例如 https://example.com' };
     }
     return { valid: true, url: parsed.toString() };
@@ -45,6 +45,156 @@ export function deriveTitleFromUrl(url: string): string {
   const core = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
   if (!core) return host;
   return core.charAt(0).toUpperCase() + core.slice(1);
+}
+
+export function isPrivateOrLocalHostname(hostname: string): boolean {
+  const lower = (hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    !lower ||
+    lower === 'localhost' ||
+    lower === '::1' ||
+    lower === '0.0.0.0' ||
+    lower.endsWith('.local') ||
+    lower.endsWith('.internal') ||
+    lower.endsWith('.localhost')
+  ) {
+    return true;
+  }
+  if (/^127\./.test(lower) || /^10\./.test(lower) || /^192\.168\./.test(lower) || /^169\.254\./.test(lower)) {
+    return true;
+  }
+  const m172 = lower.match(/^172\.(\d+)\./);
+  if (m172) {
+    const second = Number(m172[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns the standard target-site favicon URL (e.g. https://example.com/favicon.ico).
+ */
+export function getDefaultFaviconUrl(url: string): string {
+  const check = normalizeBookmarkUrl(url);
+  if (!check.valid) return '';
+  try {
+    const parsed = new URL(check.url);
+    return `${parsed.origin}/favicon.ico`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Builds an ordered, deduplicated list of favicon URLs to try for a bookmark,
+ * falling back gracefully before switching to the local letter badge.
+ */
+export function getBookmarkIconCandidates(url: string, primaryIconUrl?: string): string[] {
+  const candidates: string[] = [];
+  const pushUnique = (u: string) => {
+    const trimmed = (u || '').trim();
+    if (!trimmed) return;
+    if (!/^https?:\/\//i.test(trimmed)) return;
+    if (!candidates.includes(trimmed)) {
+      candidates.push(trimmed);
+    }
+  };
+
+  if (primaryIconUrl) {
+    const checkPrimary = normalizeBookmarkUrl(primaryIconUrl);
+    if (checkPrimary.valid) {
+      pushUnique(checkPrimary.url);
+    }
+  }
+
+  const checkUrl = normalizeBookmarkUrl(url);
+  if (checkUrl.valid) {
+    try {
+      const parsed = new URL(checkUrl.url);
+      pushUnique(`${parsed.origin}/favicon.ico`);
+      if (!isPrivateOrLocalHostname(parsed.hostname)) {
+        pushUnique(
+          `https://www.google.com/s2/favicons?domain=${encodeURIComponent(parsed.hostname)}&sz=64`
+        );
+        pushUnique(`https://icons.duckduckgo.com/ip3/${encodeURIComponent(parsed.hostname)}.ico`);
+      }
+    } catch {
+      // ignore invalid URL
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Queries the backend metadata endpoint to parse the target page's <link rel="icon"> and <title>,
+ * gracefully falling back to `${origin}/favicon.ico` when unavailable.
+ */
+export async function fetchTargetSiteMetadata(
+  rawUrl: string,
+  signal?: AbortSignal
+): Promise<{ iconUrl: string; title?: string; resolvedFromHtml: boolean }> {
+  const normalized = normalizeBookmarkUrl(rawUrl);
+  if (!normalized.valid) {
+    return { iconUrl: '', resolvedFromHtml: false };
+  }
+
+  const defaultIcon = getDefaultFaviconUrl(normalized.url);
+  try {
+    const parsed = new URL(normalized.url);
+    if (isPrivateOrLocalHostname(parsed.hostname)) {
+      return { iconUrl: defaultIcon, resolvedFromHtml: false };
+    }
+  } catch {
+    return { iconUrl: defaultIcon, resolvedFromHtml: false };
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4500);
+
+  const onExternalAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      return { iconUrl: defaultIcon, resolvedFromHtml: false };
+    }
+    signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  try {
+    const resp = await fetch(
+      `/api/bookmark-favicon?url=${encodeURIComponent(normalized.url)}`,
+      {
+        method: 'GET',
+        signal: controller.signal,
+        headers: { Accept: 'application/json' },
+      }
+    );
+    if (!resp.ok) {
+      return { iconUrl: defaultIcon, resolvedFromHtml: false };
+    }
+    const json = await resp.json();
+    const resolvedIcon =
+      typeof json?.data?.iconUrl === 'string' && json.data.iconUrl.trim()
+        ? json.data.iconUrl.trim()
+        : defaultIcon;
+    const resolvedTitle =
+      typeof json?.data?.title === 'string' && json.data.title.trim()
+        ? json.data.title.trim()
+        : undefined;
+    return {
+      iconUrl: resolvedIcon,
+      title: resolvedTitle,
+      resolvedFromHtml: Boolean(json?.data?.resolvedFromHtml),
+    };
+  } catch {
+    return { iconUrl: defaultIcon, resolvedFromHtml: false };
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal) {
+      signal.removeEventListener('abort', onExternalAbort);
+    }
+  }
 }
 
 const BADGE_PALETTES = [
